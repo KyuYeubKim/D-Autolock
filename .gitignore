@@ -1,0 +1,14 @@
+.gradle/
+.signing/
+.tools/
+**/build/
+local.properties
+analysis/
+tmp/
+dist/
+*.log
+.idea/
+github/
+*.jks
+*.keystore
+*.apk

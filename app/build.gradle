@@ -1,0 +1,44 @@
+plugins { id 'com.android.application' }
+def signingFile = rootProject.file('.signing/release.properties')
+def signingProps = new Properties()
+if (signingFile.exists()) signingFile.withInputStream { signingProps.load(it) }
+android {
+    namespace 'com.dautolock.app'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'com.dautolock.app'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '0.1.0'
+    }
+    signingConfigs {
+        localRelease {
+            if (signingFile.exists()) {
+                storeFile rootProject.file('.signing/d-autolock.jks')
+                storePassword signingProps.getProperty('storePassword')
+                keyAlias 'd-autolock'
+                keyPassword signingProps.getProperty('keyPassword')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (signingFile.exists()) signingConfig signingConfigs.localRelease
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+    testOptions { unitTests.returnDefaultValues = false; unitTests.includeAndroidResources = true }
+    lint { abortOnError true }
+}
+dependencies {
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
+}
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }

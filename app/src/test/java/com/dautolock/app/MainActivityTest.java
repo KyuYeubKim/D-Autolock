@@ -81,7 +81,6 @@ public class MainActivityTest {
       View settings = root.findViewWithTag("settingsPage");
       String[] moved = {
         "차량 보조 앱 연결 / QR",
-        "활동 로그",
         "자동 도어",
         "자동 동작 설정",
         "앱 업데이트",
@@ -93,7 +92,9 @@ public class MainActivityTest {
         assertNull(find(home, label));
         assertNotNull(find(settings, label));
       }
-      assertNull(find(home, "차량 상태 새로고침"));
+      assertNotNull(home.findViewWithTag("statusRefresh"));
+      assertNotNull(find(home, "활동 로그"));
+      assertNull(find(settings, "활동 로그"));
       root.findViewWithTag("overflowMenu").performClick();
       PopupMenu popup = org.robolectric.shadows.ShadowPopupMenu.getLatestPopupMenu();
       assertEquals("설정", popup.getMenu().findItem(1).getTitle());
@@ -171,7 +172,8 @@ public class MainActivityTest {
       ViewGroup parent = (ViewGroup) alerts.getParent();
       assertTrue(parent.indexOfChild(alerts) < parent.indexOfChild(signal));
       assertTrue(parent.indexOfChild(signal) < parent.indexOfChild(controls));
-      assertNotSame(parent, logs.getParent());
+      assertSame(parent, logs.getParent());
+      assertTrue(parent.indexOfChild(controls) < parent.indexOfChild(logs));
       assertEquals(View.GONE, root.findViewWithTag("settingsPage").getVisibility());
       assertNotNull(find(signal, "거리 감도 / 대기 시간"));
       assertNotNull(find(controls, "도어 열기"));
@@ -406,11 +408,66 @@ public class MainActivityTest {
   }
 
   @Test
+  public void controlsNeedSecondTapWithinThreeSecondsAndStopKeepsConfirmation() {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      View root = a.get().getWindow().getDecorView();
+      Button stop = (Button) find(root, "Stop · 차량 종료");
+      stop.setEnabled(true);
+      stop.performClick();
+      assertNull(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog());
+      assertEquals("Stop · 차량 종료\n한 번 더 누르세요", stop.getText().toString());
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper())
+          .idleFor(java.time.Duration.ofMillis(3100));
+      assertEquals("Stop · 차량 종료", stop.getText().toString());
+      stop.performClick(); // Re-armed after timeout, still no action.
+      assertNull(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog());
+      Button climate = (Button) find(root, "공조 시작");
+      climate.performClick(); // Arming another control disarms the first.
+      assertEquals("Stop · 차량 종료", stop.getText().toString());
+      stop.performClick();
+      stop.performClick();
+      AlertDialog confirm = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+      assertNotNull(confirm);
+      assertEquals("Stop · 차량 종료", stop.getText().toString());
+      confirm.dismiss();
+    }
+  }
+
+  @Test
+  public void refreshIconShowsCheckedTimeAndSpinsWhileReading() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      View root = a.get().getWindow().getDecorView();
+      TextView checked = root.findViewWithTag("statusCheckedTime");
+      View icon = root.findViewWithTag("statusRefresh");
+      assertEquals("최종 확인 · 아직 없음", checked.getText().toString());
+      icon.performClick(); // No vehicle: explains instead of reading.
+      assertEquals("설정에서 BYD 계정과 차량을 먼저 연결하세요", c.message);
+      c.statusReading = true;
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertTrue(checked.getText().toString().startsWith("차량 상태 확인 중…"));
+      assertEquals("차량 상태 새로고침 중", icon.getContentDescription());
+      c.statusReading = false;
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertEquals("차량 상태 새로고침", icon.getContentDescription());
+      ViewGroup rows = root.findViewWithTag("activityRows");
+      assertNotNull(find(rows, "설정에서 BYD 계정과 차량을 먼저 연결하세요"));
+      assertNotNull(find(rows, "보류"));
+    }
+  }
+
+  @Test
   public void manualDoorTapDoesNotShowConfirmation() {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {
       Button unlock = (Button) find(a.get().getWindow().getDecorView(), "도어 열기");
       unlock.setEnabled(true);
+      unlock.performClick();
       unlock.performClick();
       assertNull(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog());
     }

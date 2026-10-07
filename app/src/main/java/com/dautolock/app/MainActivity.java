@@ -16,6 +16,7 @@ import android.text.method.PasswordTransformationMethod;
 import android.view.*;
 import android.widget.*;
 import com.dautolock.app.api.CloudClient;
+import com.dautolock.app.core.ActivityFeed;
 import com.dautolock.app.core.DashboardStatus;
 import com.dautolock.app.core.LogDisplay;
 import java.nio.charset.StandardCharsets;
@@ -30,13 +31,19 @@ public final class MainActivity extends Activity {
       MUTED = 0xff919ba9;
   private Controller controller;
   private LinearLayout body;
-  private TextView signal, message, account, device, capabilities, log;
+  private TextView signal, message, account, device, capabilities, checkedTime;
+  private ImageView refreshIcon;
+  private android.animation.ObjectAnimator refreshSpin;
+  private LinearLayout activityRows;
+  private String activityKey = "";
+  private Button armedCommand;
+  private CharSequence armedLabel;
+  private final Runnable disarmCommand = this::disarmCommand;
   private final TextView[] vehicleStates = new TextView[3];
   private TextView signalDetails, autoDetails, autoReason, controlDetails, readyDetails;
   private SignalGauge signalGauge;
   private TextView updateStatus;
   private TextView bridgeStatus;
-  private Button installUpdate;
   private Button monitor, chooseVehicle, logout, login;
   private ScrollView homeScroll, settingsScroll, setupScroll;
   private LinearLayout settingsBody, signalExtra, setupBanner;
@@ -95,6 +102,10 @@ public final class MainActivity extends Activity {
   protected void onStop() {
     foreground = false;
     refreshHandler.removeCallbacksAndMessages(null);
+    disarmCommand();
+    if (refreshSpin != null) refreshSpin.cancel();
+    refreshIcon.animate().cancel();
+    refreshIcon.setRotation(0);
     controller.updater.foreground(false);
     controller.remove(observer);
     stopPicker();
@@ -174,10 +185,12 @@ public final class MainActivity extends Activity {
             v -> {
               PopupMenu popup = new PopupMenu(this, v);
               popup.getMenu().add(0, 1, 0, "설정");
-              popup.getMenu().add(0, 2, 1, "처음 설정 안내");
+              popup.getMenu().add(0, 3, 1, "앱 업데이트");
+              popup.getMenu().add(0, 2, 2, "처음 설정 안내");
               popup.setOnMenuItemClickListener(
                   item -> {
                     if (item.getItemId() == 1) showPage("settings");
+                    else if (item.getItemId() == 3) requestUpdate();
                     else showSetup();
                     return true;
                   });
@@ -212,6 +225,28 @@ public final class MainActivity extends Activity {
     setContentView(shell);
     LinearLayout alerts = card("차량 상태");
     alerts.setTag("alertsCard");
+    View alertsTitle = alerts.getChildAt(0);
+    alerts.removeView(alertsTitle);
+    LinearLayout alertsHeader = new LinearLayout(this);
+    alertsHeader.setGravity(Gravity.CENTER_VERTICAL);
+    alerts.addView(alertsHeader, 0);
+    alertsHeader.addView(alertsTitle, new LinearLayout.LayoutParams(0, -2, 1));
+    refreshIcon = new ImageView(this);
+    refreshIcon.setTag("statusRefresh");
+    refreshIcon.setImageResource(R.drawable.ic_refresh);
+    refreshIcon.setScaleType(ImageView.ScaleType.CENTER);
+    refreshIcon.setBackground(background(0xff222a35, 22));
+    refreshIcon.setContentDescription("차량 상태 새로고침");
+    refreshIcon.setOnClickListener(
+        v -> {
+          v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+          controller.refreshNow();
+          update();
+        });
+    alertsHeader.addView(refreshIcon, new LinearLayout.LayoutParams(dp(44), dp(44)));
+    checkedTime = text(alerts, "최종 확인 · 아직 없음", 12, MUTED);
+    checkedTime.setTag("statusCheckedTime");
+    checkedTime.setPadding(0, 0, 0, 0);
     LinearLayout statusRow = new LinearLayout(this);
     statusRow.setPadding(0, dp(6), 0, dp(4));
     alerts.addView(statusRow);
@@ -311,17 +346,18 @@ public final class MainActivity extends Activity {
 
     LinearLayout doorRow = new LinearLayout(this);
     doorRow.setOrientation(LinearLayout.HORIZONTAL);
+    doorRow.setBaselineAligned(false);
     controls.addView(doorRow);
     commands.add(
         button(
             doorRow,
             "도어 열기",
-            v -> controller.command(CloudClient.Command.UNLOCK, false, () -> true)));
+            doubleTap(() -> controller.command(CloudClient.Command.UNLOCK, false, () -> true))));
     commands.add(
         button(
             doorRow,
             "도어 잠금",
-            v -> controller.command(CloudClient.Command.LOCK, false, () -> true)));
+            doubleTap(() -> controller.command(CloudClient.Command.LOCK, false, () -> true))));
     for (int i = 0; i < doorRow.getChildCount(); i++) {
       LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(56), 1);
       p.setMargins(i == 0 ? 0 : dp(4), 0, i == 0 ? dp(4) : 0, 0);
@@ -337,21 +373,25 @@ public final class MainActivity extends Activity {
     }
     LinearLayout secondaryRow = new LinearLayout(this);
     secondaryRow.setOrientation(LinearLayout.HORIZONTAL);
+    secondaryRow.setBaselineAligned(false);
     controls.addView(secondaryRow);
-    commands.add(button(secondaryRow, "Stop · 차량 종료", v -> confirm(CloudClient.Command.STOP)));
+    commands.add(
+        button(
+            secondaryRow, "Stop · 차량 종료", doubleTap(() -> confirm(CloudClient.Command.STOP))));
     capabilities = text(bridgeCard, "차량 기능 확인 전", 12, MUTED);
     button(
         secondaryRow,
         "공조 시작",
-        v ->
-            new AlertDialog.Builder(this)
+        doubleTap(
+            () ->
+                new AlertDialog.Builder(this)
                 .setTitle("공조 시작")
                 .setMessage(
                     "P단 주차를 확인하세요. 23°C 공조 시작을 한 번 요청하고 자동 OFF 없이 유지합니다. 차량의 원격 공조 시간 제한이 적용됩니다."
                         + " 이후 약 2분 동안 공조·전원·OK 표시값을 진단합니다. 실제 READY는 계기판에서 확인하세요.")
                 .setNegativeButton("취소", null)
                 .setPositiveButton("주차 확인 · 시작", (d, w) -> controller.manualClimateStart())
-                .show());
+                .show()));
     for (int i = 0; i < secondaryRow.getChildCount(); i++) {
       LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(56), 1);
       p.setMargins(i == 0 ? 0 : dp(4), dp(6), i == 0 ? dp(4) : 0, 0);
@@ -360,6 +400,23 @@ public final class MainActivity extends Activity {
       b.setTextSize(13);
       b.setTextColor(i == 0 ? 0xffddaa67 : 0xff66cce0);
       b.setBackground(background(i == 0 ? 0xff3b3027 : 0xff203a43, 12));
+    }
+    text(controls, "실수 방지: 3초 안에 두 번 누르면 실행합니다.", 12, MUTED);
+    LinearLayout activityLog = card("활동 로그");
+    activityLog.setTag("logCard");
+    activityRows = new LinearLayout(this);
+    activityRows.setTag("activityRows");
+    activityRows.setOrientation(LinearLayout.VERTICAL);
+    activityLog.addView(activityRows);
+    LinearLayout logButtons = new LinearLayout(this);
+    activityLog.addView(logButtons);
+    button(logButtons, "활동 전체 보기", v -> showActivity());
+    button(logButtons, "상세 진단 로그", v -> showDiagnostics());
+    for (int i = 0; i < logButtons.getChildCount(); i++) {
+      LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(46), 1);
+      p.setMargins(i == 0 ? 0 : dp(4), dp(6), i == 0 ? dp(4) : 0, 0);
+      ((Button) logButtons.getChildAt(i)).setTextSize(13);
+      logButtons.getChildAt(i).setLayoutParams(p);
     }
     LinearLayout options = card("자동 동작 설정");
     Switch startSwitch = new Switch(this);
@@ -509,16 +566,10 @@ public final class MainActivity extends Activity {
         "신호·판단·제어 결과를 휴대폰에 자동 저장합니다(최대 약 1.5 MB). 계정·비밀번호·PIN·VIN·기기 주소와 서버 원문은 포함하지 않습니다.",
         12,
         MUTED);
-
-    LinearLayout activityLog = card("활동 로그");
-    activityLog.setTag("logCard");
-    log = text(activityLog, "", 12, MUTED);
-    log.setTypeface(Typeface.MONOSPACE);
-    button(activityLog, "전체 로그 보기", v -> showDiagnostics());
     LinearLayout updates = card("앱 업데이트");
     updateStatus = text(updates, controller.updater.status, 13, MUTED);
     Switch updateSwitch = new Switch(this);
-    updateSwitch.setText("새 버전 자동 확인·다운로드");
+    updateSwitch.setText("앱 실행 시 새 버전 확인·설치 화면 열기");
     updateSwitch.setTextColor(TEXT);
     updateSwitch.setMinHeight(dp(48));
     updateSwitch.setChecked(controller.settings.getBoolean("autoUpdate", true));
@@ -528,24 +579,22 @@ public final class MainActivity extends Activity {
           controller.settings.edit().putBoolean("autoUpdate", on).apply();
           if (on) controller.updater.check(false);
         });
-    button(updates, "업데이트 확인", v -> controller.updater.check(true));
-    installUpdate =
-        button(
-            updates,
-            "업데이트 설치",
-            v -> controller.updater.install(this, () -> !controller.busy(), controller::stop));
+    button(updates, "지금 업데이트", v -> requestUpdate());
     text(
-        updates, "하루 한 번 GitHub 새 버전을 확인합니다. 다운로드 후 Android 설치 확인이 필요하며 계정과 설정은 유지됩니다.", 12, MUTED);
+        updates,
+        "앱을 열 때 GitHub 새 버전을 확인합니다(5분 간격). 다운로드·서명 검증이 끝나면 Android 설치 화면을 바로 엽니다. 계정과 설정은 유지됩니다.",
+        12,
+        MUTED);
     for (LinearLayout section :
         new LinearLayout[] {
-          bridgeCard, activityLog, proximity, options, updates, link, bluetooth, events
+          bridgeCard, proximity, options, updates, link, bluetooth, events
         }) {
       body.removeView(section);
       settingsBody.addView(section);
     }
     button(settingsBody, "처음 설정 안내", v -> showSetup());
     button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    text(settingsBody, "D-Autolock 0.2.9 · 비공식 개인용 앱", 12, MUTED);
+    text(settingsBody, "D-Autolock 0.3.0 · 비공식 개인용 앱", 12, MUTED);
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
     button(setupBanner, "처음 설정 이어하기", v -> showSetup());
@@ -553,6 +602,144 @@ public final class MainActivity extends Activity {
     setupBanner.setVisibility(View.GONE);
     buildSetup();
     styleSwitches(shell);
+  }
+
+  private void requestUpdate() {
+    Toast.makeText(this, "앱 업데이트 확인 중…", Toast.LENGTH_SHORT).show();
+    controller.updater.request();
+  }
+
+  /** Vehicle controls run only on a second tap within 3 seconds, so a stray touch does nothing. */
+  private View.OnClickListener doubleTap(Runnable action) {
+    return v -> {
+      Button b = (Button) v;
+      if (armedCommand == b) {
+        disarmCommand();
+        action.run();
+        return;
+      }
+      disarmCommand();
+      armedCommand = b;
+      armedLabel = b.getText();
+      b.setText(armedLabel + "\n한 번 더 누르세요");
+      b.setContentDescription(armedLabel + ". 3초 안에 한 번 더 누르면 실행합니다");
+      GradientDrawable ring = new GradientDrawable();
+      ring.setCornerRadius(dp(12));
+      ring.setStroke(dp(2), 0xffffffff);
+      b.setForeground(ring);
+      b.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+      handler.postDelayed(disarmCommand, 3000);
+    };
+  }
+
+  private void disarmCommand() {
+    handler.removeCallbacks(disarmCommand);
+    if (armedCommand == null) return;
+    armedCommand.setText(armedLabel);
+    armedCommand.setContentDescription(null);
+    armedCommand.setForeground(null);
+    armedCommand = null;
+  }
+
+  /** Spins while a status read runs; on finish completes the current turn instead of snapping. */
+  private void spin(boolean reading) {
+    boolean running = refreshSpin != null && refreshSpin.isRunning();
+    refreshIcon.setContentDescription(reading ? "차량 상태 새로고침 중" : "차량 상태 새로고침");
+    if (reading && !running) {
+      refreshIcon.animate().cancel();
+      refreshIcon.setRotation(0);
+      refreshSpin = android.animation.ObjectAnimator.ofFloat(refreshIcon, "rotation", 0f, 360f);
+      refreshSpin.setDuration(900);
+      refreshSpin.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+      refreshSpin.setInterpolator(new android.view.animation.LinearInterpolator());
+      refreshSpin.start();
+    } else if (!reading && running) {
+      refreshSpin.cancel();
+      float rotation = refreshIcon.getRotation() % 360f;
+      refreshIcon
+          .animate()
+          .rotation(360f)
+          .setDuration((long) ((360f - rotation) / 360f * 900))
+          .setInterpolator(new android.view.animation.DecelerateInterpolator())
+          .withEndAction(() -> refreshIcon.setRotation(0))
+          .start();
+    }
+  }
+
+  private static int activityColor(ActivityFeed.Kind kind) {
+    switch (kind) {
+      case SUCCESS:
+        return 0xff62dca7;
+      case FAILURE:
+        return 0xffff7b7b;
+      case WAIT:
+        return 0xffffc77d;
+      default:
+        return 0xff8fb4ff;
+    }
+  }
+
+  private void addActivityRow(LinearLayout parent, ActivityFeed.Entry e, long now) {
+    ActivityFeed.Kind kind = ActivityFeed.kind(e.text);
+    int color = activityColor(kind);
+    LinearLayout row = new LinearLayout(this);
+    row.setPadding(0, dp(7), 0, dp(7));
+    TextView badge = new TextView(this);
+    badge.setText(kind.label);
+    badge.setTextSize(11);
+    badge.setTextColor(color);
+    badge.setTypeface(null, Typeface.BOLD);
+    badge.setGravity(Gravity.CENTER);
+    GradientDrawable pill = background((color & 0x00ffffff) | 0x26000000, 10);
+    badge.setBackground(pill);
+    badge.setPadding(dp(6), dp(3), dp(6), dp(3));
+    LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(dp(42), -2);
+    badgeParams.setMargins(0, dp(2), dp(10), 0);
+    row.addView(badge, badgeParams);
+    LinearLayout lines = new LinearLayout(this);
+    lines.setOrientation(LinearLayout.VERTICAL);
+    row.addView(lines, new LinearLayout.LayoutParams(0, -2, 1));
+    TextView what = new TextView(this);
+    what.setText(ActivityFeed.friendly(e.text) + (e.count > 1 ? "  (×" + e.count + ")" : ""));
+    what.setTextColor(TEXT);
+    what.setTextSize(13);
+    lines.addView(what);
+    TextView when = new TextView(this);
+    when.setText(ActivityFeed.time(e.time, now));
+    when.setTextColor(MUTED);
+    when.setTextSize(11);
+    lines.addView(when);
+    parent.addView(row);
+  }
+
+  private void renderActivity(long now) {
+    List<ActivityFeed.Entry> rows = ActivityFeed.collapse(controller.activity(), 5);
+    StringBuilder key = new StringBuilder().append(now / 30000);
+    for (ActivityFeed.Entry e : rows) key.append('|').append(e.time).append(e.count);
+    if (key.toString().equals(activityKey)) return;
+    activityKey = key.toString();
+    activityRows.removeAllViews();
+    if (rows.isEmpty()) text(activityRows, "아직 활동 기록이 없습니다.", 13, MUTED);
+    for (ActivityFeed.Entry e : rows) addActivityRow(activityRows, e, now);
+  }
+
+  private void showActivity() {
+    long now = System.currentTimeMillis();
+    LinearLayout list = form();
+    list.setPadding(dp(18), dp(8), dp(18), dp(8));
+    text(list, "최근 30건 · 한국 시간 · 최신순. 판단 근거와 차량 응답은 상세 진단 로그에 있습니다.", 12, MUTED);
+    List<ActivityFeed.Entry> rows = ActivityFeed.collapse(controller.activity(), 30);
+    if (rows.isEmpty()) text(list, "아직 활동 기록이 없습니다.", 13, MUTED);
+    for (ActivityFeed.Entry e : rows) addActivityRow(list, e, now);
+    ScrollView scroll = new ScrollView(this);
+    scroll.setTag("activityList");
+    scroll.addView(list);
+    new AlertDialog.Builder(this)
+        .setTitle("활동 로그")
+        .setView(scroll)
+        .setNeutralButton("상세 진단 로그", (d, w) -> showDiagnostics())
+        .setPositiveButton("닫기", null)
+        .show();
   }
 
   private void setSignalExpanded(boolean expanded) {
@@ -843,9 +1030,15 @@ public final class MainActivity extends Activity {
     controlDetails.setText(controller.autoDetail);
     message.setText(DashboardStatus.brief(controller.message));
     readyDetails.setText(controller.readyStatus);
-    log.setText(controller.recentLog());
+    long now = System.currentTimeMillis();
+    String checked = DashboardStatus.checked(controller.snapshot, now);
+    checkedTime.setText(controller.statusReading ? "차량 상태 확인 중… · " + checked : checked);
+    spin(controller.statusReading);
+    refreshIcon.setAlpha(controller.vin.isEmpty() ? .45f : 1f);
+    renderActivity(now);
     updateStatus.setText(controller.updater.status);
-    installUpdate.setEnabled(controller.updater.installReady && !controller.busy());
+    if (foreground && !controller.busy() && controller.updater.takeInstallRequest())
+      controller.updater.install(this, () -> !controller.busy(), controller::stop);
     monitor.setText(controller.monitoring ? "거리 관찰 종료" : "거리 관찰 시작");
     updating = true;
     auto.setChecked(controller.autoEnabled);
@@ -898,6 +1091,7 @@ public final class MainActivity extends Activity {
                   && CloudClient.hasFeature(
                       controller.capabilities, CloudClient.Command.values()[i].feature));
     for (Button command : commands) command.setAlpha(command.isEnabled() ? 1f : .45f);
+    if (armedCommand != null && !armedCommand.isEnabled()) disarmCommand();
     updateSetup();
     if (foreground
         && !controller.initializing

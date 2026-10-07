@@ -52,7 +52,8 @@ final class Controller {
   private volatile long entryUntil, nextEntryCheck;
   private int entryTicket;
   private boolean entrySawClosed, entryOpened;
-  private final LinkedList<String> events = new LinkedList<>();
+  private final LinkedList<ActivityFeed.Entry> events = new LinkedList<>();
+  volatile boolean statusReading;
   private final List<Runnable> observers = new CopyOnWriteArrayList<>();
 
   Controller(Context context) {
@@ -65,11 +66,12 @@ final class Controller {
     this.clients = clients;
     settings = context.getSharedPreferences("settings", 0);
     updater = new AutoUpdater(context, settings, this::changed);
+    updater.notice = this::note;
     diagnostics = new DiagnosticLog(new java.io.File(context.getFilesDir(), "diagnostics"));
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.2.9 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.3.0 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -159,17 +161,23 @@ final class Controller {
   synchronized void note(String value) {
     message = value;
     diagnostics.record("EVENT", value);
-    events.addFirst(LogDisplay.clock(java.time.Instant.now()) + "  " + value);
+    events.addFirst(new ActivityFeed.Entry(System.currentTimeMillis(), value));
     while (events.size() > 30) events.removeLast();
     changed();
   }
 
   synchronized String log() {
-    return String.join("\n\n", events);
+    StringBuilder out = new StringBuilder();
+    for (ActivityFeed.Entry e : events)
+      out.append(LogDisplay.clock(java.time.Instant.ofEpochMilli(e.time)))
+          .append("  ")
+          .append(e.text)
+          .append("\n\n");
+    return out.toString().trim();
   }
 
-  synchronized String recentLog() {
-    return String.join("\n", new ArrayList<>(events).subList(0, Math.min(3, events.size())));
+  synchronized List<ActivityFeed.Entry> activity() {
+    return new ArrayList<>(events);
   }
 
   boolean setupReady() {
@@ -402,9 +410,37 @@ final class Controller {
       }
       return;
     }
+    readStatus("dashboard_refresh");
+  }
+
+  /** Manual refresh: always reads Cloud, but keeps the single queue, BYD backoff and read spacing. */
+  void refreshNow() {
+    if (initializing) return;
+    if (vin.isEmpty() || (!cloud.protocol.isLoggedIn() && !hasSavedLogin())) {
+      note("설정에서 BYD 계정과 차량을 먼저 연결하세요");
+      return;
+    }
+    if (statusReading) return; // The running read already shows the spinner.
+    if (busy()) {
+      note("차량 요청 처리 중 · 완료 후 다시 새로고침하세요");
+      return;
+    }
+    long wait = Math.max(cloud.backoffMillis(), nextStatusRead - SystemClock.elapsedRealtime());
+    if (wait > 0) {
+      note("BYD 요청 간격 보호 · " + ((wait + 999) / 1000) + "초 후 다시 새로고침하세요");
+      return;
+    }
+    diagnostics.record("STATUS_REFRESH_REQUEST", "manual");
+    readStatus("manual_refresh");
+  }
+
+  private void readStatus(String source) {
+    boolean manual = source.equals("manual_refresh");
     int ticket = generation.get(), refreshTicket = statusRevision.get();
     String target = vin;
-    run(
+    statusReading = true;
+    boolean started =
+        run(
         () -> {
           nextStatusRead = SystemClock.elapsedRealtime() + 5000;
           try {
@@ -425,11 +461,21 @@ final class Controller {
                         next,
                         SystemClock.elapsedRealtime(),
                         System.currentTimeMillis(),
-                        "dashboard_refresh");
+                        source);
             if (refreshTicket == statusRevision.get()) statusRefreshRequested = false;
             diagnostics.record(
                 "STATUS_REFRESH_RESULT",
-                "reusable=" + reusable + " " + next.diagnostic(System.currentTimeMillis()));
+                "source="
+                    + source
+                    + " reusable="
+                    + reusable
+                    + " "
+                    + next.diagnostic(System.currentTimeMillis()));
+            if (manual)
+              note(
+                  next.fresh(System.currentTimeMillis())
+                      ? "차량 상태 새로고침 완료"
+                      : "최신 차량 상태를 받지 못했습니다 · 잠시 후 다시 시도하세요");
           } catch (Exception e) {
             nextStatusRead = SystemClock.elapsedRealtime() + 30000;
             if (refreshTicket == statusRevision.get()) statusRefreshRequested = false;
@@ -437,9 +483,14 @@ final class Controller {
           }
         },
         () -> {
+          statusReading = false;
           if (statusRefreshRequested) main.postDelayed(statusRefreshTask, 1000);
         },
         true);
+    if (!started) {
+      statusReading = false;
+      if (manual) note("차량 요청 처리 중 · 완료 후 다시 새로고침하세요");
+    }
   }
 
   void logout() {

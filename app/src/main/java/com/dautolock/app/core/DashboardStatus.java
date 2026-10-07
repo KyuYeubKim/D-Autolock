@@ -13,6 +13,34 @@ public final class DashboardStatus {
     };
   }
 
+  private static final java.time.format.DateTimeFormatter CLOCK =
+      java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss", java.util.Locale.KOREA)
+          .withZone(java.time.ZoneId.of("Asia/Seoul"));
+  private static final java.time.format.DateTimeFormatter DAY_CLOCK =
+      java.time.format.DateTimeFormatter.ofPattern("MM/dd HH:mm:ss", java.util.Locale.KOREA)
+          .withZone(java.time.ZoneId.of("Asia/Seoul"));
+
+  /** When the phone last received vehicle status, in KST. Vehicle measurement time if it lags. */
+  public static String checked(VehicleSnapshot state, long now) {
+    if (state == null || state.receivedAt <= 0) return "최종 확인 · 아직 없음";
+    String text = "최종 확인 " + kst(state.receivedAt, now) + " KST";
+    if (state.measuredAt > 0 && Math.abs(state.receivedAt - state.measuredAt) >= 60000)
+      text += " · 차량 측정 " + kst(state.measuredAt, now);
+    return state.fresh(now) ? text : text + " · 오래된 정보";
+  }
+
+  private static String kst(long time, long now) {
+    java.time.Instant at = java.time.Instant.ofEpochMilli(time);
+    boolean today =
+        at.atZone(java.time.ZoneId.of("Asia/Seoul"))
+            .toLocalDate()
+            .equals(
+                java.time.Instant.ofEpochMilli(now)
+                    .atZone(java.time.ZoneId.of("Asia/Seoul"))
+                    .toLocalDate());
+    return (today ? CLOCK : DAY_CLOCK).format(at);
+  }
+
   public static String brief(String message) {
     if (message == null || message.isEmpty()) return "차량 상태 확인 대기";
     if (message.startsWith("저장된 계정과 차량을 복원")) return "저장된 연결 복원 완료";

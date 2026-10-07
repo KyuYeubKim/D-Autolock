@@ -25,6 +25,12 @@ final class AutoUpdater {
   private volatile boolean foreground;
   volatile String status = "앱 실행 시 새 버전을 확인합니다";
   volatile boolean installReady;
+  /** Outcome messages for a check the user asked for from the menu (activity log). */
+  volatile java.util.function.Consumer<String> notice = message -> {};
+  /** Open the system installer as soon as a verified download is ready. */
+  private volatile boolean installRequested, userRequested;
+  private volatile String promptedVersion = "";
+  static final long RECHECK_MS = 5 * 60 * 1000;
   private final Runnable poll = () -> resumeDownload();
 
   AutoUpdater(Context context, SharedPreferences settings, Runnable changed) {
@@ -37,8 +43,41 @@ final class AutoUpdater {
     foreground = value;
     main.removeCallbacks(poll);
     if (!value) return;
+    boolean automatic = settings.getBoolean("autoUpdate", true);
+    if (automatic) installRequested = true;
     if (settings.getLong("updateDownload", 0) > 0) resumeDownload();
-    else if (settings.getBoolean("autoUpdate", true)) check(false);
+    else if (automatic) check(false);
+  }
+
+  /** Menu "앱 업데이트": check now, download, and open the installer without another tap. */
+  void request() {
+    userRequested = true;
+    installRequested = true;
+    promptedVersion = "";
+    if (installReady) changed.run();
+    else check(true);
+  }
+
+  /**
+   * True once per version per app run (or on every explicit request). The Android installer
+   * screen is still the user's confirmation; cancelling it does not reopen it on its own.
+   */
+  boolean takeInstallRequest() {
+    if (!installRequested || !installReady) return false;
+    String version = settings.getString("updateVersion", "");
+    installRequested = false;
+    if (!userRequested && version.equals(promptedVersion)) return false;
+    userRequested = false;
+    promptedVersion = version;
+    return true;
+  }
+
+  private void report(String message) {
+    status = message;
+    if (userRequested) {
+      userRequested = false;
+      notice.accept("앱 업데이트 · " + message);
+    }
   }
 
   private String installedVersion() throws Exception {
@@ -52,8 +91,7 @@ final class AutoUpdater {
     }
     long now = System.currentTimeMillis();
     long age = now - settings.getLong("updateChecked", 0);
-    if (!force && age >= 0 && age < 86400000) {
-      status = "오늘 업데이트 확인 완료 · 필요하면 다시 확인하세요";
+    if (!force && age >= 0 && age < RECHECK_MS) {
       changed.run();
       return;
     }
@@ -77,11 +115,11 @@ final class AutoUpdater {
               ReleaseUpdate release =
                   ReleaseUpdate.newest(new JSONArray(response.body().string()), installedVersion());
               settings.edit().putLong("updateChecked", now).apply();
-              if (release == null) status = "최신 버전입니다 · " + installedVersion();
+              if (release == null) report("최신 버전입니다 · " + installedVersion());
               else download(release);
             }
           } catch (Exception e) {
-            status = "업데이트 확인 보류 · " + e.getMessage();
+            report("업데이트 확인 보류 · " + e.getMessage());
           } finally {
             busy.set(false);
             changed.run();
@@ -110,7 +148,8 @@ final class AutoUpdater {
         .putString("updateDigest", release.digest)
         .putLong("updateSize", release.size)
         .apply();
-    status = "새 버전 " + release.version + " 자동 다운로드 중…";
+    status = "새 버전 " + release.version + " 다운로드 중… · 완료되면 설치 화면을 엽니다";
+    if (userRequested) notice.accept("앱 업데이트 · " + status);
   }
 
   private void schedulePoll() {
@@ -133,7 +172,7 @@ final class AutoUpdater {
             String version = settings.getString("updateVersion", "");
             if (ReleaseUpdate.order(version) <= ReleaseUpdate.order(installedVersion())) {
               discard();
-              status = "최신 버전입니다 · " + installedVersion();
+              report("최신 버전입니다 · " + installedVersion());
               return;
             }
             long id = settings.getLong("updateDownload", 0);
@@ -148,10 +187,10 @@ final class AutoUpdater {
                 verifyDownloaded();
                 boolean announce = !installReady;
                 installReady = true;
-                status = version + " 다운로드·서명 검증 완료 · 업데이트 설치를 누르세요";
-                if (announce)
+                status = version + " 다운로드·서명 검증 완료 · 설치 화면을 엽니다";
+                if (announce && !foreground)
                   DoorNotifications.result(
-                      context, 4, "D-Autolock 업데이트 준비됨", "앱의 업데이트 설치 버튼을 눌러 설치를 확인하세요");
+                      context, 4, "D-Autolock 업데이트 준비됨", "앱을 열면 설치 화면이 표시됩니다");
               } else
                 status =
                     "새 버전 "
@@ -161,7 +200,7 @@ final class AutoUpdater {
             }
           } catch (Exception e) {
             discard();
-            status = "업데이트 보류 · " + e.getMessage();
+            report("업데이트 보류 · " + e.getMessage());
           } finally {
             busy.set(false);
             changed.run();
@@ -237,7 +276,8 @@ final class AutoUpdater {
   void install(
       Activity activity, java.util.function.BooleanSupplier ready, Runnable beforeInstall) {
     if (!installReady || !ready.getAsBoolean()) {
-      status = "차량 제어 완료 및 업데이트 다운로드를 기다리세요";
+      installRequested = true; // Retry when the running vehicle request finishes.
+      status = "차량 요청 완료 후 설치 화면을 엽니다";
       changed.run();
       return;
     }
@@ -246,7 +286,11 @@ final class AutoUpdater {
           new Intent(
               android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
               Uri.parse("package:" + context.getPackageName())));
-      status = "이 앱의 설치 허용 후 업데이트 설치를 다시 누르세요";
+      // Returning from the permission screen should open the installer without another tap.
+      installRequested = true;
+      promptedVersion = "";
+      notice.accept("앱 업데이트 · 이 앱의 설치를 허용하면 설치 화면을 엽니다");
+      status = "이 앱의 설치 허용이 필요합니다";
       changed.run();
       return;
     }
@@ -264,7 +308,8 @@ final class AutoUpdater {
                 () -> {
                   if (activity.isFinishing() || activity.isDestroyed()) return;
                   if (!ready.getAsBoolean()) {
-                    status = "차량 제어 완료 후 설치를 다시 누르세요";
+                    installRequested = true;
+                    status = "차량 요청 완료 후 설치 화면을 엽니다";
                     changed.run();
                     return;
                   }
@@ -276,12 +321,13 @@ final class AutoUpdater {
                             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));
                   } catch (Exception e) {
                     status = "설치 화면을 열지 못했습니다";
-                    changed.run();
+                    notice.accept("앱 업데이트 · " + status);
                   }
                 });
           } catch (Exception e) {
             installReady = false;
             status = "설치 보류 · " + e.getMessage();
+            notice.accept("앱 업데이트 · " + status);
           } finally {
             busy.set(false);
             changed.run();

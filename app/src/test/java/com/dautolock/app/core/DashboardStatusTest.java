@@ -41,6 +41,22 @@ public class DashboardStatusTest {
   }
 
   @Test
+  public void checkedTimeIsKoreaTimeAndMarksLaggingOrStaleTelemetry() throws Exception {
+    assertEquals("최종 확인 · 아직 없음", DashboardStatus.checked(null, now));
+    assertEquals(
+        "최종 확인 07:53:20 KST", DashboardStatus.checked(new VehicleSnapshot(state(), now), now));
+    assertEquals(
+        "최종 확인 07:53:20 KST · 차량 측정 07:51:20 · 오래된 정보",
+        DashboardStatus.checked(
+            new VehicleSnapshot(state().put("time", now - 120000), now), now));
+    long yesterday = now - 86400000L;
+    assertEquals(
+        "최종 확인 10/08 07:53:20 KST · 오래된 정보",
+        DashboardStatus.checked(
+            new VehicleSnapshot(state().put("time", yesterday), yesterday), now));
+  }
+
+  @Test
   public void summaryShortensRoutineStatusButKeepsFailureReason() {
     assertEquals("도어 열림 확인", DashboardStatus.brief("잠금 해제 완료 · 차량 상태 확인됨"));
     assertEquals("감도 저장 · 상태 갱신 중", DashboardStatus.brief("감도·대기 시간 저장 · 새 기준으로 관찰을 다시 시작합니다"));

@@ -53,6 +53,25 @@ public class NotificationsUpdateTest {
   }
 
   @Test
+  public void readyUpdateOpensInstallerOncePerVersionUnlessUserAsksAgain() throws Exception {
+    Context context = RuntimeEnvironment.getApplication();
+    SharedPreferences settings = context.getSharedPreferences("updater-test", 0);
+    settings.edit().putBoolean("autoUpdate", false).putString("updateVersion", "0.3.0").commit();
+    AutoUpdater updater = new AutoUpdater(context, settings, () -> {});
+    assertFalse(updater.takeInstallRequest()); // Nothing requested yet.
+    updater.installReady = true;
+    updater.request(); // Already downloaded: no network, just open the installer.
+    assertTrue(updater.takeInstallRequest());
+    assertFalse(updater.takeInstallRequest());
+    java.lang.reflect.Field auto = AutoUpdater.class.getDeclaredField("installRequested");
+    auto.setAccessible(true);
+    auto.set(updater, true); // App reopened after cancelling the installer.
+    assertFalse(updater.takeInstallRequest());
+    updater.request(); // Menu tap always reopens it.
+    assertTrue(updater.takeInstallRequest());
+  }
+
+  @Test
   public void notificationReceiverDoesNotActForStoppedObservation() throws Exception {
     DApplication app = (DApplication) RuntimeEnvironment.getApplication();
     AccountPersistenceTest.await(app.controller());

@@ -63,6 +63,49 @@ public class CommandFlowTest {
     assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
   }
 
+  @Test
+  public void manualRefreshReadsDespiteFreshStateKeepsSpacingAndNeverSendsCommands()
+      throws Exception {
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    java.util.concurrent.CountDownLatch inside = new java.util.concurrent.CountDownLatch(1),
+        release = new java.util.concurrent.CountDownLatch(1);
+    p.beforeStatus =
+        () -> {
+          inside.countDown();
+          try {
+            release.await(5, java.util.concurrent.TimeUnit.SECONDS);
+          } catch (InterruptedException e) {
+            throw new AssertionError(e);
+          }
+        };
+    c.refreshNow();
+    assertTrue(inside.await(5, java.util.concurrent.TimeUnit.SECONDS));
+    assertTrue(c.statusReading);
+    c.refreshNow(); // Already reading: no second queued request.
+    release.countDown();
+    p.beforeStatus = () -> {};
+    completeRead(c);
+    assertEquals(1, p.statusRequests);
+    assertEquals("차량 상태 새로고침 완료", c.message);
+    assertTrue(c.snapshot.fresh(System.currentTimeMillis()));
+    c.refreshNow(); // Inside the 5-second read spacing.
+    assertEquals(1, p.statusRequests);
+    assertTrue(c.message.contains("초 후 다시 새로고침"));
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(6));
+    c.refreshNow(); // A fresh snapshot does not suppress an explicit refresh.
+    completeRead(c);
+    assertEquals(2, p.statusRequests);
+    assertTrue(p.commands.isEmpty());
+  }
+
+  private void completeRead(Controller c) throws Exception {
+    long limit = System.currentTimeMillis() + 20000;
+    while ((c.busy() || c.statusReading) && System.currentTimeMillis() < limit) Thread.sleep(20);
+    assertFalse(c.busy());
+    assertFalse(c.statusReading);
+  }
+
   static class Protocol extends CloudProtocol {
     boolean locked;
     int power = 1;

@@ -37,6 +37,7 @@ public final class MainActivity extends Activity {
   private boolean updating;
   private final List<Button> commands = new ArrayList<>();
   private final Runnable observer = this::update;
+  private Runnable thresholdPreview;
   private BluetoothLeScanner pickerScanner;
   private ScanCallback pickerCallback;
   private final Handler handler = new Handler(Looper.getMainLooper());
@@ -325,6 +326,7 @@ public final class MainActivity extends Activity {
     signalGauge.setContentDescription(
         "BLE 수신 강도 " + controller.signalStrength + " / 100. 미수신 시 0.");
     signalDetails.setText(controller.signalDetail);
+    if (thresholdPreview != null) thresholdPreview.run();
     autoDetails.setText(controller.autoDetail);
     controlDetails.setText("최근 제어 · " + controller.lastControl);
     message.setText(controller.message);
@@ -531,12 +533,20 @@ public final class MainActivity extends Activity {
 
   private void thresholdDialog() {
     LinearLayout f = form();
-    text(f, "게이지를 움직여 조절하세요. dBm은 미터 단위 거리가 아닙니다. 접근·이탈 기준은 8 dBm 간격을 유지하도록 함께 조정됩니다.", 13, MUTED);
+    text(
+        f,
+        "문이 동작할 신호 기준을 조절합니다. 수신 신호나 게이지 세기 자체는 바뀌지 않습니다. −50 dBm은 −75 dBm보다 강한 신호입니다. dBm은 미터 거리가"
+            + " 아닙니다.",
+        13,
+        MUTED);
+    TextView preview = text(f, "", 15, MINT);
+    preview.setTag("thresholdPreview");
+    text(f, "아래 값은 저장 전 미리보기입니다. 관찰 중이면 현재 평균 신호와 비교합니다. 접근·이탈 기준은 8 dBm 이상 간격을 유지합니다.", 13, MUTED);
     SeekBar[] sensitivity = new SeekBar[2];
     sensitivity[0] =
         settingSlider(
             f,
-            "접근 감도",
+            "접근 · 잠금 해제 기준",
             "near",
             -92,
             -30,
@@ -546,11 +556,12 @@ public final class MainActivity extends Activity {
             value -> {
               if (sensitivity[1] != null && value < sensitivity[1].getProgress() - 100 + 8)
                 sensitivity[1].setProgress(value - 8 + 100);
+              if (thresholdPreview != null) thresholdPreview.run();
             });
     sensitivity[1] =
         settingSlider(
             f,
-            "이탈 감도",
+            "이탈 · 도어 잠금 기준",
             "far",
             -100,
             -38,
@@ -560,6 +571,7 @@ public final class MainActivity extends Activity {
             value -> {
               if (value > sensitivity[0].getProgress() - 92 - 8)
                 sensitivity[0].setProgress(value + 8 + 92);
+              if (thresholdPreview != null) thresholdPreview.run();
             });
     SeekBar nearWait =
         settingSlider(
@@ -594,6 +606,21 @@ public final class MainActivity extends Activity {
             "초",
             "5초 ← → 60초",
             value -> {});
+    button(
+        f,
+        "시작값 적용 · −60 / −75 dBm",
+        v -> {
+          sensitivity[0].setProgress(-60 + 92);
+          sensitivity[1].setProgress(-75 + 100);
+          nearWait.setProgress(1);
+          farWait.setProgress(4);
+          lossWait.setProgress(10 - 5);
+        });
+    text(
+        f,
+        "시작값: 접근 −60 / 이탈 −75 dBm, 접근 1초 / 이탈 4초 / 신호 끊김 10초. 실제 휴대폰 위치와 주변 환경에 맞춰 조정하세요.",
+        13,
+        MUTED);
     text(
         f,
         "기본값: 접근 −65 / 이탈 −80 dBm, 접근 3초 / 이탈 8초 / 신호 끊김 10초.\n"
@@ -638,6 +665,35 @@ public final class MainActivity extends Activity {
                     }
                   });
         });
+    thresholdPreview =
+        () -> {
+          double average = controller.averageRssi;
+          int near = sensitivity[0].getProgress() - 92;
+          int far = sensitivity[1].getProgress() - 100;
+          String comparison;
+          if (!controller.monitoring || Double.isNaN(average))
+            comparison = "현재 평균 — · 거리 관찰과 BLE 수신이 필요합니다";
+          else {
+            String condition =
+                average >= near
+                    ? "해제 신호 기준 충족"
+                    : average <= far ? "잠금 신호 기준 충족" : "두 기준 사이 · 신호 기준 미충족";
+            comparison =
+                "현재 평균 " + String.format(Locale.KOREA, "%.1f", average) + " dBm\n" + condition;
+          }
+          preview.setText(
+              comparison
+                  + "\n선택 기준: 해제 ≥ "
+                  + near
+                  + " / 잠금 ≤ "
+                  + far
+                  + " dBm"
+                  + "\n신호 기준만 비교합니다. 실제 동작에는 대기 시간·차량 상태·BYD 응답이 필요합니다."
+                  + "\n현재 자동 판단: "
+                  + controller.autoDetail);
+        };
+    d.setOnDismissListener(x -> thresholdPreview = null);
+    thresholdPreview.run();
     d.show();
   }
 

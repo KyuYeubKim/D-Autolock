@@ -17,6 +17,46 @@ import org.robolectric.annotation.Config;
 @Config(sdk = {28, 34})
 public class MainActivityTest {
   @Test
+  public void livePreviewComparesAverageWithDraftThresholdsAndPresetSavesOnlyOnApply()
+      throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      c.monitoring = true;
+      c.averageRssi = -59.6;
+      find(a.get().getWindow().getDecorView(), "거리 감도 / 대기 시간").performClick();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      AlertDialog d = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+      View decor = d.getWindow().getDecorView();
+      TextView preview = decor.findViewWithTag("thresholdPreview");
+      SeekBar near = decor.findViewWithTag("near");
+      near.setProgress(-40 + 92);
+      assertTrue(preview.getText().toString().contains("기준 미충족"));
+      find(decor, "시작값 적용 · −60 / −75 dBm").performClick();
+      assertTrue(preview.getText().toString().contains("해제 신호 기준 충족"));
+      assertTrue(preview.getText().toString().contains("-59.6 dBm"));
+      assertFalse(c.settings.contains("near"));
+      c.averageRssi = -78;
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertTrue(preview.getText().toString().contains("잠금 신호 기준 충족"));
+      c.averageRssi = Double.NaN;
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertTrue(preview.getText().toString().contains("현재 평균 —"));
+      d.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
+      assertEquals(-60, c.settings.getInt("near", 0));
+      assertEquals(-75, c.settings.getInt("far", 0));
+      assertEquals(1, c.settings.getInt("nearWaitSeconds", 0));
+      assertEquals(4, c.settings.getInt("farWaitSeconds", 0));
+      assertEquals(10, c.settings.getInt("lossLockSeconds", 0));
+      assertFalse(c.monitoring);
+      assertFalse(c.autoEnabled);
+    }
+  }
+
+  @Test
   public void sensitivitySlidersKeepGapAndSaveTimesUsedByEngine() throws Exception {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {

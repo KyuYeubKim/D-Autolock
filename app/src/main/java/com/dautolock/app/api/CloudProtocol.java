@@ -132,6 +132,12 @@ public class CloudProtocol {
     }
   }
 
+  public static final class ServiceBusyException extends Exception {
+    public ServiceBusyException() {
+      super("BYD 요청 거부 (코드 1008)");
+    }
+  }
+
   public Map<String, Object> buildInnerBaseMap(String vin, String requestSerial) {
     Map<String, Object> map = new LinkedHashMap<>();
     map.put("deviceType", deviceProfile.get("deviceType"));
@@ -234,6 +240,11 @@ public class CloudProtocol {
                           || "1005".equals(resCode)
                           || "1010".equals(resCode)) {
                         expireSession(callback);
+                        return;
+                      }
+                      if ("1008".equals(resCode)) {
+                        ServiceBusyException error = new ServiceBusyException();
+                        callback.onError(error.getMessage(), error);
                         return;
                       }
                       callback.onError("BYD 요청 거부 (코드 " + resCode + "). 잠시 후 다시 시도하세요", null);

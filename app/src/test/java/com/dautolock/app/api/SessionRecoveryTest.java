@@ -26,7 +26,8 @@ public class SessionRecoveryTest {
       if (outcome.equals("expired")) {
         setSignToken(null);
         cb.onError("expired", new SessionExpiredException());
-      } else if (outcome.equals("busy")) cb.onError("BYD 요청 거부 (코드 1008)", null);
+      } else if (outcome.equals("busy"))
+        cb.onError("BYD 요청 거부 (코드 1008)", new ServiceBusyException());
       else {
         try {
           cb.onSuccess(new JSONObject().put("list", new JSONArray()).put("controlState", 1));

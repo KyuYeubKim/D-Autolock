@@ -33,13 +33,23 @@ public final class CloudClient {
 
   private SessionRecovery recovery;
   private long nextRecovery;
+  private final java.util.function.LongSupplier clock;
+  private volatile long retryAt;
+  private int busyFailures;
+  private long firstBusyAt, nextBusyRecovery;
+  private boolean busyRecoveryPending;
 
   public CloudClient() {
     this(new CloudProtocol(BydConfig.fromRegion("KR")));
   }
 
   public CloudClient(CloudProtocol protocol) {
+    this(protocol, () -> System.nanoTime() / 1000000);
+  }
+
+  CloudClient(CloudProtocol protocol, java.util.function.LongSupplier clock) {
     this.protocol = protocol;
+    this.clock = clock;
   }
 
   public void setSessionRecovery(SessionRecovery recovery) {
@@ -50,11 +60,55 @@ public final class CloudClient {
     if (!protocol.isLoggedIn()) recoverSession();
   }
 
+  public long backoffMillis() {
+    return Math.max(0, retryAt - clock.getAsLong());
+  }
+
+  private void checkBackoff() throws Exception {
+    long remaining = backoffMillis();
+    if (remaining > 0)
+      throw new Exception("BYD 1008 응답으로 " + (remaining + 999) / 1000 + "초 대기 중 · 로그인 정보는 유지됩니다");
+  }
+
+  private void recoverBusyIfDue() throws Exception {
+    if (!busyRecoveryPending || recovery == null) return;
+    busyRecoveryPending = false;
+    nextBusyRecovery = clock.getAsLong() + 600000;
+    diagnostics.accept("ACCOUNT_RECOVERY_1008", "boundedReconnect=true commandReplay=false");
+    try {
+      recoverSession();
+    } catch (Exception e) {
+      retryAt = clock.getAsLong() + 120000;
+      throw e;
+    }
+  }
+
+  private Exception busyResponse() {
+    long now = clock.getAsLong();
+    if (busyFailures++ == 0) firstBusyAt = now;
+    long delay = busyFailures == 1 ? 30000 : busyFailures == 2 ? 60000 : 120000;
+    retryAt = now + delay;
+    // 1008 is not assumed to mean expired credentials. Back off first; one bounded
+    // reconnect addresses this vehicle's observed recovery after a fresh login.
+    if (busyFailures >= 2 && now - firstBusyAt >= 30000 && now >= nextBusyRecovery)
+      busyRecoveryPending = true;
+    diagnostics.accept(
+        "API_BACKOFF",
+        "code=1008 failures="
+            + busyFailures
+            + " waitSeconds="
+            + delay / 1000
+            + " reconnectPending="
+            + busyRecoveryPending);
+    return new Exception(
+        "BYD 요청 거부 (1008) · " + delay / 1000 + "초 후 재확인합니다. 반복되면 저장 계정으로 제한적으로 재연결합니다");
+  }
+
   private void recoverSession() throws Exception {
     if (recovery == null) throw new Exception("Sub 계정 로그인 / 변경에서 계정을 저장하세요");
-    long now = System.nanoTime();
+    long now = clock.getAsLong();
     if (now < nextRecovery) throw new Exception("계정 재연결 대기 중입니다. 잠시 후 다시 시도하세요. 저장 정보는 유지됩니다");
-    nextRecovery = now + TimeUnit.SECONDS.toNanos(60);
+    nextRecovery = now + 60000;
     diagnostics.accept("ACCOUNT_RECONNECT", "started=true");
     try {
       recovery.reconnect();
@@ -84,7 +138,10 @@ public final class CloudClient {
 
           public void onError(String msg, Exception e) {
             future.completeExceptionally(
-                e instanceof CloudProtocol.SessionExpiredException ? e : new Exception(msg));
+                e instanceof CloudProtocol.SessionExpiredException
+                        || e instanceof CloudProtocol.ServiceBusyException
+                    ? e
+                    : new Exception(msg));
           }
         });
     try {
@@ -103,7 +160,14 @@ public final class CloudClient {
 
   public JSONObject request(String endpoint, Map<String, Object> data, String vin)
       throws Exception {
+    return request(endpoint, data, vin, false);
+  }
+
+  private JSONObject request(String endpoint, Map<String, Object> data, String vin, boolean cleanup)
+      throws Exception {
     boolean read = isReadRequest(endpoint);
+    if (!cleanup) checkBackoff();
+    if (read && !cleanup) recoverBusyIfDue();
     if (read) ensureAuthenticated();
     if (!protocol.isLoggedIn()) throw new CloudProtocol.SessionExpiredException();
     try {
@@ -134,19 +198,51 @@ public final class CloudClient {
     long started = System.nanoTime();
     try {
       JSONObject result = await(cb -> protocol.postTokenSecure(endpoint, data, vin, cb));
+      // A request serial alone is not a successful status read. A repeated 1008
+      // from the result endpoint must retain its backoff history.
+      if (!endpoint.equals("/vehicleInfo/vehicle/vehicleRealTimeRequest")
+          && !endpoint.equals("/control/remoteControl")) clearBackoff();
       diagnostics.accept(
-          "API_OK", endpoint + " durationMs=" + (System.nanoTime() - started) / 1000000);
+          "API_OK",
+          "op=" + operation(endpoint) + " durationMs=" + (System.nanoTime() - started) / 1000000);
       return result;
     } catch (Exception e) {
       diagnostics.accept(
           "API_ERROR",
-          endpoint
+          "op="
+              + operation(endpoint)
               + " durationMs="
               + (System.nanoTime() - started) / 1000000
               + " "
               + e.getMessage());
+      if (e instanceof CloudProtocol.ServiceBusyException) throw busyResponse();
       throw e;
     }
+  }
+
+  static String operation(String endpoint) {
+    switch (endpoint) {
+      case "/app/account/getAllListByUserId":
+        return "vehicles";
+      case "/vehicle/vehicleswitch/getLatestConfig":
+        return "features";
+      case "/vehicleInfo/vehicle/vehicleRealTimeRequest":
+        return "status_request";
+      case "/vehicleInfo/vehicle/vehicleRealTimeResult":
+        return "status_result";
+      case "/control/remoteControl":
+        return "control_send";
+      case "/control/remoteControlResult":
+        return "control_result";
+      default:
+        return "other";
+    }
+  }
+
+  private void clearBackoff() {
+    busyFailures = 0;
+    busyRecoveryPending = false;
+    retryAt = 0;
   }
 
   public JSONArray vehicles() throws Exception {
@@ -215,17 +311,22 @@ public final class CloudClient {
 
   public void command(String vin, String pinHash, Command command, BooleanSupplier valid)
       throws Exception {
+    boolean cleanup = command == Command.CLIMATE_OFF;
+    if (!cleanup) checkBackoff();
     ensureAuthenticated();
     Map<String, Object> m = protocol.buildInnerBaseMap(vin, null);
     m.put("commandPwd", pinHash);
     m.put("commandType", command.wire);
     if (command == Command.CLIMATE_ON) m.put("controlParamsMap", climateParams().toString());
     if (!valid.getAsBoolean()) throw new Exception("설정 또는 거리 상태가 바뀌어 제어를 취소했습니다");
-    JSONObject r = request("/control/remoteControl", m, vin);
+    JSONObject r = request("/control/remoteControl", m, vin, cleanup);
     String serial = r.optString("requestSerial");
     for (int i = 0; i < 10; i++) {
       int state = resultState(r);
-      if (state == 1) return;
+      if (state == 1) {
+        clearBackoff();
+        return;
+      }
       if (state == -1) throw new Exception("차량에서 명령을 거부했습니다. 공유 권한과 제어 PIN을 확인하세요");
       if (serial.isEmpty()) break;
       Thread.sleep(1500);
@@ -233,7 +334,7 @@ public final class CloudClient {
       m.put("commandPwd", pinHash);
       m.put("commandType", command.wire);
       if (command == Command.CLIMATE_ON) m.put("controlParamsMap", climateParams().toString());
-      r = request("/control/remoteControlResult", m, vin);
+      r = request("/control/remoteControlResult", m, vin, cleanup);
     }
     throw new Exception("명령 결과 미확인. 재전송하지 않았습니다. 차량에서 직접 확인하세요");
   }

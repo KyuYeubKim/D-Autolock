@@ -108,6 +108,8 @@ public final class ProximityService extends Service {
           if (!scanning) return;
           long now = SystemClock.elapsedRealtime();
           boolean fresh = engine.fresh(now);
+          controller.averageRssi = fresh ? engine.rssi() : Double.NaN;
+          long cloudWait = controller.cloud.backoffMillis();
           controller.signal =
               engine.zone(now) + (fresh ? " · " + engine.raw() + " dBm" : " · — dBm");
           controller.signalStrength = fresh ? ProximityEngine.strength(engine.rssi()) : 0;
@@ -142,6 +144,9 @@ public final class ProximityService extends Service {
               (controller.autoEnabled ? "자동 제어 ON · " : "관찰 모드 · 자동 제어 OFF\n") + engine.reason(now);
           if (controller.autoEnabled) {
             if (autoAttempt) controller.autoDetail += "\n차량 상태 조회 / 명령 결과 확인 중";
+            else if (cloudWait > 0)
+              controller.autoDetail +=
+                  "\nBYD 1008 · 재확인까지 " + ((cloudWait + 999) / 1000) + "초 · 계정 유지";
             else if (nextPreflight > now)
               controller.autoDetail +=
                   "\n미전송 조건 재검토까지 " + ((nextPreflight - now + 999) / 1000) + "초";
@@ -156,6 +161,8 @@ public final class ProximityService extends Service {
                     + controller.autoEnabled
                     + " busy="
                     + controller.busy()
+                    + " cloudWaitMs="
+                    + cloudWait
                     + " "
                     + engine.reason(now));
             lastDiagnostic = now;
@@ -164,6 +171,7 @@ public final class ProximityService extends Service {
           ProximityEngine.Action action = engine.pending(now);
           if (controller.autoEnabled
               && !autoAttempt
+              && cloudWait == 0
               && now >= nextPreflight
               && action != ProximityEngine.Action.NONE) {
             CloudClient.Command command =
@@ -325,6 +333,7 @@ public final class ProximityService extends Service {
     controller.autoEnabled = false;
     controller.signal = "관찰 중지 · — dBm";
     controller.signalStrength = 0;
+    controller.averageRssi = Double.NaN;
     controller.signalDetail = "거리 관찰을 시작하면 신호를 표시합니다";
     controller.autoDetail = "자동 제어 꺼짐";
     controller.diagnostics.record("SCAN_STOP", "monitoring=false auto=false");

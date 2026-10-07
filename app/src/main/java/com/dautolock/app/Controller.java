@@ -34,6 +34,7 @@ final class Controller {
       autoDetail = "자동 제어 꺼짐",
       lastControl = "아직 제어 요청 없음";
   volatile int signalStrength = 0;
+  volatile double averageRssi = Double.NaN;
   volatile boolean initializing = true;
   private volatile long entryUntil, nextEntryCheck;
   private int entryTicket;
@@ -53,7 +54,7 @@ final class Controller {
     diagnostics = new DiagnosticLog(new java.io.File(context.getFilesDir(), "diagnostics"));
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.2.2 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.2.3 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -392,8 +393,11 @@ final class Controller {
               if (automatic
                   && command == CloudClient.Command.UNLOCK
                   && validSession(ticket, target)) armEntry(ticket, snapshot);
-              lastControl = command.label + " · 이미 요청한 상태";
-              note("이미 요청한 상태입니다");
+              lastControl = "BYD 조회상 이미 " + command.label + " 상태 · 명령 생략";
+              diagnostics.record(
+                  "CONTROL_SKIP_STATE",
+                  (automatic ? "AUTO " : "MANUAL ") + command + " source=cloud");
+              note(lastControl);
               if (lock)
                 closeWindowsAfterLock(
                     () ->
@@ -636,6 +640,7 @@ final class Controller {
     if (entryUntil == 0
         || now >= entryUntil
         || now < nextEntryCheck
+        || cloud.backoffMillis() > 0
         || !autoEnabled
         || !monitoring
         || !settings.getBoolean("autoReady", false)

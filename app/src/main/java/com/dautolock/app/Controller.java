@@ -37,6 +37,8 @@ final class Controller {
   volatile String climateStatus = "공조 · 아직 실행 없음",
       windowsStatus = "창문 · 아직 실행 없음",
       stopStatus = "자동 종료 · 아직 실행 없음";
+  volatile String readyStatus = "READY 진단 · 공조 시작 후 상태를 확인합니다";
+  private volatile ReadinessWatch readinessWatch;
   volatile int signalStrength = 0;
   volatile double averageRssi = Double.NaN;
   volatile boolean initializing = true;
@@ -59,7 +61,7 @@ final class Controller {
     diagnostics = new DiagnosticLog(new java.io.File(context.getFilesDir(), "diagnostics"));
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.2.4 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.2.5 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -383,7 +385,7 @@ final class Controller {
   }
 
   void command(CloudClient.Command command, boolean automatic, BooleanSupplier proximityValid) {
-    executeCommand(command, automatic, proximityValid, () -> true, () -> {}, () -> {});
+    executeCommand(command, automatic, proximityValid, () -> true, () -> {}, () -> {}, false);
   }
 
   boolean automaticCommand(
@@ -392,7 +394,17 @@ final class Controller {
       BooleanSupplier claim,
       Runnable alreadyDone,
       Runnable finished) {
-    return executeCommand(command, true, valid, claim, alreadyDone, finished);
+    return automaticCommand(command, valid, claim, alreadyDone, finished, true);
+  }
+
+  boolean automaticCommand(
+      CloudClient.Command command,
+      BooleanSupplier valid,
+      BooleanSupplier claim,
+      Runnable alreadyDone,
+      Runnable finished,
+      boolean departureConfirmed) {
+    return executeCommand(command, true, valid, claim, alreadyDone, finished, departureConfirmed);
   }
 
   private boolean executeCommand(
@@ -401,7 +413,8 @@ final class Controller {
       BooleanSupplier proximityValid,
       BooleanSupplier claim,
       Runnable alreadyDone,
-      Runnable finished) {
+      Runnable finished,
+      boolean departureConfirmed) {
     int ticket = generation.get();
     String target = vin;
     BooleanSupplier valid =
@@ -454,7 +467,8 @@ final class Controller {
                 afterLock(
                     () ->
                         validSession(ticket, target) && (!automatic || (monitoring && autoEnabled)),
-                    automatic);
+                    automatic,
+                    departureConfirmed);
               return;
             }
             if (!valid.getAsBoolean()) {
@@ -462,6 +476,7 @@ final class Controller {
               return;
             }
             long sentAt = System.currentTimeMillis();
+            if (stop) cancelReadinessWatch("차량 종료 요청");
             boolean wasClosed = Boolean.TRUE.equals(snapshot.doorsClosed);
             cloud.command(
                 target,
@@ -497,7 +512,8 @@ final class Controller {
             if (lock && verified)
               afterLock(
                   () -> validSession(ticket, target) && (!automatic || (monitoring && autoEnabled)),
-                  automatic);
+                  automatic,
+                  departureConfirmed);
             if (automatic
                 && command == CloudClient.Command.UNLOCK
                 && verified
@@ -556,6 +572,7 @@ final class Controller {
   }
 
   void stop() {
+    cancelReadinessWatch("거리 관찰 종료");
     generation.incrementAndGet();
     autoEnabled = false;
     entryUntil = 0;
@@ -642,10 +659,18 @@ final class Controller {
     return ticket == generation.get() && target.equals(vin);
   }
 
-  private void afterLock(BooleanSupplier valid, boolean automatic) {
+  private void afterLock(BooleanSupplier valid, boolean automatic, boolean departureConfirmed) {
+    cancelReadinessWatch("도어 잠금 처리");
     entryUntil = 0;
     closeWindowsAfterLock(valid);
-    if (automatic && settings.getBoolean("autoStop", true)) stopAfterLock(valid);
+    if (automatic && settings.getBoolean("autoStop", true)) {
+      if (departureConfirmed) stopAfterLock(valid);
+      else {
+        stopStatus = "자동 종료 보류 · BLE 끊김만으로 하차를 판단하지 않습니다";
+        diagnostics.record("AUTO_STOP_SKIP", "reason=signal_loss_only departureConfirmed=false");
+        note(stopStatus);
+      }
+    }
   }
 
   private void stopAfterLock(BooleanSupplier valid) {
@@ -740,7 +765,7 @@ final class Controller {
   void readyOption(boolean enabled) {
     settings.edit().putBoolean("autoReady", enabled).apply();
     entryUntil = 0;
-    note(enabled ? "문 열림 시 공조 2초 동작 켜짐 · 자동 해제 후 문 열림을 기다립니다" : "문 열림 공조 동작 꺼짐");
+    note(enabled ? "탑승 시 공조 시작 켜짐 · 자동 해제 후 문 열림을 기다립니다" : "탑승 시 공조 시작 꺼짐");
   }
 
   private void armEntry(int ticket, VehicleSnapshot s) {
@@ -782,16 +807,17 @@ final class Controller {
           if (!entryOpened || !Boolean.FALSE.equals(s.locked)) return;
           entryUntil = 0;
           try {
-            pulse(
+            startClimate(
                 () ->
                     validSession(ticket, target)
                         && autoEnabled
                         && monitoring
                         && settings.getBoolean("autoReady", false)
-                        && nearby.getAsBoolean());
+                        && nearby.getAsBoolean(),
+                s);
           } catch (Exception e) {
             climateStatus = "공조 연동 보류 · " + e.getMessage();
-            diagnostics.record("READY_BLOCK_OR_ERROR", e.getMessage());
+            diagnostics.record("CLIMATE_START_BLOCK_OR_ERROR", e.getMessage());
             throw e;
           }
         },
@@ -799,71 +825,211 @@ final class Controller {
         true);
   }
 
-  void manualPulse() {
+  void manualClimateStart() {
     int ticket = generation.get();
     String target = vin;
     run(
         () -> {
           try {
-            pulse(() -> validSession(ticket, target));
+            startClimate(() -> validSession(ticket, target), null);
           } catch (Exception e) {
             climateStatus = "공조 동작 보류 · " + e.getMessage();
-            diagnostics.record("READY_BLOCK_OR_ERROR", e.getMessage());
+            diagnostics.record("CLIMATE_START_BLOCK_OR_ERROR", e.getMessage());
             throw e;
           }
         });
   }
 
-  private void pulse(BooleanSupplier valid) throws Exception {
+  private void startClimate(BooleanSupplier valid, VehicleSnapshot entrySnapshot) throws Exception {
     requireVehicle();
     if (pinHash.isEmpty()) throw new Exception("제어 PIN이 필요합니다");
     if (!CloudClient.hasClimate(capabilities)) capabilities = cloud.capabilities(vin);
     if (!CloudClient.hasClimate(capabilities)) throw new Exception("이 차량의 공조 기능 지원을 확인하지 못했습니다");
-    observeSnapshot(cloud.snapshot(vin), true);
-    String block = snapshot.climateBlock(System.currentTimeMillis());
-    diagnostics.record("READY_PREFLIGHT", snapshot.diagnostic(System.currentTimeMillis()));
-    if (block != null) throw new Exception("공조 동작 보류: " + block);
+    String target = vin;
+    int ticket = generation.get();
+    long now = System.currentTimeMillis();
+    boolean reused =
+        entrySnapshot != null && entrySnapshot.fresh(now) && now - entrySnapshot.receivedAt <= 5000;
+    VehicleSnapshot checked = reused ? entrySnapshot : cloud.snapshot(target);
+    observeSnapshot(checked, true);
+    String block = checked.climateBlock(System.currentTimeMillis());
     diagnostics.record(
-        "READY_GUARD",
-        snapshot.epb == null
-            ? "basis=power_off_and_stationary epb=unknown"
-            : "basis=parking_brake_and_stationary");
-    if (snapshot.epb == null) note("주차브레이크 정보 미제공 · 전원 OFF·정차 확인 후 공조 요청");
-    final CloudClient client = cloud;
-    final String target = vin, code = pinHash;
-    note("공조 ON → 응답 확인 후 2초 대기 → OFF 진행 중");
+        "CLIMATE_START_PREFLIGHT",
+        "entrySnapshotReused=" + reused + " " + checked.diagnostic(System.currentTimeMillis()));
+    if (block != null) throw new Exception("공조 동작 보류: " + block);
+    AtomicBoolean sent = new AtomicBoolean();
+    long[] sentAt = {0};
+    note("공조 시작 요청 중 · 자동 OFF 없이 상태를 진단합니다");
     try {
-      ClimatePulse.run(
-          dispatched ->
-              client.command(
-                  target,
-                  code,
-                  CloudClient.Command.CLIMATE_ON,
-                  () -> {
-                    if (!valid.getAsBoolean()) return false;
-                    dispatched.run();
-                    diagnostics.record("READY_ON_SEND", "targetTemperatureC=23");
-                    return true;
-                  }),
-          () ->
-              client.command(
-                  target,
-                  code,
-                  CloudClient.Command.CLIMATE_OFF,
-                  () -> {
-                    diagnostics.record("READY_OFF_SEND", "cleanup=true");
-                    return true;
-                  }),
-          milliseconds -> {
-            diagnostics.record("READY_DELAY", "milliseconds=" + milliseconds);
-            Thread.sleep(milliseconds);
+      cloud.command(
+          target,
+          pinHash,
+          CloudClient.Command.CLIMATE_ON,
+          () -> {
+            if (!valid.getAsBoolean() || checked.climateBlock(System.currentTimeMillis()) != null)
+              return false;
+            sentAt[0] = System.currentTimeMillis();
+            sent.set(true);
+            diagnostics.record(
+                "CLIMATE_START_SEND", "command=OPENAIR targetTemperatureC=23 automaticOff=false");
+            return true;
           });
-      climateStatus = "공조 2초 ON/OFF 응답 완료 · READY/OK는 계기판에서 확인";
+      climateStatus = "공조 시작 응답 수신 · 자동 OFF 없음 · READY 별도 확인";
+      diagnostics.record("CLIMATE_START_RESULT", "ack=true physicalStateVerified=false");
       note(climateStatus);
     } catch (Exception e) {
-      climateStatus = "공조 2초 동작: " + e.getMessage();
+      climateStatus =
+          "공조 시작 " + (sent.get() ? "결과 미확인 · 자동 재전송·OFF 없음 · " : "보류 · ") + e.getMessage();
+      diagnostics.record(
+          "CLIMATE_START_RESULT", "dispatched=" + sent.get() + " ack=false automaticOff=false");
       note(climateStatus);
       throw e;
+    } finally {
+      if (sent.get() && validSession(ticket, target)) {
+        cancelReadinessWatch("새 공조 시작");
+        ReadinessWatch watch = new ReadinessWatch(ticket, target, sentAt[0]);
+        readinessWatch = watch;
+        readyStatus = "READY 진단 대기 · 공조 시작 후 약 2분 동안 5회 조회";
+        diagnostics.record(
+            "READY_WATCH_START", "samples=5 offsetsSeconds=0,15,30,60,120 readOnly=true");
+        main.post(watch);
+      }
+    }
+  }
+
+  private void cancelReadinessWatch(String reason) {
+    ReadinessWatch watch = readinessWatch;
+    if (watch != null) watch.finish(reason);
+  }
+
+  private final class ReadinessWatch implements Runnable {
+    final int ticket;
+    final String target;
+    final long started = SystemClock.elapsedRealtime();
+    final long[] offsets = {0, 15000, 30000, 60000, 120000};
+    final ReadyObservation observation;
+    int index, attempts, skipped;
+    String lastState = "아직 조회한 상태 없음";
+    boolean hvacUnavailable;
+
+    ReadinessWatch(int ticket, String target, long sentAt) {
+      this.ticket = ticket;
+      this.target = target;
+      observation = new ReadyObservation(sentAt);
+    }
+
+    boolean current() {
+      return readinessWatch == this && validSession(ticket, target);
+    }
+
+    void finish(String reason) {
+      if (readinessWatch != this) return;
+      readinessWatch = null;
+      main.removeCallbacks(this);
+      readyStatus = "READY 진단 종료 · " + reason + "\n" + observation.summary() + "\n" + lastState;
+      diagnostics.record(
+          "READY_WATCH_END",
+          "reason="
+              + reason
+              + " attempts="
+              + attempts
+              + " skipped="
+              + skipped
+              + " "
+              + observation.diagnostic());
+      changed();
+    }
+
+    @Override
+    public void run() {
+      if (readinessWatch != this) return;
+      if (!current()) {
+        finish("설정·계정 변경");
+        return;
+      }
+      long age = SystemClock.elapsedRealtime() - started;
+      if (index >= offsets.length || age > 150000) {
+        finish(index >= offsets.length ? "조회 일정 종료 · 연속 유지 보장은 아님" : "조회 시간 초과·일부 미확인");
+        return;
+      }
+      if (age < offsets[index]) {
+        main.postDelayed(this, offsets[index] - age);
+        return;
+      }
+      if (busy() || cloud.backoffMillis() > 0) {
+        main.postDelayed(this, 5000);
+        return;
+      }
+      boolean accepted =
+          Controller.this.run(
+              () -> {
+                if (!current()) return;
+                attempts++;
+                VehicleSnapshot observed = null;
+                String hvacLabel = "공조 상태 조회 미확인";
+                try {
+                  observed = cloud.snapshot(target);
+                  if (!current()) return;
+                  observeSnapshot(observed, true);
+                  observation.accept(observed, System.currentTimeMillis());
+                  diagnostics.record(
+                      "READY_OBSERVATION",
+                      "sample="
+                          + (index + 1)
+                          + " elapsedMs="
+                          + (SystemClock.elapsedRealtime() - started)
+                          + " "
+                          + observed.diagnostic(System.currentTimeMillis())
+                          + " "
+                          + observation.diagnostic());
+                } catch (Exception e) {
+                  observation.unavailable();
+                  diagnostics.record("READY_OBSERVATION_ERROR", e.getMessage());
+                }
+                if (!current()) return;
+                if (!hvacUnavailable && cloud.backoffMillis() == 0) {
+                  try {
+                    HvacSnapshot hvac = cloud.hvacSnapshot(target);
+                    if (!current()) return;
+                    hvacLabel = hvac.label(System.currentTimeMillis());
+                    diagnostics.record(
+                        "CLIMATE_OBSERVATION",
+                        "sample="
+                            + (index + 1)
+                            + " "
+                            + hvac.diagnostic(System.currentTimeMillis()));
+                  } catch (Exception e) {
+                    hvacUnavailable = true;
+                    diagnostics.record(
+                        "CLIMATE_OBSERVATION_ERROR", "furtherHvacQueries=false " + e.getMessage());
+                  }
+                }
+                if (!current()) return;
+                index++;
+                // Slow requests skip expired slots instead of issuing several catch-up queries in a
+                // burst.
+                long elapsed = SystemClock.elapsedRealtime() - started;
+                while (index < offsets.length && offsets[index] <= elapsed) {
+                  diagnostics.record(
+                      "READY_WATCH_SKIP", "slot=" + (index + 1) + " reason=delayed_previous_read");
+                  observation.unavailable();
+                  skipped++;
+                  index++;
+                }
+                lastState =
+                    (observed == null
+                            ? "전원 미확인"
+                            : "조회 전원 "
+                                + observed.powerLabel()
+                                + (observed.fresh(System.currentTimeMillis()) ? "" : " (오래된 값)"))
+                        + " · "
+                        + hvacLabel;
+                readyStatus =
+                    "READY 진단 " + attempts + "회 조회 · " + observation.summary() + "\n" + lastState;
+              },
+              () -> main.post(this),
+              true);
+      if (!accepted) main.postDelayed(this, 5000);
     }
   }
 }

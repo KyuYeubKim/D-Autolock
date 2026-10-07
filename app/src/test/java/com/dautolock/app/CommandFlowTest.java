@@ -19,6 +19,9 @@ public class CommandFlowTest {
     boolean locked;
     int power = 1;
     Object epb = "--";
+    boolean doorOpen, openOnUnlock, rejectClimate, rejectHvac;
+    Object okLight = JSONObject.NULL;
+    int statusRequests, hvacRequests;
     final List<String> commands = new ArrayList<>();
 
     Protocol() {
@@ -30,24 +33,45 @@ public class CommandFlowTest {
     public void postTokenSecure(
         String endpoint, Map<String, Object> data, String vin, BydApiCallback<JSONObject> cb) {
       try {
-        if (endpoint.endsWith("vehicleRealTimeRequest"))
+        if (endpoint.endsWith("vehicleRealTimeRequest")) {
+          statusRequests++;
           cb.onSuccess(new JSONObject().put("requestSerial", "status"));
-        else if (endpoint.endsWith("vehicleRealTimeResult")) {
+        } else if (endpoint.endsWith("getStatusNow")) {
+          hvacRequests++;
+          if (rejectHvac) {
+            cb.onError("이 차량에서 공조 조회 미지원", new Exception("unsupported"));
+            return;
+          }
+          cb.onSuccess(new JSONObject().put("status", 1).put("time", System.currentTimeMillis()));
+        } else if (endpoint.endsWith("vehicleRealTimeResult")) {
           JSONObject s =
               new JSONObject()
                   .put("time", System.currentTimeMillis())
                   .put("speed", 0)
                   .put("powerGear", power)
+                  .put("okLight", okLight)
                   .put("epb", epb);
           for (String side : new String[] {"leftFront", "rightFront", "leftRear", "rightRear"}) {
-            s.put(side + "Door", 0).put(side + "DoorLock", locked ? 2 : 1).put(side + "Window", 1);
+            s.put(side + "Door", doorOpen ? 1 : 0)
+                .put(side + "DoorLock", locked ? 2 : 1)
+                .put(side + "Window", 1);
           }
           cb.onSuccess(s);
         } else if (endpoint.endsWith("remoteControl")) {
           String command = String.valueOf(data.get("commandType"));
           commands.add(command);
           if (command.equals("LOCKDOOR")) locked = true;
-          if (command.equals("OPENDOOR")) locked = false;
+          if (command.equals("OPENDOOR")) {
+            locked = false;
+            if (openOnUnlock) doorOpen = true;
+          }
+          if (command.equals("OPENAIR")) {
+            power = 3;
+            if (rejectClimate) {
+              cb.onError("결과 미확인", new Exception("uncertain"));
+              return;
+            }
+          }
           if (command.equals("TURNOFFENGINE")) power = 1;
           cb.onSuccess(new JSONObject().put("controlState", 1));
         } else throw new AssertionError("Unexpected endpoint " + endpoint);
@@ -126,12 +150,101 @@ public class CommandFlowTest {
   }
 
   @Test
-  public void unavailableEpbOffVehicleReceivesOneClimateOnOffPair() throws Exception {
+  public void unavailableEpbOffVehicleReceivesStartOnlyAndReadOnlyDiagnostics() throws Exception {
     Protocol p = new Protocol();
     Controller c = create(p);
-    c.manualPulse();
+    c.manualClimateStart();
     complete(c);
-    assertEquals(Arrays.asList("OPENAIR", "CLOSEAIR"), p.commands);
-    assertTrue(c.climateStatus.contains("ON/OFF 응답 완료"));
+    assertEquals(Collections.singletonList("OPENAIR"), p.commands);
+    assertTrue(c.climateStatus.contains("자동 OFF 없음"));
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+    complete(c);
+    assertEquals(1, p.hvacRequests);
+    assertTrue(c.readyStatus.contains("READY 유지 미확인"));
+    assertTrue(c.readyStatus.contains("공조 서버 응답 ON"));
+    assertEquals(Collections.singletonList("OPENAIR"), p.commands);
+    c.stop();
+    int reads = p.statusRequests;
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofSeconds(130));
+    assertEquals(reads, p.statusRequests);
+  }
+
+  @Test
+  public void uncertainClimateStartNeverTriggersOffOrReplay() throws Exception {
+    Protocol p = new Protocol();
+    p.rejectClimate = true;
+    Controller c = create(p);
+    c.manualClimateStart();
+    complete(c);
+    assertEquals(Collections.singletonList("OPENAIR"), p.commands);
+    assertTrue(c.climateStatus.contains("결과 미확인"));
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+    complete(c);
+    assertTrue(p.hvacRequests > 0);
+    assertEquals(Collections.singletonList("OPENAIR"), p.commands);
+    c.stop();
+  }
+
+  @Test
+  public void automaticEntryReusesFreshDoorSnapshotAndStartsOnlyOnce() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    p.openOnUnlock = true;
+    Controller c = create(p);
+    c.settings.edit().putBoolean("autoReady", true).commit();
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+    complete(c);
+    assertTrue(c.pollEntry(() -> true));
+    complete(c);
+    assertEquals(Arrays.asList("OPENDOOR", "OPENAIR"), p.commands);
+    assertEquals(
+        3, p.statusRequests); // Unlock preflight/readback, then door observation; no duplicate
+    // preflight.
+    assertFalse(c.pollEntry(() -> true));
+    c.stop();
+  }
+
+  @Test
+  public void lossOnlyLockDoesNotTurnOffPoweredCarEvenWithBrake() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    p.epb = 1;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, false);
+    complete(c);
+    assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
+    assertTrue(c.stopStatus.contains("BLE 끊김"));
+  }
+
+  @Test
+  public void boundedWatchContinuesWithoutHvacAndDetectsOkDropWithoutCommands() throws Exception {
+    Protocol p = new Protocol();
+    p.rejectHvac = true;
+    p.okLight = 1;
+    Controller c = create(p);
+    c.manualClimateStart();
+    complete(c);
+    org.robolectric.shadows.ShadowLooper main =
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper());
+    int[] advance = {0, 15, 15, 30, 60};
+    for (int i = 0; i < advance.length; i++) {
+      if (i >= 2) {
+        p.okLight = 0;
+        p.power = 1;
+      }
+      main.idleFor(java.time.Duration.ofSeconds(advance[i]));
+      complete(c);
+      main.idle();
+    }
+    assertEquals(6, p.statusRequests); // One start preflight plus five scheduled observations.
+    assertEquals(1, p.hvacRequests); // Unsupported HVAC does not suppress power/OK observations.
+    assertTrue(c.readyStatus.contains("진단 종료"));
+    assertTrue(c.readyStatus.contains("1 → 0"));
+    assertEquals(Collections.singletonList("OPENAIR"), p.commands);
+    main.idleFor(java.time.Duration.ofMinutes(5));
+    assertEquals(6, p.statusRequests);
   }
 }

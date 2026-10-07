@@ -5,7 +5,7 @@ import org.json.JSONObject;
 
 /** Missing fields stay unknown. Power state is not transmission gear or READY. */
 public final class VehicleSnapshot {
-  public final Integer power, epb;
+  public final Integer power, epb, okLight;
   public final Double speed, battery;
   public final Boolean locked, doorsClosed, windowsClosed;
   public final long measuredAt, receivedAt;
@@ -15,6 +15,7 @@ public final class VehicleSnapshot {
   public VehicleSnapshot(JSONObject data, long receivedAt) {
     this.receivedAt = receivedAt;
     power = integer(data, "powerGear");
+    okLight = integer(data, "okLight");
     epb = integer(data, "epb");
     Object brake = data.opt("epb");
     boolean absentBrake = unavailableBrake(brake);
@@ -168,11 +169,22 @@ public final class VehicleSnapshot {
         : power == 1 ? "OFF" : power == 3 ? "ON · READY 별도 확인" : "미확인 (" + power + ")";
   }
 
+  /** A reported lamp value is diagnostic evidence, not authorization to drive. */
+  public String readyLabel(long now) {
+    if (!fresh(now)) return "READY 미확인 · 오래된 차량 상태";
+    if (okLight == null) return "READY 미확인 · OK 표시값 미제공";
+    if (okLight == 0) return "OK 표시값 OFF (0)";
+    if (okLight == 1 && Integer.valueOf(3).equals(power)) return "OK 표시값 ON (1) · 계기판 대조 필요";
+    return "READY 미확인 · OK 표시값과 전원 상태 대조 필요";
+  }
+
   public String diagnostic(long now) {
     return "speed="
         + speed
         + " power="
         + power
+        + " okLight="
+        + okLight
         + " epb="
         + epb
         + " epbStatus="

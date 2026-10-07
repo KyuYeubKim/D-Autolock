@@ -237,9 +237,10 @@ public class MainActivityTest {
       assertFalse(find(decor, "도어 잠금 해제").isEnabled());
       assertFalse(find(decor, "Stop · 차량 종료").isEnabled());
       assertFalse(((Switch) find(decor, "실제 자동 도어 제어")).isChecked());
-      assertNotNull(find(decor, "READY · 공조 2초 동작 연동"));
+      assertNotNull(find(decor, "탑승 공조 · READY 상태 진단"));
       assertNotNull(find(decor, "진단 로그 파일 저장"));
-      assertNotNull(find(decor, "자동 해제 후 문 열림 → 공조 2초"));
+      assertNotNull(find(decor, "탑승 시 공조 시작"));
+      assertNotNull(find(decor, "공조 시작"));
     }
   }
 

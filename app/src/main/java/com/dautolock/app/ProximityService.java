@@ -214,12 +214,19 @@ public final class ProximityService extends Service {
                               long completed = SystemClock.elapsedRealtime();
                               nextPreflight =
                                   engine.pending(completed) == action ? completed + 15000 : 0;
-                            }));
+                            }),
+                    engine.fresh(now));
             if (!accepted) {
               autoAttempt = false;
               checkedEngine.endCheck();
             } else
-              controller.diagnostics.record("AUTO_CHECK", action + " " + engine.diagnostic(now));
+              controller.diagnostics.record(
+                  "AUTO_CHECK",
+                  action
+                      + " source="
+                      + (engine.fresh(now) ? "signal" : "signal_loss")
+                      + " "
+                      + engine.diagnostic(now));
           }
           if (!autoAttempt && !controller.busy())
             controller.pollEntry(

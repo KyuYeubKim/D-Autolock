@@ -1,5 +1,6 @@
 package com.dautolock.app.api;
 
+import com.dautolock.app.core.HvacSnapshot;
 import com.dautolock.app.core.VehicleSnapshot;
 import java.util.*;
 import java.util.concurrent.*;
@@ -184,6 +185,7 @@ public final class CloudClient {
         || endpoint.equals("/vehicle/vehicleswitch/getLatestConfig")
         || endpoint.equals("/vehicleInfo/vehicle/vehicleRealTimeRequest")
         || endpoint.equals("/vehicleInfo/vehicle/vehicleRealTimeResult")
+        || endpoint.equals("/control/getStatusNow")
         || endpoint.equals("/control/remoteControlResult");
   }
 
@@ -222,6 +224,8 @@ public final class CloudClient {
 
   static String operation(String endpoint) {
     switch (endpoint) {
+      case "/control/getStatusNow":
+        return "hvac_status";
       case "/app/account/getAllListByUserId":
         return "vehicles";
       case "/vehicle/vehicleswitch/getLatestConfig":
@@ -274,6 +278,11 @@ public final class CloudClient {
       for (int i = 0; i < a.length(); i++) if (hasFeature(a.opt(i), id)) return true;
     }
     return false;
+  }
+
+  public HvacSnapshot hvacSnapshot(String vin) throws Exception {
+    JSONObject data = request("/control/getStatusNow", protocol.buildInnerBaseMap(vin, null), vin);
+    return new HvacSnapshot(data, System.currentTimeMillis());
   }
 
   public VehicleSnapshot snapshot(String vin) throws Exception {

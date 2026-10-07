@@ -30,7 +30,7 @@ public final class MainActivity extends Activity {
   private Controller controller;
   private LinearLayout body;
   private TextView vehicle, state, signal, message, account, device, capabilities, log;
-  private TextView signalDetails, autoDetails, autoReason, controlDetails;
+  private TextView signalDetails, autoDetails, autoReason, controlDetails, readyDetails;
   private SignalGauge signalGauge;
   private TextView updateStatus;
   private Button installUpdate;
@@ -133,7 +133,7 @@ public final class MainActivity extends Activity {
     scroll.addView(body);
     setContentView(scroll);
     text(body, "D-Autolock", 25, TEXT).setTypeface(null, Typeface.BOLD);
-    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.4", 12, MUTED);
+    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.5", 12, MUTED);
     LinearLayout alerts = card("알림 · 차량 상태");
     alerts.setTag("alertsCard");
     message = text(alerts, "", 17, TEXT);
@@ -147,10 +147,16 @@ public final class MainActivity extends Activity {
                         + "\n\n"
                         + controller.windowsStatus
                         + "\n\n"
-                        + controller.stopStatus)
+                        + controller.stopStatus
+                        + "\n\n"
+                        + controller.readyStatus)
                 .setPositiveButton("닫기", null)
                 .show());
     controlDetails.setContentDescription("최근 도어 상태. 누르면 공조·창문·전원 종료 결과를 표시합니다");
+    readyDetails = text(alerts, controller.readyStatus, 12, MUTED);
+    readyDetails.setMaxLines(2);
+    readyDetails.setEllipsize(android.text.TextUtils.TruncateAt.END);
+    readyDetails.setOnClickListener(v -> controlDetails.performClick());
     LinearLayout dash = card("BLE 신호 상태");
     dash.setTag("signalCard");
     signal = text(dash, "신호 대기", 20, MINT);
@@ -251,15 +257,15 @@ public final class MainActivity extends Activity {
     refresh = button(controls, "차량 상태 새로고침", v -> controller.refresh());
     button(
         secondaryRow,
-        "공조 2초 동작 · READY",
+        "공조 시작",
         v ->
             new AlertDialog.Builder(this)
-                .setTitle("공조 2초 동작")
+                .setTitle("공조 시작")
                 .setMessage(
-                    "P단 주차를 확인하세요. 23°C로 공조 ON 응답을 확인한 뒤 2초를 기다리고 OFF를 보냅니다. 통신 시간 때문에 실제 작동 시간은 더"
-                        + " 길 수 있습니다. 완료 후 계기판 READY/OK 표시를 확인하세요.")
+                    "P단 주차를 확인하세요. 23°C 공조 시작을 한 번 요청하고 자동 OFF 없이 유지합니다. 차량의 원격 공조 시간 제한이 적용됩니다."
+                        + " 이후 약 2분 동안 공조·전원·OK 표시값을 진단합니다. 실제 READY는 계기판에서 확인하세요.")
                 .setNegativeButton("취소", null)
-                .setPositiveButton("주차 확인 · 실행", (d, w) -> controller.manualPulse())
+                .setPositiveButton("주차 확인 · 시작", (d, w) -> controller.manualClimateStart())
                 .show());
     for (int i = 0; i < secondaryRow.getChildCount(); i++) {
       LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(56), 1);
@@ -286,7 +292,7 @@ public final class MainActivity extends Activity {
           }
         });
     Switch readySwitch = new Switch(this);
-    readySwitch.setText("자동 해제 후 문 열림 → 공조 2초");
+    readySwitch.setText("탑승 시 공조 시작");
     readySwitch.setTextColor(TEXT);
     readySwitch.setPadding(0, dp(12), 0, dp(12));
     readySwitch.setMinHeight(dp(56));
@@ -315,14 +321,16 @@ public final class MainActivity extends Activity {
         (b, on) -> controller.settings.edit().putBoolean("autoStop", on).apply());
     text(
         options,
-        "자동 종료는 최신 정차·잠금·도어 닫힘·주차브레이크 체결이 확인될 때 요청합니다. 전원 ON에서 주차브레이크 정보가 없으면 이유를 표시하고 보류합니다.",
+        "자동 종료는 신호로 이탈을 감지하고 최신 정차·잠금·도어 닫힘·주차브레이크 체결이 확인될 때 요청합니다. BLE 끊김만 감지했거나 주차브레이크 정보가 없으면"
+            + " 보류합니다.",
         13,
         MUTED);
-    text(options, "READY · 공조 2초 동작 연동", 16, 0xffffc77d);
+    text(options, "탑승 공조 · READY 상태 진단", 16, 0xffffc77d);
     text(
         options,
-        "사용자 차량에서 확인한 공조 ON/OFF 동작입니다. 자동 해제 후 90초 안의 문 닫힘→열림을 확인하면 실행합니다. 주차브레이크 정보가 없으면 최신 전원"
-            + " OFF·속도 0 상태에서만 요청합니다. READY 자체는 계기판에서 확인하세요.",
+        "자동 해제 후 90초 안에 문 닫힘→열림을 확인하면 공조를 시작합니다. 기존 2초 후 OFF는 제거했습니다. 종료는 차량에서 직접 조작하며 차량의 원격 공조 시간"
+            + " 제한이 적용됩니다. 주차브레이크 미제공 시 최신 전원 OFF·속도 0에서만 시작합니다. 전원 ON과 READY는 다르며, OK 표시값이 없으면"
+            + " 미확인으로 표시합니다.",
         13,
         MUTED);
     LinearLayout link = card("01  BYD AUTO 계정");
@@ -496,6 +504,7 @@ public final class MainActivity extends Activity {
     autoDetails.setText(controller.autoDetail);
     controlDetails.setText(controller.lastControl + "\n공조 · 창문 · 자동 종료 결과 보기 ›");
     message.setText(controller.message);
+    readyDetails.setText(controller.readyStatus);
     log.setText(controller.recentLog());
     updateStatus.setText(controller.updater.status);
     installUpdate.setEnabled(controller.updater.installReady && !controller.busy());

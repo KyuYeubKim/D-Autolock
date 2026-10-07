@@ -129,6 +129,119 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void approachReadIsSharedWithPendingUnlockAndConsumedWithoutDuplicatePreflight()
+      throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    assertTrue(c.prefetchUnlock(() -> true, () -> {}));
+    assertFalse(
+        c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {}));
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertFalse(c.prefetchUnlock(() -> true, () -> {}));
+    assertTrue(
+        c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {}));
+    complete(c);
+    assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
+    assertEquals(2, p.statusRequests); // Prefetch + readback; no extra query at qualification.
+  }
+
+  @Test
+  public void expiredPrefetchIsRequeriedAndNewPoweredStateBlocksUnlock() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.prefetchUnlock(() -> true, () -> {});
+    complete(c);
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(6));
+    p.power = 3;
+    c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+    complete(c);
+    assertEquals(2, p.statusRequests);
+    assertTrue(p.commands.isEmpty());
+    assertTrue(c.lastControl.contains("전원 OFF"));
+  }
+
+  @Test
+  public void leavingDuringPreparationDiscardsLateResultAndDoesNotSend() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    java.util.concurrent.atomic.AtomicBoolean approaching =
+        new java.util.concurrent.atomic.AtomicBoolean(true);
+    p.beforeStatus =
+        () -> {
+          approaching.set(false);
+          c.discardApproachPreflight();
+        };
+    c.prefetchUnlock(approaching::get, () -> {});
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    p.beforeStatus = () -> {};
+    c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+    complete(c);
+    assertEquals(3, p.statusRequests);
+    assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
+  }
+
+  @Test
+  public void automaticOffOnInvalidatesPreparedState() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.prefetchUnlock(() -> true, () -> {});
+    complete(c);
+    c.auto(false);
+    c.auto(true);
+    c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+    complete(c);
+    assertEquals(3, p.statusRequests);
+  }
+
+  @Test
+  public void manualUnlockAlwaysReadsFreshStateEvenWithPreparedObservation() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.prefetchUnlock(() -> true, () -> {});
+    complete(c);
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    complete(c);
+    assertEquals(3, p.statusRequests);
+  }
+
+  @Test
+  public void cachedObservationExpiringAtDispatchCannotSendUnlock() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.prefetchUnlock(() -> true, () -> {});
+    complete(c);
+    java.util.concurrent.atomic.AtomicInteger checks =
+        new java.util.concurrent.atomic.AtomicInteger();
+    c.automaticCommand(
+        CloudClient.Command.UNLOCK,
+        () -> {
+          if (checks.incrementAndGet() == 3)
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(6));
+          return true;
+        },
+        () -> true,
+        () -> {},
+        () -> {});
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertEquals(1, p.statusRequests);
+  }
+
+  @Test
   public void pairedLivePAllowsMissingBrakeStopAfterLockAndVerifiesOff() throws Exception {
     Protocol p = new Protocol();
     p.power = 3;

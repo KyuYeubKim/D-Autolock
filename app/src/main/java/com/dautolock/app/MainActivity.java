@@ -136,7 +136,7 @@ public final class MainActivity extends Activity {
     scroll.addView(body);
     setContentView(scroll);
     text(body, "D-Autolock", 25, TEXT).setTypeface(null, Typeface.BOLD);
-    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.7", 12, MUTED);
+    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.8", 12, MUTED);
     LinearLayout alerts = card("알림 · 차량 상태");
     alerts.setTag("alertsCard");
     message = text(alerts, "", 17, TEXT);

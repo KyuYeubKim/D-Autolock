@@ -24,6 +24,8 @@ final class Controller {
   private final Handler main = new Handler(Looper.getMainLooper());
   private final AtomicInteger generation = new AtomicInteger();
   private final AtomicBoolean busy = new AtomicBoolean();
+  private final UnlockPreflightCache unlockPreflight = new UnlockPreflightCache();
+  private volatile long nextApproachRead;
   volatile CloudClient cloud;
   volatile JSONArray vehicles = new JSONArray();
   volatile JSONObject capabilities = new JSONObject();
@@ -63,7 +65,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.2.7 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.2.8 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -376,6 +378,7 @@ final class Controller {
   }
 
   private void observeSnapshot(VehicleSnapshot next, boolean announce) {
+    unlockPreflight.observed();
     VehicleSnapshot previous = snapshot;
     snapshot = next;
     if (announce
@@ -436,8 +439,83 @@ final class Controller {
       Runnable alreadyDone,
       Runnable finished,
       BooleanSupplier departureConfirmed) {
+    return automaticCommand(
+        command,
+        valid,
+        claim,
+        alreadyDone,
+        finished,
+        departureConfirmed,
+        SystemClock.elapsedRealtime());
+  }
+
+  boolean automaticCommand(
+      CloudClient.Command command,
+      BooleanSupplier valid,
+      BooleanSupplier claim,
+      Runnable alreadyDone,
+      Runnable finished,
+      BooleanSupplier departureConfirmed,
+      long readyAt) {
     return executeCommand(
-        command, true, valid, claim, alreadyDone, finished, departureConfirmed, -1);
+        command, true, valid, claim, alreadyDone, finished, departureConfirmed, -1, readyAt);
+  }
+
+  void discardApproachPreflight() {
+    unlockPreflight.invalidate();
+  }
+
+  /** Read-only preparation shares the serial cloud executor and its authentication/backoff. */
+  boolean prefetchUnlock(BooleanSupplier approaching, Runnable finished) {
+    long now = SystemClock.elapsedRealtime();
+    int ticket = generation.get();
+    String target = vin;
+    BooleanSupplier valid =
+        () ->
+            validSession(ticket, target) && monitoring && autoEnabled && approaching.getAsBoolean();
+    if (initializing
+        || target.isEmpty()
+        || !valid.getAsBoolean()
+        || cloud.backoffMillis() > 0
+        || now < nextApproachRead
+        || unlockPreflight.available(ticket, target, now, System.currentTimeMillis())) return false;
+    long revision = unlockPreflight.revision();
+    return run(
+        () -> {
+          if (!valid.getAsBoolean()) return;
+          nextApproachRead = SystemClock.elapsedRealtime() + 15000;
+          long started = SystemClock.elapsedRealtime();
+          diagnostics.record("APPROACH_PREFETCH_START", "readOnly=true minIntervalMs=15000");
+          try {
+            requireVehicle();
+            if (!valid.getAsBoolean()) return;
+            VehicleSnapshot state = cloud.snapshot(target);
+            if (!valid.getAsBoolean()) {
+              diagnostics.record(
+                  "APPROACH_PREFETCH_DISCARD", "reason=signal_or_configuration_changed");
+              return;
+            }
+            observeSnapshot(state, false);
+            long received = SystemClock.elapsedRealtime();
+            boolean stored =
+                unlockPreflight.offer(
+                    revision, ticket, target, state, received, System.currentTimeMillis());
+            diagnostics.record(
+                "APPROACH_PREFETCH_RESULT",
+                "durationMs="
+                    + (received - started)
+                    + " reusable="
+                    + stored
+                    + " "
+                    + state.diagnostic(System.currentTimeMillis()));
+          } catch (Exception e) {
+            diagnostics.record(
+                "APPROACH_PREFETCH_ERROR",
+                "durationMs=" + (SystemClock.elapsedRealtime() - started) + " " + e.getMessage());
+          }
+        },
+        finished,
+        true);
   }
 
   private boolean parkingConfirmationCurrent(long confirmedAt) {
@@ -478,6 +556,28 @@ final class Controller {
       Runnable finished,
       BooleanSupplier departureConfirmed,
       long parkingConfirmedAt) {
+    return executeCommand(
+        command,
+        automatic,
+        proximityValid,
+        claim,
+        alreadyDone,
+        finished,
+        departureConfirmed,
+        parkingConfirmedAt,
+        SystemClock.elapsedRealtime());
+  }
+
+  private boolean executeCommand(
+      CloudClient.Command command,
+      boolean automatic,
+      BooleanSupplier proximityValid,
+      BooleanSupplier claim,
+      Runnable alreadyDone,
+      Runnable finished,
+      BooleanSupplier departureConfirmed,
+      long parkingConfirmedAt,
+      long readyAt) {
     int ticket = generation.get();
     String target = vin;
     BooleanSupplier valid =
@@ -490,6 +590,7 @@ final class Controller {
         () -> {
           AtomicBoolean dispatched = new AtomicBoolean();
           try {
+            if (!automatic || command != CloudClient.Command.UNLOCK) discardApproachPreflight();
             requireVehicle();
             if (pinHash.isEmpty()) throw new Exception("제어 PIN이 없습니다. 다시 로그인하세요");
             if (!valid.getAsBoolean()) return;
@@ -497,9 +598,24 @@ final class Controller {
               capabilities = cloud.capabilities(target);
             if (!CloudClient.hasFeature(capabilities, command.feature))
               throw new Exception("이 차량의 " + command.label + " 지원을 확인하지 못했습니다. 상태를 새로고침하세요");
-            note(command.label + " 전 차량 상태 확인 중…");
+            long preflightAt = SystemClock.elapsedRealtime();
+            UnlockPreflightCache.Entry prepared =
+                automatic && command == CloudClient.Command.UNLOCK
+                    ? unlockPreflight.take(ticket, target, preflightAt, System.currentTimeMillis())
+                    : null;
+            boolean reused = prepared != null;
+            note(command.label + (reused ? " · 접근 중 조회한 최신 상태 사용" : " 전 차량 상태 확인 중…"));
             lastControl = (automatic ? "자동 " : "수동 ") + command.label + " · 상태 확인 중";
-            observeSnapshot(cloud.snapshot(vin), true);
+            observeSnapshot(reused ? prepared.state : cloud.snapshot(target), true);
+            diagnostics.record(
+                "PREFLIGHT_TIMING",
+                command
+                    + " source="
+                    + (reused ? "approach_prefetch" : "fresh_query")
+                    + " durationMs="
+                    + (SystemClock.elapsedRealtime() - preflightAt)
+                    + " readyToPreflightMs="
+                    + (SystemClock.elapsedRealtime() - readyAt));
             diagnostics.record(
                 "PREFLIGHT",
                 (automatic ? "AUTO " : "MANUAL ")
@@ -551,6 +667,12 @@ final class Controller {
                 command,
                 () -> {
                   if (!valid.getAsBoolean()) return false;
+                  if (prepared != null
+                      && !prepared.usable(
+                          SystemClock.elapsedRealtime(), System.currentTimeMillis())) {
+                    diagnostics.record("CONTROL_RECHECK_BLOCK", "접근 사전 조회 만료 · 새 조회 필요");
+                    return false;
+                  }
                   String dispatchBlock =
                       controlBlock(
                           checked,
@@ -575,6 +697,13 @@ final class Controller {
                     diagnostics.record(
                         "STOP_GUARD", "basis=one_use_manual_parking_confirmation epb=unavailable");
                   diagnostics.record("CONTROL_SEND", (automatic ? "AUTO " : "MANUAL ") + command);
+                  diagnostics.record(
+                      "CONTROL_TIMING",
+                      command
+                          + " readyToSendMs="
+                          + (SystemClock.elapsedRealtime() - readyAt)
+                          + " preflightSource="
+                          + (reused ? "approach_prefetch" : "fresh_query"));
                   dispatched.set(true);
                   lastControl = command.label + " · 전송 중";
                   changed();
@@ -668,6 +797,7 @@ final class Controller {
   void stop() {
     cancelReadinessWatch("거리 관찰 종료");
     generation.incrementAndGet();
+    discardApproachPreflight();
     autoEnabled = false;
     entryUntil = 0;
     monitoring = false;
@@ -683,6 +813,7 @@ final class Controller {
       return;
     }
     generation.incrementAndGet();
+    discardApproachPreflight();
     autoEnabled = enabled;
     entryUntil = 0;
     note(
@@ -711,6 +842,7 @@ final class Controller {
     boolean resume = monitoring || settings.getBoolean("autoStart", true);
     boolean automatic = autoEnabled || settings.getBoolean("autoStart", true);
     generation.incrementAndGet();
+    discardApproachPreflight();
     entryUntil = 0;
     settings
         .edit()

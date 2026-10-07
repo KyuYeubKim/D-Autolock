@@ -18,7 +18,7 @@ public final class ProximityEngine {
   private final int near, far;
   private final long nearDwellMs, farDwellMs, lossLockMs;
   private double smoothed = Double.NaN;
-  private int raw, samples;
+  private int raw, samples, freshSamples;
   private long lastSample = -1, since = -1, lastDispatch = -COOLDOWN_MS, received;
   private Zone candidate = Zone.UNKNOWN, stable = Zone.UNKNOWN, handled = Zone.UNKNOWN;
   private boolean seenNear;
@@ -62,10 +62,12 @@ public final class ProximityEngine {
       stable = Zone.UNKNOWN;
       since = -1;
       samples = 0;
+      freshSamples = 0;
     }
     lastSample = now;
     raw = rssi;
     received++;
+    freshSamples++;
     smoothed = Double.isNaN(smoothed) ? rssi : .3 * rssi + .7 * smoothed;
     if (smoothed < near - 4) unlockCheckUntil = -1;
     Zone next = smoothed >= near ? Zone.NEAR : smoothed <= far ? Zone.FAR : Zone.UNKNOWN;
@@ -108,6 +110,15 @@ public final class ProximityEngine {
 
   public synchronized long cooldown(long now) {
     return Math.max(0, COOLDOWN_MS - (now - lastDispatch));
+  }
+
+  /** Start read-only preparation before the unlock threshold, never relax that threshold. */
+  public synchronized boolean approaching(long now) {
+    return fresh(now)
+        && freshSamples >= 4
+        && handled != Zone.NEAR
+        && cooldown(now) == 0
+        && smoothed >= Math.max(near - 8, far + 1);
   }
 
   public synchronized Action pending(long now) {

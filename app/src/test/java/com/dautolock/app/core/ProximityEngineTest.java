@@ -7,6 +7,37 @@ import org.junit.Test;
 
 public class ProximityEngineTest {
   @Test
+  public void preparationStartsBeforeUnlockButDoesNotRelaxUnlockThreshold() {
+    ProximityEngine e = new ProximityEngine(-65, -80, 1000, 2000, 10000);
+    e.sample(-72, 0);
+    e.sample(-72, 100);
+    e.sample(-72, 200);
+    assertFalse(e.approaching(200));
+    e.sample(-72, 300);
+    assertTrue(e.approaching(300));
+    assertEquals(NONE, e.pending(300));
+    e.sample(-40, 400); // Crosses threshold; preparation must survive candidate counter reset.
+    assertTrue(e.approaching(400));
+    assertEquals(NONE, e.pending(400));
+    for (int t = 500; t <= 1500; t += 100) e.sample(-40, t);
+    assertEquals(UNLOCK, e.pending(1500));
+    e.claim(UNLOCK, 1500);
+    assertFalse(e.approaching(1500));
+    e.sample(-72, 17000);
+    assertFalse(e.approaching(17000)); // A gap needs four new observations.
+  }
+
+  @Test
+  public void preparationNeverRunsInFarZoneOrWithoutFreshSignal() {
+    ProximityEngine e = new ProximityEngine(-65, -73, 0, 0, 10000);
+    feed(e, -73, 0, 5000);
+    assertFalse(e.approaching(5000));
+    feed(e, -70, 6000, 9000);
+    assertTrue(e.approaching(9000));
+    assertFalse(e.approaching(15000));
+  }
+
+  @Test
   public void departureEvidenceSurvivesClaimButExpiresWithLossOrReturn() {
     ProximityEngine e = new ProximityEngine(-60, -80, 0, 1000, 10000);
     feed(e, -50, 0, 3000);

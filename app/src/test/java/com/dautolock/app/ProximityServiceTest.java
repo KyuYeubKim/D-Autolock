@@ -15,6 +15,66 @@ import org.robolectric.annotation.Config;
 @Config(sdk = 34)
 public class ProximityServiceTest {
   @Test
+  public void fourthBleResultStartsUnlockBeforeNextTimerOrUiHeartbeat() throws Exception {
+    DApplication app = (DApplication) RuntimeEnvironment.getApplication();
+    Controller c = app.controller();
+    AccountPersistenceTest.await(c);
+    Shadows.shadowOf(app)
+        .grantPermissions(
+            Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT);
+    BluetoothAdapter adapter = app.getSystemService(BluetoothManager.class).getAdapter();
+    Shadows.shadowOf(adapter).setState(BluetoothAdapter.STATE_ON);
+    c.settings
+        .edit()
+        .putString("address", "AA:BB:CC:DD:EE:FF")
+        .putInt("nearWaitSeconds", 0)
+        .commit();
+    org.robolectric.android.controller.ServiceController<ProximityService> lifecycle =
+        Robolectric.buildService(ProximityService.class).create();
+    ProximityService service = lifecycle.get();
+    service.onStartCommand(new Intent(app, ProximityService.class), 0, 1);
+    Shadows.shadowOf(Looper.getMainLooper()).idle();
+    CommandFlowTest.Protocol protocol = new CommandFlowTest.Protocol();
+    protocol.locked = true;
+    c.cloud = new com.dautolock.app.api.CloudClient(protocol);
+    c.vin = "test-car";
+    c.pinHash = "test-pin";
+    c.capabilities = new org.json.JSONObject().put("functionNo", "1006");
+    c.autoEnabled = true;
+    java.lang.reflect.Field callbackField = ProximityService.class.getDeclaredField("callback");
+    callbackField.setAccessible(true);
+    android.bluetooth.le.ScanCallback callback =
+        (android.bluetooth.le.ScanCallback) callbackField.get(service);
+    for (int i = 0; i < 4; i++) {
+      org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(10));
+      callback.onScanResult(
+          1,
+          new android.bluetooth.le.ScanResult(
+              adapter.getRemoteDevice("AA:BB:CC:DD:EE:FF"),
+              null,
+              -50,
+              android.os.SystemClock.elapsedRealtimeNanos()));
+      Shadows.shadowOf(Looper.getMainLooper()).idle();
+      if (i < 3) assertFalse(c.busy());
+    }
+    assertTrue(c.busy()); // Only 40 ms elapsed, before the 250 ms or 1 s timers.
+    AccountPersistenceTest.await(c);
+    assertEquals(java.util.Collections.singletonList("OPENDOOR"), protocol.commands);
+    // More samples in the same near zone must not create another unlock.
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(10));
+    callback.onScanResult(
+        1,
+        new android.bluetooth.le.ScanResult(
+            adapter.getRemoteDevice("AA:BB:CC:DD:EE:FF"),
+            null,
+            -50,
+            android.os.SystemClock.elapsedRealtimeNanos()));
+    Shadows.shadowOf(Looper.getMainLooper()).idle();
+    assertFalse(c.busy());
+    lifecycle.destroy();
+  }
+
+  @Test
   public void serviceReconfiguresWithoutTurningOffRequestedAutomaticMode() throws Exception {
     DApplication app = (DApplication) RuntimeEnvironment.getApplication();
     Controller c = app.controller();

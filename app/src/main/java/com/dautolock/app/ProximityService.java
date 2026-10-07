@@ -15,7 +15,7 @@ import java.util.*;
 public final class ProximityService extends Service {
   private Controller controller;
   private BluetoothLeScanner scanner;
-  private ProximityEngine engine;
+  private volatile ProximityEngine engine;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private volatile boolean scanning;
   private boolean autoAttempt;
@@ -181,56 +181,7 @@ public final class ProximityService extends Service {
             lastDiagnostic = now;
             lastCount = engine.count();
           }
-          ProximityEngine.Action action = engine.pending(now);
-          if (controller.autoEnabled
-              && !autoAttempt
-              && cloudWait == 0
-              && now >= nextPreflight
-              && action != ProximityEngine.Action.NONE) {
-            CloudClient.Command command =
-                action == ProximityEngine.Action.UNLOCK
-                    ? CloudClient.Command.UNLOCK
-                    : CloudClient.Command.LOCK;
-            autoAttempt = true;
-            final ProximityEngine checkedEngine = engine;
-            checkedEngine.beginCheck(action, now);
-            boolean accepted =
-                controller.automaticCommand(
-                    command,
-                    () ->
-                        scanning
-                            && engine == checkedEngine
-                            && checkedEngine.stillValid(action, SystemClock.elapsedRealtime()),
-                    () ->
-                        scanning
-                            && engine == checkedEngine
-                            && checkedEngine.claim(action, SystemClock.elapsedRealtime()),
-                    () -> checkedEngine.alreadySatisfied(action, SystemClock.elapsedRealtime()),
-                    () ->
-                        handler.post(
-                            () -> {
-                              autoAttempt = false;
-                              checkedEngine.endCheck();
-                              long completed = SystemClock.elapsedRealtime();
-                              nextPreflight =
-                                  engine.pending(completed) == action ? completed + 15000 : 0;
-                            }),
-                    () ->
-                        scanning
-                            && engine == checkedEngine
-                            && checkedEngine.departureConfirmed(SystemClock.elapsedRealtime()));
-            if (!accepted) {
-              autoAttempt = false;
-              checkedEngine.endCheck();
-            } else
-              controller.diagnostics.record(
-                  "AUTO_CHECK",
-                  action
-                      + " source="
-                      + (engine.fresh(now) ? "signal" : "signal_loss")
-                      + " "
-                      + engine.diagnostic(now));
-          }
+          evaluate();
           if (!autoAttempt && !controller.busy())
             controller.pollEntry(
                 () ->
@@ -242,7 +193,111 @@ public final class ProximityService extends Service {
         }
       };
 
+  private ProximityEngine.Action readyAction = ProximityEngine.Action.NONE;
+  private long readyAt;
+  private final Runnable decisionTick =
+      new Runnable() {
+        @Override
+        public void run() {
+          if (!scanning) return;
+          evaluate();
+          handler.postDelayed(this, 250);
+        }
+      };
+
+  /** Main-thread decisions: each BLE result immediately, with a timer for loss/busy recovery. */
+  private void evaluate() {
+    if (!scanning || engine == null) return;
+    long now = SystemClock.elapsedRealtime();
+    if (!controller.autoEnabled) {
+      readyAction = ProximityEngine.Action.NONE;
+      controller.discardApproachPreflight();
+      return;
+    }
+    if (!engine.approaching(now)) controller.discardApproachPreflight();
+    long cloudWait = controller.cloud.backoffMillis();
+    ProximityEngine.Action pending = engine.pending(now);
+    if (pending != readyAction) {
+      readyAction = pending;
+      readyAt = now;
+      if (pending != ProximityEngine.Action.NONE)
+        controller.diagnostics.record("PROXIMITY_READY", pending + " " + engine.diagnostic(now));
+    }
+    ProximityEngine.Action action = pending;
+    if (controller.autoEnabled
+        && !autoAttempt
+        && cloudWait == 0
+        && now >= nextPreflight
+        && action != ProximityEngine.Action.NONE) {
+      CloudClient.Command command =
+          action == ProximityEngine.Action.UNLOCK
+              ? CloudClient.Command.UNLOCK
+              : CloudClient.Command.LOCK;
+      autoAttempt = true;
+      final ProximityEngine checkedEngine = engine;
+      checkedEngine.beginCheck(action, now);
+      boolean accepted =
+          controller.automaticCommand(
+              command,
+              () ->
+                  scanning
+                      && engine == checkedEngine
+                      && checkedEngine.stillValid(action, SystemClock.elapsedRealtime()),
+              () ->
+                  scanning
+                      && engine == checkedEngine
+                      && checkedEngine.claim(action, SystemClock.elapsedRealtime()),
+              () -> checkedEngine.alreadySatisfied(action, SystemClock.elapsedRealtime()),
+              () ->
+                  handler.post(
+                      () -> {
+                        autoAttempt = false;
+                        checkedEngine.endCheck();
+                        long completed = SystemClock.elapsedRealtime();
+                        nextPreflight =
+                            engine == checkedEngine && engine.pending(completed) == action
+                                ? completed + 15000
+                                : 0;
+                        evaluate();
+                      }),
+              () ->
+                  scanning
+                      && engine == checkedEngine
+                      && checkedEngine.departureConfirmed(SystemClock.elapsedRealtime()),
+              readyAt);
+      if (!accepted) {
+        autoAttempt = false;
+        checkedEngine.endCheck();
+      } else
+        controller.diagnostics.record(
+            "AUTO_CHECK",
+            action
+                + " source="
+                + (engine.fresh(now) ? "signal" : "signal_loss")
+                + " "
+                + engine.diagnostic(now));
+    }
+    if (!autoAttempt
+        && pending == ProximityEngine.Action.NONE
+        && cloudWait == 0
+        && now >= nextPreflight
+        && !controller.busy()
+        && engine.approaching(now)) {
+      ProximityEngine preparingEngine = engine;
+      controller.prefetchUnlock(
+          () ->
+              scanning
+                  && engine == preparingEngine
+                  && preparingEngine.approaching(SystemClock.elapsedRealtime()),
+          () -> handler.post(this::evaluate));
+    }
+  }
+
   private void accept(ScanResult result) {
+    if (Looper.myLooper() != handler.getLooper()) {
+      handler.post(() -> accept(result));
+      return;
+    }
     if (!scanning || engine == null) return;
     long now = SystemClock.elapsedRealtime(), sampleAt = result.getTimestampNanos() / 1000000;
     if (now - sampleAt > 3000 || sampleAt > now) {
@@ -253,6 +308,7 @@ public final class ProximityService extends Service {
       return;
     }
     engine.sample(result.getRssi(), sampleAt);
+    evaluate();
   }
 
   @Override
@@ -276,6 +332,8 @@ public final class ProximityService extends Service {
         intent != null && intent.getBooleanExtra("automatic", false) && controller.setupReady();
     if (scanning) {
       if (intent != null && "RECONFIGURE".equals(intent.getAction())) {
+        controller.discardApproachPreflight();
+        readyAction = ProximityEngine.Action.NONE;
         engine = controller.proximityEngine();
         nextPreflight = 0;
         started = SystemClock.elapsedRealtime();
@@ -345,9 +403,10 @@ public final class ProximityService extends Service {
               + controller.settings.getBoolean("closeWindows", true)
               + " stop="
               + controller.settings.getBoolean("autoStop", true));
-      controller.note("관찰 시작 · 1초마다 신호와 판단 상태를 표시하고 진단 로그에 저장합니다");
+      controller.note("관찰 시작 · 신호 수신 즉시 판단 / 접근 중 상태 미리 조회 / 화면·로그 1초 갱신");
       controller.prepareMonitoring();
       handler.post(heartbeat);
+      handler.post(decisionTick);
     } catch (Exception e) {
       controller.note(e.getMessage() == null ? "거리 관찰을 시작하지 못했습니다" : e.getMessage());
       stopSelf();
@@ -358,6 +417,7 @@ public final class ProximityService extends Service {
   @Override
   public void onDestroy() {
     scanning = false;
+    controller.discardApproachPreflight();
     handler.removeCallbacksAndMessages(null);
     if (scanner != null)
       try {

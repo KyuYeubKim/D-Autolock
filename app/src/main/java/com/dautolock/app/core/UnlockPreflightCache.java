@@ -6,11 +6,13 @@ public final class UnlockPreflightCache {
 
   public static final class Entry {
     public final VehicleSnapshot state;
+    public final String source;
     private final long receivedElapsed;
 
-    private Entry(VehicleSnapshot state, long receivedElapsed) {
+    private Entry(VehicleSnapshot state, long receivedElapsed, String source) {
       this.state = state;
       this.receivedElapsed = receivedElapsed;
+      this.source = source;
     }
 
     public boolean usable(long elapsed, long wall) {
@@ -54,9 +56,20 @@ public final class UnlockPreflightCache {
       VehicleSnapshot state,
       long elapsed,
       long wall) {
+    return offer(expectedRevision, session, vehicle, state, elapsed, wall, "approach_prefetch");
+  }
+
+  public synchronized boolean offer(
+      long expectedRevision,
+      int session,
+      String vehicle,
+      VehicleSnapshot state,
+      long elapsed,
+      long wall,
+      String source) {
     if (revision != expectedRevision) return false;
     entry = null;
-    Entry proposed = new Entry(state, elapsed);
+    Entry proposed = new Entry(state, elapsed, source);
     if (!proposed.usable(elapsed, wall)) return false;
     this.session = session;
     this.vehicle = vehicle;

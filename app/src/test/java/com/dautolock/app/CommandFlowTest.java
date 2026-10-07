@@ -15,6 +15,54 @@ import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 34)
 public class CommandFlowTest {
+  @Test
+  public void savingSensitivityRefreshesAutomaticallyAndReusesNewerReadback() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    c.settings.edit().putBoolean("autoStart", false).commit();
+    c.thresholds(-65, -80, 1, 2, 10);
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofMillis(750));
+    complete(c);
+    assertEquals(1, p.statusRequests);
+    assertNotNull(c.snapshot);
+    c.refreshStatusWhenNeeded();
+    assertEquals(1, p.statusRequests);
+    assertTrue(p.commands.isEmpty());
+  }
+
+  @Test
+  public void refreshQueuedDuringCommandUsesItsReadbackInsteadOfSendingAnotherQuery()
+      throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    c.requestStatusRefresh("settings");
+    complete(c);
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofSeconds(1));
+    assertFalse(c.busy());
+    assertEquals(2, p.statusRequests);
+    assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
+  }
+
+  @Test
+  public void statusRefreshInProgressCanSupplyAutomaticUnlockPreflight() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.requestStatusRefresh("foreground");
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofMillis(750));
+    complete(c);
+    c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+    complete(c);
+    assertEquals(2, p.statusRequests);
+    assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
+  }
+
   static class Protocol extends CloudProtocol {
     boolean locked;
     int power = 1;

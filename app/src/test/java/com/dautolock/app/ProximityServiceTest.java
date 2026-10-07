@@ -84,7 +84,11 @@ public class ProximityServiceTest {
             Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT);
     Shadows.shadowOf(app.getSystemService(BluetoothManager.class).getAdapter())
         .setState(BluetoothAdapter.STATE_ON);
-    c.settings.edit().putString("address", "AA:BB:CC:DD:EE:FF").commit();
+    c.settings
+        .edit()
+        .putBoolean("setupRequired", false)
+        .putString("address", "AA:BB:CC:DD:EE:FF")
+        .commit();
     com.dautolock.app.api.CloudProtocol p =
         new com.dautolock.app.api.CloudProtocol(com.dautolock.app.api.BydConfig.fromRegion("KR")) {
           @Override
@@ -131,7 +135,11 @@ public class ProximityServiceTest {
             Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT);
     Shadows.shadowOf(app.getSystemService(BluetoothManager.class).getAdapter())
         .setState(BluetoothAdapter.STATE_ON);
-    c.settings.edit().putString("address", "AA:BB:CC:DD:EE:FF").commit();
+    c.settings
+        .edit()
+        .putBoolean("setupRequired", false)
+        .putString("address", "AA:BB:CC:DD:EE:FF")
+        .commit();
     java.util.concurrent.atomic.AtomicInteger requests =
         new java.util.concurrent.atomic.AtomicInteger();
     com.dautolock.app.api.CloudProtocol protocol =
@@ -184,7 +192,11 @@ public class ProximityServiceTest {
             Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT);
     BluetoothAdapter adapter = app.getSystemService(BluetoothManager.class).getAdapter();
     Shadows.shadowOf(adapter).setState(BluetoothAdapter.STATE_ON);
-    c.settings.edit().putString("address", "AA:BB:CC:DD:EE:FF").commit();
+    c.settings
+        .edit()
+        .putBoolean("setupRequired", false)
+        .putString("address", "AA:BB:CC:DD:EE:FF")
+        .commit();
     org.robolectric.android.controller.ServiceController<ProximityService> lifecycle =
         Robolectric.buildService(ProximityService.class).create();
     ProximityService service = lifecycle.get();

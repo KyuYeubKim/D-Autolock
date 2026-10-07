@@ -36,14 +36,7 @@ public final class VehicleSnapshot {
             1);
     // A physical door close code is intentionally NOT guessed across firmware versions.
     doorsClosed = physicalDoors(data);
-    windowsClosed =
-        aggregate(
-            data,
-            new String[] {
-              "leftFrontWindow", "rightFrontWindow", "leftRearWindow", "rightRearWindow"
-            },
-            1,
-            2);
+    windowsClosed = windows(data);
     measuredAt =
         timestamp(
             data.has("timeStamp")
@@ -60,6 +53,16 @@ public final class VehicleSnapshot {
         || text.equalsIgnoreCase("NaN")
         || text.equals("-1")
         || text.equals("-1.0");
+  }
+
+  private static Boolean windows(JSONObject data) {
+    boolean unknown = false;
+    for (String side : new String[] {"leftFront", "rightFront", "leftRear", "rightRear"}) {
+      Integer value = integer(data, side + "Window");
+      if (Integer.valueOf(2).equals(value)) return false; // At least one window is open.
+      if (!Integer.valueOf(1).equals(value)) unknown = true;
+    }
+    return unknown ? null : true;
   }
 
   public String automaticStopBlock(long now) {

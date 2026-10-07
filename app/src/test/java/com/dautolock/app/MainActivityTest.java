@@ -17,13 +17,146 @@ import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = {28, 34})
 public class MainActivityTest {
+  @Test
+  public void optionalBridgeCanBeSkippedAndGuideCompletionExplicitlyStartsAutomaticControl()
+      throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      c.settings
+          .edit()
+          .putBoolean("setupRequired", true)
+          .putBoolean("setupComplete", false)
+          .putBoolean("setupIntroSeen", true)
+          .putInt("setupStep", 5)
+          .putString("address", "AA:BB:CC:DD:EE:FF")
+          .commit();
+      c.vin = "test-car";
+      c.pinHash = "test-pin";
+      c.cloud.protocol.setSignToken("test-session");
+      org.robolectric.Shadows.shadowOf(a.get().getApplication())
+          .grantPermissions(
+              android.Manifest.permission.BLUETOOTH_SCAN,
+              android.Manifest.permission.BLUETOOTH_CONNECT,
+              android.Manifest.permission.ACCESS_FINE_LOCATION,
+              android.Manifest.permission.ACCESS_COARSE_LOCATION,
+              android.Manifest.permission.POST_NOTIFICATIONS);
+      View root = a.get().getWindow().getDecorView();
+      root.findViewWithTag("overflowMenu").performClick();
+      PopupMenu popup = org.robolectric.shadows.ShadowPopupMenu.getLatestPopupMenu();
+      org.robolectric.Shadows.shadowOf(popup)
+          .getOnMenuItemClickListener()
+          .onMenuItemClick(popup.getMenu().findItem(2));
+      assertNotNull(find(root, "건너뛰기 · 다음"));
+      root.findViewWithTag("setupNext").performClick();
+      assertNotNull(find(root, "STEP 7 / 7"));
+      root.findViewWithTag("setupNext").performClick();
+      assertTrue(c.settings.getBoolean("setupComplete", false));
+      assertEquals(View.VISIBLE, root.findViewWithTag("homePage").getVisibility());
+      android.content.Intent start =
+          org.robolectric.Shadows.shadowOf(a.get().getApplication()).getNextStartedService();
+      assertNotNull(start);
+      assertTrue(start.getBooleanExtra("automatic", false));
+      c.stop();
+    }
+  }
+
   @Before
   public void noNetworkUpdateChecks() {
     org.robolectric.RuntimeEnvironment.getApplication()
         .getSharedPreferences("settings", 0)
         .edit()
         .putBoolean("autoUpdate", false)
+        .putBoolean("setupRequired", false)
         .commit();
+  }
+
+  @Test
+  public void overflowSettingsMovesAllRequestedSectionsAndBackReturnsHome() {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      View root = a.get().getWindow().getDecorView();
+      ViewGroup home = root.findViewWithTag("homePage");
+      View settings = root.findViewWithTag("settingsPage");
+      String[] moved = {
+        "차량 보조 앱 연결 / QR",
+        "활동 로그",
+        "자동 도어",
+        "자동 동작 설정",
+        "앱 업데이트",
+        "01  BYD AUTO 계정",
+        "02  차량 블루투스",
+        "알림 · 진단 로그 관리"
+      };
+      for (String label : moved) {
+        assertNull(find(home, label));
+        assertNotNull(find(settings, label));
+      }
+      assertNull(find(home, "차량 상태 새로고침"));
+      root.findViewWithTag("overflowMenu").performClick();
+      PopupMenu popup = org.robolectric.shadows.ShadowPopupMenu.getLatestPopupMenu();
+      assertEquals("설정", popup.getMenu().findItem(1).getTitle());
+      org.robolectric.Shadows.shadowOf(popup)
+          .getOnMenuItemClickListener()
+          .onMenuItemClick(popup.getMenu().findItem(1));
+      assertEquals(View.VISIBLE, settings.getVisibility());
+      assertEquals(View.GONE, home.getVisibility());
+      a.get().onBackPressed();
+      assertEquals(View.VISIBLE, home.getVisibility());
+      assertEquals(View.GONE, settings.getVisibility());
+    }
+  }
+
+  @Test
+  public void signalPlusExpandsAndCollapsesWithoutChangingAutomation() {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      View root = a.get().getWindow().getDecorView();
+      View extra = root.findViewWithTag("signalExtra");
+      assertEquals(View.GONE, extra.getVisibility());
+      root.findViewWithTag("signalMore").performClick();
+      assertEquals(View.VISIBLE, extra.getVisibility());
+      root.findViewWithTag("signalMore").performClick();
+      assertEquals(View.GONE, extra.getVisibility());
+      assertFalse(((DApplication) a.get().getApplication()).controller().autoEnabled);
+    }
+  }
+
+  @Test
+  public void firstInstallGuideCanPauseAndResumeAndDoesNotAutomaticallyControlDoors()
+      throws Exception {
+    org.robolectric.RuntimeEnvironment.getApplication()
+        .getSharedPreferences("settings", 0)
+        .edit()
+        .putBoolean("setupRequired", true)
+        .putBoolean("setupComplete", false)
+        .remove("setupIntroSeen")
+        .commit();
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      View root = a.get().getWindow().getDecorView();
+      assertEquals(View.VISIBLE, root.findViewWithTag("setupPage").getVisibility());
+      assertNotNull(find(root, "STEP 1 / 7"));
+      assertFalse(root.findViewWithTag("setupNext").isEnabled());
+      org.robolectric.Shadows.shadowOf(a.get().getApplication())
+          .grantPermissions(
+              android.Manifest.permission.BLUETOOTH_SCAN,
+              android.Manifest.permission.BLUETOOTH_CONNECT,
+              android.Manifest.permission.ACCESS_FINE_LOCATION);
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      root.findViewWithTag("setupNext").performClick();
+      assertNotNull(find(root, "STEP 2 / 7"));
+      a.get().onBackPressed();
+      find(root.findViewWithTag("homePage"), "처음 설정 이어하기").performClick();
+      assertNotNull(find(root, "STEP 2 / 7"));
+      assertFalse(c.autoEnabled);
+    }
   }
 
   @Test
@@ -38,9 +171,10 @@ public class MainActivityTest {
       ViewGroup parent = (ViewGroup) alerts.getParent();
       assertTrue(parent.indexOfChild(alerts) < parent.indexOfChild(signal));
       assertTrue(parent.indexOfChild(signal) < parent.indexOfChild(controls));
-      assertTrue(parent.indexOfChild(controls) < parent.indexOfChild(logs));
+      assertNotSame(parent, logs.getParent());
+      assertEquals(View.GONE, root.findViewWithTag("settingsPage").getVisibility());
       assertNotNull(find(signal, "거리 감도 / 대기 시간"));
-      assertNotNull(find(controls, "도어 잠금 해제"));
+      assertNotNull(find(controls, "도어 열기"));
     }
   }
 
@@ -234,7 +368,7 @@ public class MainActivityTest {
       assertNotNull(find(decor, "D-Autolock"));
       assertNotNull(find(decor, "블루투스 기기 검색 / 선택"));
       assertNotNull(find(decor, "Sub 계정 로그인 / 변경"));
-      assertFalse(find(decor, "도어 잠금 해제").isEnabled());
+      assertFalse(find(decor, "도어 열기").isEnabled());
       assertFalse(find(decor, "Stop · 차량 종료").isEnabled());
       assertFalse(((Switch) find(decor, "실제 자동 도어 제어")).isChecked());
       assertNotNull(find(decor, "탑승 공조 · READY 상태 진단"));
@@ -275,7 +409,7 @@ public class MainActivityTest {
   public void manualDoorTapDoesNotShowConfirmation() {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {
-      Button unlock = (Button) find(a.get().getWindow().getDecorView(), "도어 잠금 해제");
+      Button unlock = (Button) find(a.get().getWindow().getDecorView(), "도어 열기");
       unlock.setEnabled(true);
       unlock.performClick();
       assertNull(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog());

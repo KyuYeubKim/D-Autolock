@@ -16,7 +16,8 @@ import android.text.method.PasswordTransformationMethod;
 import android.view.*;
 import android.widget.*;
 import com.dautolock.app.api.CloudClient;
-import com.dautolock.app.core.VehicleSnapshot;
+import com.dautolock.app.core.DashboardStatus;
+import com.dautolock.app.core.LogDisplay;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import org.json.*;
@@ -29,13 +30,31 @@ public final class MainActivity extends Activity {
       MUTED = 0xff919ba9;
   private Controller controller;
   private LinearLayout body;
-  private TextView vehicle, state, signal, message, account, device, capabilities, log;
+  private TextView signal, message, account, device, capabilities, log;
+  private final TextView[] vehicleStates = new TextView[3];
   private TextView signalDetails, autoDetails, autoReason, controlDetails, readyDetails;
   private SignalGauge signalGauge;
   private TextView updateStatus;
   private TextView bridgeStatus;
   private Button installUpdate;
-  private Button monitor, refresh, chooseVehicle, logout, login;
+  private Button monitor, chooseVehicle, logout, login;
+  private ScrollView homeScroll, settingsScroll, setupScroll;
+  private LinearLayout settingsBody, signalExtra, setupBanner;
+  private TextView title, setupTitle, setupInstructions, setupStatus, setupProgress;
+  private Button back, signalMore, setupAction, setupNext, setupPrevious;
+  private String page = "home";
+  private boolean signalExpanded;
+  private int setupStep;
+  private final Handler refreshHandler = new Handler(Looper.getMainLooper());
+  private final Runnable refreshTick =
+      new Runnable() {
+        public void run() {
+          if (!foreground) return;
+          controller.refreshStatusWhenNeeded();
+          update();
+          refreshHandler.postDelayed(this, 5000);
+        }
+      };
   private Switch auto;
   private boolean updating;
   private final List<Button> commands = new ArrayList<>();
@@ -53,6 +72,11 @@ public final class MainActivity extends Activity {
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
     controller = ((DApplication) getApplication()).controller();
     build();
+    if (saved != null) {
+      signalExpanded = saved.getBoolean("signalExpanded");
+      setSignalExpanded(signalExpanded);
+      showPage(saved.getString("page", "home"));
+    }
   }
 
   @Override
@@ -64,11 +88,13 @@ public final class MainActivity extends Activity {
     controller.observe(observer);
     update();
     controller.updater.foreground(true);
+    refreshHandler.postDelayed(refreshTick, 750);
   }
 
   @Override
   protected void onStop() {
     foreground = false;
+    refreshHandler.removeCallbacksAndMessages(null);
     controller.updater.foreground(false);
     controller.remove(observer);
     stopPicker();
@@ -127,50 +153,106 @@ public final class MainActivity extends Activity {
   }
 
   private void build() {
-    ScrollView scroll = new ScrollView(this);
-    scroll.setBackgroundColor(BG);
-    scroll.setFillViewport(true);
+    LinearLayout shell = new LinearLayout(this);
+    shell.setOrientation(LinearLayout.VERTICAL);
+    shell.setBackgroundColor(BG);
+    LinearLayout bar = new LinearLayout(this);
+    bar.setGravity(Gravity.CENTER_VERTICAL);
+    bar.setPadding(dp(12), dp(6), dp(12), dp(6));
+    shell.addView(bar, new LinearLayout.LayoutParams(-1, dp(60)));
+    back = button(bar, "‹", v -> showPage("home"));
+    back.setContentDescription("메인 화면으로");
+    back.setLayoutParams(new LinearLayout.LayoutParams(dp(44), dp(44)));
+    back.setVisibility(View.GONE);
+    title = text(bar, "D-Autolock", 23, TEXT);
+    title.setTypeface(null, Typeface.BOLD);
+    title.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    Button menu =
+        button(
+            bar,
+            "⋮",
+            v -> {
+              PopupMenu popup = new PopupMenu(this, v);
+              popup.getMenu().add(0, 1, 0, "설정");
+              popup.getMenu().add(0, 2, 1, "처음 설정 안내");
+              popup.setOnMenuItemClickListener(
+                  item -> {
+                    if (item.getItemId() == 1) showPage("settings");
+                    else showSetup();
+                    return true;
+                  });
+              popup.show();
+            });
+    menu.setTag("overflowMenu");
+    menu.setContentDescription("메뉴");
+    menu.setTextSize(24);
+    menu.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(44)));
+    FrameLayout pages = new FrameLayout(this);
+    shell.addView(pages, new LinearLayout.LayoutParams(-1, 0, 1));
+    homeScroll = new ScrollView(this);
+    homeScroll.setTag("homePage");
+    homeScroll.setFillViewport(true);
     body = new LinearLayout(this);
     body.setOrientation(LinearLayout.VERTICAL);
-    body.setPadding(dp(12), dp(18), dp(12), dp(24));
-    scroll.addView(body);
-    setContentView(scroll);
-    text(body, "D-Autolock", 25, TEXT).setTypeface(null, Typeface.BOLD);
-    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.8", 12, MUTED);
-    LinearLayout alerts = card("알림 · 차량 상태");
+    body.setPadding(dp(12), 0, dp(12), dp(16));
+    homeScroll.addView(body);
+    pages.addView(homeScroll);
+    settingsScroll = new ScrollView(this);
+    settingsScroll.setTag("settingsPage");
+    settingsBody = new LinearLayout(this);
+    settingsBody.setOrientation(LinearLayout.VERTICAL);
+    settingsBody.setPadding(dp(12), 0, dp(12), dp(24));
+    settingsScroll.addView(settingsBody);
+    pages.addView(settingsScroll);
+    settingsScroll.setVisibility(View.GONE);
+    setupScroll = new ScrollView(this);
+    setupScroll.setTag("setupPage");
+    pages.addView(setupScroll);
+    setupScroll.setVisibility(View.GONE);
+    setContentView(shell);
+    LinearLayout alerts = card("차량 상태");
     alerts.setTag("alertsCard");
-    message = text(alerts, "", 17, TEXT);
-    controlDetails = text(alerts, "아직 제어 요청 없음", 14, MINT);
-    controlDetails.setOnClickListener(
-        v ->
-            new AlertDialog.Builder(this)
-                .setTitle("연동 기능 결과")
-                .setMessage(
-                    controller.climateStatus
-                        + "\n\n"
-                        + controller.windowsStatus
-                        + "\n\n"
-                        + controller.stopStatus
-                        + "\n\n"
-                        + controller.readyStatus)
-                .setPositiveButton("닫기", null)
-                .show());
-    controlDetails.setContentDescription("최근 도어 상태. 누르면 공조·창문·전원 종료 결과를 표시합니다");
-    readyDetails = text(alerts, controller.readyStatus, 12, MUTED);
-    readyDetails.setMaxLines(2);
-    readyDetails.setEllipsize(android.text.TextUtils.TruncateAt.END);
-    readyDetails.setOnClickListener(v -> controlDetails.performClick());
+    LinearLayout statusRow = new LinearLayout(this);
+    statusRow.setPadding(0, dp(6), 0, dp(4));
+    alerts.addView(statusRow);
+    for (int i = 0; i < 3; i++) {
+      vehicleStates[i] = text(statusRow, "미확인", 14, TEXT);
+      vehicleStates[i].setGravity(Gravity.CENTER);
+      vehicleStates[i].setTypeface(null, Typeface.BOLD);
+      vehicleStates[i].setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    }
+    message = text(alerts, "", 13, MUTED);
+    message.setMaxLines(2);
+    message.setEllipsize(android.text.TextUtils.TruncateAt.END);
+    message.setContentDescription("최근 알림. 누르면 자세한 결과를 표시합니다");
+    message.setOnClickListener(v -> showVehicleDetails());
+    alerts.setOnClickListener(v -> showVehicleDetails());
     LinearLayout dash = card("BLE 신호 상태");
     dash.setTag("signalCard");
     signal = text(dash, "신호 대기", 20, MINT);
     signalGauge = new SignalGauge(this);
     dash.addView(signalGauge, new LinearLayout.LayoutParams(-1, dp(32)));
-    text(dash, "약함 −100     주황: 잠금 / 초록: 열림     강함 −30", 11, MUTED);
-    signalDetails = text(dash, "현재 미수신 / 평균 —\n수신 0회 · 마지막 수신 없음", 13, MUTED);
-    autoDetails = text(dash, "자동 제어 꺼짐", 14, MINT);
+    LinearLayout signalRow = new LinearLayout(this);
+    signalRow.setGravity(Gravity.CENTER_VERTICAL);
+    dash.addView(signalRow);
+    autoDetails = text(signalRow, "자동 도어 OFF", 13, MINT);
+    autoDetails.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    signalMore = button(signalRow, "＋", v -> setSignalExpanded(!signalExpanded));
+    signalMore.setTag("signalMore");
+    signalMore.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(40)));
+    signalExtra = new LinearLayout(this);
+    signalExtra.setTag("signalExtra");
+    signalExtra.setOrientation(LinearLayout.VERTICAL);
+    dash.addView(signalExtra);
+    text(signalExtra, "주황: 잠금 기준 / 초록: 열기 기준\n신호 세기는 실제 거리와 다를 수 있습니다.", 12, MUTED);
+    signalDetails = text(signalExtra, "", 12, MUTED);
+    controlDetails = text(signalExtra, "", 12, MUTED);
+    readyDetails = text(signalExtra, "", 12, MUTED);
+    setSignalExpanded(false);
     button(dash, "거리 감도 / 대기 시간", v -> thresholdDialog());
-    bridgeStatus = text(dash, "차량 보조 앱 미등록", 13, MUTED);
-    button(dash, "차량 보조 앱 연결 / QR", v -> bridgeDialog());
+    LinearLayout bridgeCard = card("차량 보조 앱 연결 / QR");
+    bridgeStatus = text(bridgeCard, "차량 보조 앱 미등록", 13, MUTED);
+    button(bridgeCard, "차량 보조 앱 연결 / QR", v -> bridgeDialog());
     LinearLayout proximity = card("자동 도어");
     text(proximity, "가까워지면 잠금 해제 · 멀어지면 잠금", 17, TEXT);
     text(
@@ -226,15 +308,14 @@ public final class MainActivity extends Activity {
         });
     LinearLayout controls = card("차량 제어");
     controls.setTag("controlsCard");
-    vehicle = text(controls, "차량을 연결하세요", 21, TEXT);
-    state = text(controls, "차량 상태 미확인", 14, MUTED);
+
     LinearLayout doorRow = new LinearLayout(this);
     doorRow.setOrientation(LinearLayout.HORIZONTAL);
     controls.addView(doorRow);
     commands.add(
         button(
             doorRow,
-            "도어 잠금 해제",
+            "도어 열기",
             v -> controller.command(CloudClient.Command.UNLOCK, false, () -> true)));
     commands.add(
         button(
@@ -258,8 +339,7 @@ public final class MainActivity extends Activity {
     secondaryRow.setOrientation(LinearLayout.HORIZONTAL);
     controls.addView(secondaryRow);
     commands.add(button(secondaryRow, "Stop · 차량 종료", v -> confirm(CloudClient.Command.STOP)));
-    capabilities = text(controls, "차량 기능 확인 전", 12, MUTED);
-    refresh = button(controls, "차량 상태 새로고침", v -> controller.refresh());
+    capabilities = text(bridgeCard, "차량 기능 확인 전", 12, MUTED);
     button(
         secondaryRow,
         "공조 시작",
@@ -429,8 +509,7 @@ public final class MainActivity extends Activity {
         "신호·판단·제어 결과를 휴대폰에 자동 저장합니다(최대 약 1.5 MB). 계정·비밀번호·PIN·VIN·기기 주소와 서버 원문은 포함하지 않습니다.",
         12,
         MUTED);
-    button(body, "사용 안내 · 오픈소스", v -> about());
-    text(body, "D-Autolock  ·  비공식 개인용 앱", 12, MUTED);
+
     LinearLayout activityLog = card("활동 로그");
     activityLog.setTag("logCard");
     log = text(activityLog, "", 12, MUTED);
@@ -457,15 +536,266 @@ public final class MainActivity extends Activity {
             v -> controller.updater.install(this, () -> !controller.busy(), controller::stop));
     text(
         updates, "하루 한 번 GitHub 새 버전을 확인합니다. 다운로드 후 Android 설치 확인이 필요하며 계정과 설정은 유지됩니다.", 12, MUTED);
-    body.removeView(controls);
-    body.addView(controls, 3);
-    body.removeView(dash);
-    body.addView(dash, 3);
-    body.removeView(activityLog);
-    body.addView(activityLog, 5);
-    body.removeView(updates);
-    body.addView(updates, body.indexOfChild(link));
-    styleSwitches(body);
+    for (LinearLayout section :
+        new LinearLayout[] {
+          bridgeCard, activityLog, proximity, options, updates, link, bluetooth, events
+        }) {
+      body.removeView(section);
+      settingsBody.addView(section);
+    }
+    button(settingsBody, "처음 설정 안내", v -> showSetup());
+    button(settingsBody, "사용 안내 · 오픈소스", v -> about());
+    text(settingsBody, "D-Autolock 0.2.9 · 비공식 개인용 앱", 12, MUTED);
+    setupBanner = new LinearLayout(this);
+    setupBanner.setOrientation(LinearLayout.VERTICAL);
+    button(setupBanner, "처음 설정 이어하기", v -> showSetup());
+    body.addView(setupBanner);
+    setupBanner.setVisibility(View.GONE);
+    buildSetup();
+    styleSwitches(shell);
+  }
+
+  private void setSignalExpanded(boolean expanded) {
+    signalExpanded = expanded;
+    signalExtra.setVisibility(expanded ? View.VISIBLE : View.GONE);
+    signalMore.setText(expanded ? "−" : "＋");
+    signalMore.setContentDescription(expanded ? "BLE 상세 접기" : "BLE 상세 펼치기");
+  }
+
+  private void showVehicleDetails() {
+    new AlertDialog.Builder(this)
+        .setTitle("차량 상태 · 자세히")
+        .setMessage(
+            controller.vehicleName
+                + "\n\n"
+                + controller.message
+                + "\n\n"
+                + controller.lastControl
+                + "\n"
+                + controller.climateStatus
+                + "\n"
+                + controller.windowsStatus
+                + "\n"
+                + controller.stopStatus
+                + "\n"
+                + controller.readyStatus
+                + "\n\n도어 열림은 잠금 해제 상태입니다. 시동 켜짐은 차량 전원 ON이며 주행 READY는 계기판에서 확인하세요."
+                + " 오래된 정보는 메인에 미확인으로 표시합니다.")
+        .setPositiveButton("닫기", null)
+        .show();
+  }
+
+  private void showPage(String destination) {
+    page = destination;
+    homeScroll.setVisibility(page.equals("home") ? View.VISIBLE : View.GONE);
+    settingsScroll.setVisibility(page.equals("settings") ? View.VISIBLE : View.GONE);
+    setupScroll.setVisibility(page.equals("setup") ? View.VISIBLE : View.GONE);
+    back.setVisibility(page.equals("home") ? View.GONE : View.VISIBLE);
+    title.setText(page.equals("home") ? "D-Autolock" : page.equals("settings") ? "설정" : "처음 설정");
+  }
+
+  @Override
+  public void onBackPressed() {
+    if (!page.equals("home")) showPage("home");
+    else super.onBackPressed();
+  }
+
+  @Override
+  protected void onSaveInstanceState(Bundle state) {
+    state.putString("page", page);
+    state.putBoolean("signalExpanded", signalExpanded);
+    super.onSaveInstanceState(state);
+  }
+
+  private boolean setupPending() {
+    return controller.settings.getBoolean("setupRequired", false)
+        && !controller.settings.getBoolean("setupComplete", false);
+  }
+
+  private void showSetup() {
+    controller.settings.edit().putBoolean("setupIntroSeen", true).apply();
+    setupStep =
+        setupPending() ? Math.max(0, Math.min(6, controller.settings.getInt("setupStep", 0))) : 0;
+    showPage("setup");
+    updateSetup();
+  }
+
+  private void buildSetup() {
+    setupStep = Math.max(0, Math.min(6, controller.settings.getInt("setupStep", 0)));
+    LinearLayout content = form();
+    content.setPadding(dp(20), dp(16), dp(20), dp(24));
+    setupScroll.addView(content);
+    setupProgress = text(content, "", 14, MINT);
+    setupTitle = text(content, "", 23, TEXT);
+    setupInstructions = text(content, "", 16, MUTED);
+    setupStatus = text(content, "", 14, MINT);
+    setupStatus.setTag("setupStatus");
+    setupAction =
+        button(
+            content,
+            "",
+            v -> {
+              switch (setupStep) {
+                case 0:
+                  if (permissions(true))
+                    startActivity(
+                        new Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            android.net.Uri.parse("package:" + getPackageName())));
+                  break;
+                case 1:
+                  loginDialog();
+                  break;
+                case 2:
+                  if (controller.vehicles.length() == 0) controller.refreshVehicles();
+                  else vehicleDialog();
+                  break;
+                case 3:
+                  pickDevice();
+                  break;
+                case 4:
+                  showPage("home");
+                  break;
+                case 5:
+                  bridgeDialog();
+                  break;
+                case 6:
+                  thresholdDialog();
+                  break;
+              }
+            });
+    setupAction.setTag("setupAction");
+    setupNext =
+        button(
+            content,
+            "다음",
+            v -> {
+              if (!setupCanContinue()) return;
+              if (setupStep == 6) {
+                if (!permissions(true)) return;
+                controller
+                    .settings
+                    .edit()
+                    .putBoolean("setupComplete", true)
+                    .putBoolean("autoStart", true)
+                    .apply();
+                resumePending = false;
+                controller.startMonitoring(true, false);
+                controller.requestStatusRefresh("setup_complete");
+                showPage("home");
+                update();
+                return;
+              }
+              setupStep++;
+              controller.settings.edit().putInt("setupStep", setupStep).apply();
+              updateSetup();
+              setupScroll.scrollTo(0, 0);
+            });
+    setupNext.setTag("setupNext");
+    setupPrevious =
+        button(
+            content,
+            "이전",
+            v -> {
+              if (setupStep > 0) setupStep--;
+              controller.settings.edit().putInt("setupStep", setupStep).apply();
+              updateSetup();
+            });
+    button(content, "나중에 · 메인 화면으로", v -> showPage("home"));
+    text(content, "진행 단계는 저장됩니다. 메뉴 → 처음 설정 안내에서 이어서 진행할 수 있습니다.", 12, MUTED);
+  }
+
+  private boolean bluetoothPermissionGranted() {
+    return Build.VERSION.SDK_INT >= 31
+        ? checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
+                == PackageManager.PERMISSION_GRANTED
+            && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
+                == PackageManager.PERMISSION_GRANTED
+        : checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+            == PackageManager.PERMISSION_GRANTED;
+  }
+
+  private boolean setupCanContinue() {
+    if (controller.initializing || controller.busy()) return false;
+    switch (setupStep) {
+      case 0:
+        return bluetoothPermissionGranted();
+      case 1:
+        return controller.cloud.protocol.isLoggedIn() || controller.hasSavedLogin();
+      case 2:
+        return !controller.vin.isEmpty();
+      case 3:
+        return BluetoothAdapter.checkBluetoothAddress(controller.settings.getString("address", ""));
+      case 4:
+      case 6:
+        return controller.setupReady();
+      default:
+        return true; // Bridge is optional for door automation.
+    }
+  }
+
+  private void updateSetup() {
+    if (setupTitle == null) return;
+    String[] titles = {
+      "권한과 백그라운드",
+      "BYD Sub 계정 연결",
+      "공유 차량 선택",
+      "차량 BLE 선택",
+      "수동 도어 확인",
+      "차량 보조 앱 · 선택",
+      "감도 설정과 자동 시작"
+    };
+    String[] instructions = {
+      "주변 기기 권한을 허용하세요. Android 11 이하는 위치 권한이 필요합니다.\n\n"
+          + "알림을 허용하고 앱 배터리를 ‘제한 없음’으로 설정하면 화면을 꺼도 동작을 확인하기 편합니다.",
+      "공식 BYD AUTO에서 Sub 계정으로 차량 공유를 승인한 뒤 로그인하세요. 원격 제어 PIN 6자리도 필요합니다.\n\n"
+          + "이 Sub 계정을 다른 제어 앱에서 동시에 사용하면 연결이 끊길 수 있습니다. 계정은 암호화해 저장합니다.",
+      "연결할 Dolphin을 선택하세요. 차량 목록이 없으면 먼저 불러옵니다.\n\n선택 차량의 기능과 공유 권한을 확인합니다.",
+      "차량 가까이에서 ‘BYD BLE’처럼 실제 BLE 신호가 수신되는 기기를 선택하세요. 일반 오디오 Bluetooth와 구분해야 합니다.\n\n"
+          + "검색 목록에서 dBm 수신값을 확인하세요.",
+      "차량 옆에서 메인 화면의 ‘도어 열기’와 ‘도어 잠금’을 눌러 실제 동작을 확인하세요.\n\n"
+          + "확인이 끝나면 ‘처음 설정 이어하기’로 돌아와 다음 단계로 진행하세요. 설정 완료 전에는 자동 도어를 시작하지 않습니다.",
+      "기어 P 정보를 이용한 자동 Stop이 필요하면 차량에 Bridge를 설치하세요. 차량 화면의 QR을 스캔하고 페어링된 차량 Bluetooth를 선택합니다.\n\n"
+          + "도어 열기·잠금만 사용한다면 건너뛸 수 있습니다. 차량 Bridge에는 BYD 계정을 입력하지 않습니다.",
+      "거리 감도와 접근·이탈 대기 시간을 조절하세요. 우선 기본값으로 확인한 뒤 차량 옆에서 조금씩 조절하세요.\n\n"
+          + "완료하면 거리 관찰과 실제 자동 도어 제어를 시작합니다. 공조·창문·Stop 옵션은 설정에서 변경할 수 있습니다."
+    };
+    String[] actions = {
+      "권한 / 배터리 설정",
+      "Sub 계정 로그인 / 변경",
+      controller.vehicles.length() == 0 ? "차량 목록 불러오기" : "공유 차량 선택",
+      "블루투스 기기 검색 / 선택",
+      "메인에서 수동 확인",
+      "차량 보조 앱 연결 / QR",
+      "거리 감도 / 대기 시간"
+    };
+    setupProgress.setText("STEP " + (setupStep + 1) + " / 7");
+    setupTitle.setText(titles[setupStep]);
+    setupInstructions.setText(instructions[setupStep]);
+    setupAction.setText(actions[setupStep]);
+    setupAction.setEnabled(!controller.busy() && !controller.initializing);
+    setupAction.setAlpha(setupAction.isEnabled() ? 1f : .45f);
+    boolean canContinue = setupCanContinue();
+    setupStatus.setText(
+        controller.busy()
+            ? "연결 처리 중…"
+            : setupStep == 5
+                ? (controller.vehicleLink.configured()
+                    ? "QR 등록됨 · 실제 P 수신을 확인하세요"
+                    : "선택 사항 · 나중에 연결할 수 있습니다")
+                : setupStep == 4
+                    ? "실제 차량 동작을 확인한 뒤 다음을 누르세요"
+                    : canContinue ? "준비 완료 · 다음 단계로 진행하세요" : "위 항목을 설정하면 다음 단계로 진행할 수 있습니다");
+    setupNext.setText(
+        setupStep == 6
+            ? "설정 완료 · 자동 도어 시작"
+            : setupStep == 5 && !controller.vehicleLink.configured()
+                ? "건너뛰기 · 다음"
+                : setupStep == 4 ? "수동 확인 완료 · 다음" : "다음");
+    setupNext.setEnabled(canContinue);
+    setupNext.setAlpha(canContinue ? 1f : .45f);
+    setupPrevious.setEnabled(setupStep > 0);
+    setupPrevious.setAlpha(setupStep > 0 ? 1f : .45f);
   }
 
   private void styleSwitches(View view) {
@@ -491,20 +821,8 @@ public final class MainActivity extends Activity {
           || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
               == PackageManager.PERMISSION_GRANTED) controller.startVehicleLink();
     }
-    vehicle.setText(controller.vehicleName);
-    VehicleSnapshot s = controller.snapshot;
-    state.setText(
-        s == null
-            ? "차량 상태 미확인"
-            : ("잠금 "
-                + (s.locked == null ? "미확인" : s.locked ? "LOCK" : "UNLOCK")
-                + "  ·  전원 "
-                + s.powerLabel()
-                + "\n속도 "
-                + (s.speed == null ? "미확인" : s.speed + " km/h")
-                + "  ·  배터리 "
-                + (s.battery == null ? "미확인" : s.battery.intValue() + "%")
-                + (s.fresh(System.currentTimeMillis()) ? "" : "\n상태가 오래되었거나 시각 미확인")));
+    String[] labels = DashboardStatus.vehicle(controller.snapshot, System.currentTimeMillis());
+    for (int i = 0; i < labels.length; i++) vehicleStates[i].setText(labels[i]);
     signal.setText(controller.signal);
     signalGauge.reading(
         controller.averageRssi,
@@ -513,9 +831,17 @@ public final class MainActivity extends Activity {
     signalDetails.setText(controller.signalDetail);
     bridgeStatus.setText(controller.vehicleLink.describe());
     if (thresholdPreview != null) thresholdPreview.run();
-    autoDetails.setText(controller.autoDetail);
-    controlDetails.setText(controller.lastControl + "\n공조 · 창문 · 자동 종료 결과 보기 ›");
-    message.setText(controller.message);
+    autoDetails.setText(
+        !controller.monitoring
+            ? "관찰 중지 · 자동 도어 OFF"
+            : (controller.autoEnabled ? "자동 도어 ON" : "관찰 중 · 자동 도어 OFF")
+                + (controller.cloud.backoffMillis() > 0
+                    ? " · BYD 응답 대기"
+                    : Double.isNaN(controller.averageRssi)
+                        ? " · 신호 없음"
+                        : controller.busy() ? " · 차량 확인 중" : ""));
+    controlDetails.setText(controller.autoDetail);
+    message.setText(DashboardStatus.brief(controller.message));
     readyDetails.setText(controller.readyStatus);
     log.setText(controller.recentLog());
     updateStatus.setText(controller.updater.status);
@@ -560,7 +886,7 @@ public final class MainActivity extends Activity {
             + " / Stop "
             + controller.feature(CloudClient.Command.STOP));
     boolean ready = !controller.busy() && !controller.vin.isEmpty();
-    refresh.setEnabled(ready);
+
     chooseVehicle.setEnabled(!controller.busy() && controller.vehicles.length() > 0);
     logout.setEnabled(!controller.busy() && !controller.initializing);
     login.setEnabled(!controller.busy() && !controller.initializing);
@@ -571,11 +897,19 @@ public final class MainActivity extends Activity {
               ready
                   && CloudClient.hasFeature(
                       controller.capabilities, CloudClient.Command.values()[i].feature));
+    for (Button command : commands) command.setAlpha(command.isEnabled() ? 1f : .45f);
+    updateSetup();
+    if (foreground
+        && !controller.initializing
+        && setupPending()
+        && !controller.settings.getBoolean("setupIntroSeen", false)) showSetup();
+    setupBanner.setVisibility(setupPending() ? View.VISIBLE : View.GONE);
     tryAutoResume();
   }
 
   private void tryAutoResume() {
     if (!foreground
+        || setupPending()
         || !resumePending
         || controller.initializing
         || controller.busy()
@@ -1104,6 +1438,7 @@ public final class MainActivity extends Activity {
     if (r == 21)
       controller.note(
           DoorNotifications.enabled(this) ? "동작 알림 켜짐" : "알림 권한이 꺼져 있습니다. 휴대폰 설정에서 허용하세요");
+    updateSetup();
   }
 
   private void stopPicker() {
@@ -1230,29 +1565,27 @@ public final class MainActivity extends Activity {
 
   private void showDiagnostics() {
     controller.diagnostics.snapshot(
-        data ->
-            runOnUiThread(
-                () -> {
-                  if (isFinishing() || isDestroyed()) return;
-                  String recent =
-                      data.length() > 24000
-                          ? "최근 기록만 표시합니다. 전체 기록은 파일로 저장하세요.\n"
-                              + data.substring(data.length() - 24000)
-                          : data;
-                  TextView text = new TextView(this);
-                  text.setText(recent);
-                  text.setTextIsSelectable(true);
-                  text.setTextColor(TEXT);
-                  text.setTextSize(12);
-                  text.setPadding(dp(16), dp(12), dp(16), dp(12));
-                  ScrollView scroll = new ScrollView(this);
-                  scroll.addView(text);
-                  new AlertDialog.Builder(this)
-                      .setTitle("진단 로그 · 시간 UTC")
-                      .setView(scroll)
-                      .setPositiveButton("닫기", null)
-                      .show();
-                }));
+        data -> {
+          String recent = LogDisplay.newestKorean(data, 24000);
+          runOnUiThread(
+              () -> {
+                if (isFinishing() || isDestroyed()) return;
+                TextView text = new TextView(this);
+                text.setTag("diagnosticText");
+                text.setText(recent);
+                text.setTextIsSelectable(true);
+                text.setTextColor(TEXT);
+                text.setTextSize(12);
+                text.setPadding(dp(16), dp(12), dp(16), dp(12));
+                ScrollView scroll = new ScrollView(this);
+                scroll.addView(text);
+                new AlertDialog.Builder(this)
+                    .setTitle("전체 로그 · 한국 시간 · 최신순")
+                    .setView(scroll)
+                    .setPositiveButton("닫기", null)
+                    .show();
+              });
+        });
   }
 
   @Override

@@ -26,6 +26,10 @@ final class Controller {
   private final AtomicBoolean busy = new AtomicBoolean();
   private final UnlockPreflightCache unlockPreflight = new UnlockPreflightCache();
   private volatile long nextApproachRead;
+  private final AtomicInteger statusRevision = new AtomicInteger();
+  private volatile boolean statusRefreshRequested;
+  private volatile long statusRequestedAt, nextStatusRead;
+  private final Runnable statusRefreshTask = this::refreshStatusWhenNeeded;
   volatile CloudClient cloud;
   volatile JSONArray vehicles = new JSONArray();
   volatile JSONObject capabilities = new JSONObject();
@@ -65,7 +69,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.2.8 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.2.9 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -88,6 +92,18 @@ final class Controller {
             note("저장된 계정을 복원하지 못했습니다. 다시 로그인하세요");
           } finally {
             vehicleLink.restore();
+            if (!settings.contains("setupRequired")) {
+              boolean existing =
+                  !loginUser.isEmpty()
+                      || !vin.isEmpty()
+                      || cloud.protocol.isLoggedIn()
+                      || !settings.getString("address", "").isEmpty();
+              settings
+                  .edit()
+                  .putBoolean("setupRequired", !existing)
+                  .putBoolean("setupComplete", existing)
+                  .apply();
+            }
             initializing = false;
             changed();
           }
@@ -143,8 +159,7 @@ final class Controller {
   synchronized void note(String value) {
     message = value;
     diagnostics.record("EVENT", value);
-    events.addFirst(
-        new java.text.SimpleDateFormat("HH:mm:ss", Locale.KOREA).format(new Date()) + "  " + value);
+    events.addFirst(LogDisplay.clock(java.time.Instant.now()) + "  " + value);
     while (events.size() > 30) events.removeLast();
     changed();
   }
@@ -176,7 +191,7 @@ final class Controller {
       context.startForegroundService(
           new Intent(context, ProximityService.class)
               .setAction(reconfigure ? "RECONFIGURE" : "START")
-              .putExtra("automatic", automatic));
+              .putExtra("automatic", automatic && !setupPending()));
     } catch (Exception e) {
       note("자동 시작 보류 · 앱에서 주변 기기 권한과 블루투스를 확인하세요");
       diagnostics.record("AUTO_START_ERROR", e.getClass().getSimpleName());
@@ -185,6 +200,11 @@ final class Controller {
 
   boolean busy() {
     return busy.get();
+  }
+
+  private boolean setupPending() {
+    return settings.getBoolean("setupRequired", false)
+        && !settings.getBoolean("setupComplete", false);
   }
 
   private interface Work {
@@ -301,6 +321,7 @@ final class Controller {
           capabilities = new JSONObject();
           save();
           capabilities = cloud.capabilities(vin);
+          requestStatusRefresh("vehicle_selected");
           boolean shared = vehicle.optInt("empowerType", 0) < 0;
           ArrayList<String> scopes = new ArrayList<>();
           collectScopes(vehicle.optJSONArray("rangeDetailList"), scopes);
@@ -349,6 +370,76 @@ final class Controller {
                   ? "차량 상태 업데이트 완료"
                   : "최신 상태를 확인하지 못했습니다 · 자동 제어 보류");
         });
+  }
+
+  /** Debounced display refresh. Uses the same cloud worker as controls, never a parallel login. */
+  void requestStatusRefresh(String reason) {
+    statusRefreshRequested = true;
+    statusRequestedAt = System.currentTimeMillis();
+    statusRevision.incrementAndGet();
+    diagnostics.record("STATUS_REFRESH_REQUEST", reason);
+    main.removeCallbacks(statusRefreshTask);
+    main.postDelayed(statusRefreshTask, 750);
+  }
+
+  void refreshStatusWhenNeeded() {
+    if (initializing || vin.isEmpty() || (!cloud.protocol.isLoggedIn() && !hasSavedLogin())) return;
+    VehicleSnapshot current = snapshot;
+    long wall = System.currentTimeMillis(), elapsed = SystemClock.elapsedRealtime();
+    if (current != null
+        && current.fresh(wall)
+        && capabilities.length() > 0
+        && (!statusRefreshRequested || current.receivedAt >= statusRequestedAt)) {
+      statusRefreshRequested = false;
+      return; // A command/readback/prefetch already provided newer information.
+    }
+    if (busy() || cloud.backoffMillis() > 0 || elapsed < nextStatusRead) {
+      if (statusRefreshRequested) {
+        main.removeCallbacks(statusRefreshTask);
+        main.postDelayed(
+            statusRefreshTask,
+            Math.max(750, Math.max(cloud.backoffMillis(), nextStatusRead - elapsed)));
+      }
+      return;
+    }
+    int ticket = generation.get(), refreshTicket = statusRevision.get();
+    String target = vin;
+    run(
+        () -> {
+          nextStatusRead = SystemClock.elapsedRealtime() + 5000;
+          try {
+            if (!validSession(ticket, target)) return;
+            requireVehicle();
+            if (capabilities.length() == 0) capabilities = cloud.capabilities(target);
+            VehicleSnapshot next = cloud.snapshot(target);
+            if (!validSession(ticket, target)) return;
+            observeSnapshot(next, true);
+            // If approach begins during this query, do not force a second identical preflight.
+            boolean reusable =
+                autoEnabled
+                    && monitoring
+                    && unlockPreflight.offer(
+                        unlockPreflight.revision(),
+                        ticket,
+                        target,
+                        next,
+                        SystemClock.elapsedRealtime(),
+                        System.currentTimeMillis(),
+                        "dashboard_refresh");
+            if (refreshTicket == statusRevision.get()) statusRefreshRequested = false;
+            diagnostics.record(
+                "STATUS_REFRESH_RESULT",
+                "reusable=" + reusable + " " + next.diagnostic(System.currentTimeMillis()));
+          } catch (Exception e) {
+            nextStatusRead = SystemClock.elapsedRealtime() + 30000;
+            if (refreshTicket == statusRevision.get()) statusRefreshRequested = false;
+            throw e;
+          }
+        },
+        () -> {
+          if (statusRefreshRequested) main.postDelayed(statusRefreshTask, 1000);
+        },
+        true);
   }
 
   void logout() {
@@ -611,7 +702,7 @@ final class Controller {
                 "PREFLIGHT_TIMING",
                 command
                     + " source="
-                    + (reused ? "approach_prefetch" : "fresh_query")
+                    + (reused ? prepared.source : "fresh_query")
                     + " durationMs="
                     + (SystemClock.elapsedRealtime() - preflightAt)
                     + " readyToPreflightMs="
@@ -703,7 +794,7 @@ final class Controller {
                           + " readyToSendMs="
                           + (SystemClock.elapsedRealtime() - readyAt)
                           + " preflightSource="
-                          + (reused ? "approach_prefetch" : "fresh_query"));
+                          + (reused ? prepared.source : "fresh_query"));
                   dispatched.set(true);
                   lastControl = command.label + " · 전송 중";
                   changed();
@@ -796,6 +887,8 @@ final class Controller {
 
   void stop() {
     cancelReadinessWatch("거리 관찰 종료");
+    statusRefreshRequested = false;
+    main.removeCallbacks(statusRefreshTask);
     generation.incrementAndGet();
     discardApproachPreflight();
     autoEnabled = false;
@@ -867,6 +960,7 @@ final class Controller {
     note("감도·대기 시간 저장 · 새 기준으로 관찰을 다시 시작합니다");
     if (resume && setupReady()) startMonitoring(automatic, true);
     else if (!setupReady()) stop();
+    requestStatusRefresh("thresholds_saved");
   }
 
   void exportDiagnostics(android.net.Uri uri) {

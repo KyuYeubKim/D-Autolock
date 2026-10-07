@@ -16,6 +16,51 @@ import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = {28, 34})
 public class MainActivityTest {
+  private void fields(View v, java.util.List<EditText> result) {
+    if (v instanceof EditText) result.add((EditText) v);
+    if (v instanceof ViewGroup) {
+      ViewGroup group = (ViewGroup) v;
+      for (int i = 0; i < group.getChildCount(); i++) fields(group.getChildAt(i), result);
+    }
+  }
+
+  @Test
+  public void savedLoginShowsIdAndMaskedPlaceholdersWithoutExposingSecrets() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      c.loginUser = "sub@example.com";
+      c.pinHash = "test-pin-hash";
+      java.lang.reflect.Field password = Controller.class.getDeclaredField("loginPassword");
+      password.setAccessible(true);
+      password.set(c, "test-secret");
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      find(a.get().getWindow().getDecorView(), "Sub 계정 로그인 / 변경").performClick();
+      AlertDialog dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+      assertNotNull(dialog);
+      java.util.List<EditText> inputs = new java.util.ArrayList<>();
+      fields(dialog.getWindow().getDecorView(), inputs);
+      assertEquals(3, inputs.size());
+      assertEquals("sub@example.com", inputs.get(0).getText().toString());
+      assertEquals("", inputs.get(1).getText().toString());
+      assertTrue(inputs.get(1).getHint().toString().startsWith("********"));
+      assertTrue(inputs.get(2).getHint().toString().contains("PIN 저장됨"));
+      assertTrue(
+          inputs.get(1).getTransformationMethod()
+              instanceof android.text.method.PasswordTransformationMethod);
+      assertFalse(inputs.get(1).isSaveEnabled());
+      assertFalse(inputs.get(2).isSaveEnabled());
+      assertNotEquals(
+          0, dialog.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE);
+      inputs.get(0).setText("another@example.com");
+      assertEquals("BYD 로그인 비밀번호", inputs.get(1).getHint().toString());
+      assertEquals("BYD 원격 제어 PIN (6자리)", inputs.get(2).getHint().toString());
+      dialog.dismiss();
+    }
+  }
+
   private TextView find(View v, String text) {
     if (v instanceof TextView && text.contentEquals(((TextView) v).getText())) return (TextView) v;
     if (v instanceof ViewGroup) {

@@ -24,8 +24,47 @@ public final class CloudClient {
     }
   }
 
-  public final CloudProtocol protocol = new CloudProtocol(BydConfig.fromRegion("KR"));
+  public final CloudProtocol protocol;
   private java.util.function.BiConsumer<String, String> diagnostics = (event, detail) -> {};
+
+  public interface SessionRecovery {
+    void reconnect() throws Exception;
+  }
+
+  private SessionRecovery recovery;
+  private long nextRecovery;
+
+  public CloudClient() {
+    this(new CloudProtocol(BydConfig.fromRegion("KR")));
+  }
+
+  public CloudClient(CloudProtocol protocol) {
+    this.protocol = protocol;
+  }
+
+  public void setSessionRecovery(SessionRecovery recovery) {
+    this.recovery = recovery;
+  }
+
+  public void ensureAuthenticated() throws Exception {
+    if (!protocol.isLoggedIn()) recoverSession();
+  }
+
+  private void recoverSession() throws Exception {
+    if (recovery == null) throw new Exception("Sub 계정 로그인 / 변경에서 계정을 저장하세요");
+    long now = System.nanoTime();
+    if (now < nextRecovery) throw new Exception("계정 재연결 대기 중입니다. 잠시 후 다시 시도하세요. 저장 정보는 유지됩니다");
+    nextRecovery = now + TimeUnit.SECONDS.toNanos(60);
+    diagnostics.accept("ACCOUNT_RECONNECT", "started=true");
+    try {
+      recovery.reconnect();
+      if (!protocol.isLoggedIn()) throw new Exception("저장된 계정으로 연결하지 못했습니다");
+      diagnostics.accept("ACCOUNT_RECONNECT", "success=true");
+    } catch (Exception e) {
+      diagnostics.accept("ACCOUNT_RECONNECT", "success=false savedAccountRetained=true");
+      throw e;
+    }
+  }
 
   public void setDiagnostics(java.util.function.BiConsumer<String, String> diagnostics) {
     this.diagnostics = diagnostics;
@@ -44,13 +83,15 @@ public final class CloudClient {
           }
 
           public void onError(String msg, Exception e) {
-            future.completeExceptionally(new Exception(msg));
+            future.completeExceptionally(
+                e instanceof CloudProtocol.SessionExpiredException ? e : new Exception(msg));
           }
         });
     try {
       return future.get(30, TimeUnit.SECONDS);
     } catch (ExecutionException e) {
-      throw new Exception(e.getCause().getMessage());
+      if (e.getCause() instanceof Exception) throw (Exception) e.getCause();
+      throw new Exception("요청을 처리하지 못했습니다");
     } catch (TimeoutException e) {
       throw new Exception("응답 시간 초과. 차량 상태를 확인한 후 다시 시도하세요");
     }
@@ -62,7 +103,34 @@ public final class CloudClient {
 
   public JSONObject request(String endpoint, Map<String, Object> data, String vin)
       throws Exception {
-    if (!protocol.isLoggedIn()) throw new Exception("BYD Sub 계정으로 로그인하세요");
+    boolean read = isReadRequest(endpoint);
+    if (read) ensureAuthenticated();
+    if (!protocol.isLoggedIn()) throw new CloudProtocol.SessionExpiredException();
+    try {
+      return requestOnce(endpoint, freshRequest(data, vin), vin);
+    } catch (CloudProtocol.SessionExpiredException expired) {
+      recoverSession();
+      if (!read) throw new Exception("계정 재연결 완료 · 차량 제어는 재전송하지 않았습니다. 차량 상태를 확인하세요");
+      return requestOnce(endpoint, freshRequest(data, vin), vin);
+    }
+  }
+
+  private static boolean isReadRequest(String endpoint) {
+    return endpoint.equals("/app/account/getAllListByUserId")
+        || endpoint.equals("/vehicle/vehicleswitch/getLatestConfig")
+        || endpoint.equals("/vehicleInfo/vehicle/vehicleRealTimeRequest")
+        || endpoint.equals("/vehicleInfo/vehicle/vehicleRealTimeResult")
+        || endpoint.equals("/control/remoteControlResult");
+  }
+
+  private Map<String, Object> freshRequest(Map<String, Object> original, String vin) {
+    Map<String, Object> refreshed = new LinkedHashMap<>(original);
+    refreshed.putAll(protocol.buildInnerBaseMap(vin, null));
+    return refreshed;
+  }
+
+  private JSONObject requestOnce(String endpoint, Map<String, Object> data, String vin)
+      throws Exception {
     long started = System.nanoTime();
     try {
       JSONObject result = await(cb -> protocol.postTokenSecure(endpoint, data, vin, cb));
@@ -147,6 +215,7 @@ public final class CloudClient {
 
   public void command(String vin, String pinHash, Command command, BooleanSupplier valid)
       throws Exception {
+    ensureAuthenticated();
     Map<String, Object> m = protocol.buildInnerBaseMap(vin, null);
     m.put("commandPwd", pinHash);
     m.put("commandType", command.wire);

@@ -122,6 +122,16 @@ public class CloudProtocol {
     return signToken != null && !signToken.isEmpty();
   }
 
+  public boolean matchesLogin(String user) {
+    return CryptoUtils.md5Hex(user).equalsIgnoreCase(deviceProfile.get("imeiMD5"));
+  }
+
+  public static final class SessionExpiredException extends Exception {
+    public SessionExpiredException() {
+      super("BYD 로그인 세션이 만료되었습니다");
+    }
+  }
+
   public Map<String, Object> buildInnerBaseMap(String vin, String requestSerial) {
     Map<String, Object> map = new LinkedHashMap<>();
     map.put("deviceType", deviceProfile.get("deviceType"));
@@ -223,16 +233,10 @@ public class CloudProtocol {
                       if ("1002".equals(resCode)
                           || "1005".equals(resCode)
                           || "1010".equals(resCode)) {
-                        logDebug(
-                            "SESSION_EXPIRED",
-                            "Session expired (code: "
-                                + resCode
-                                + "). Attempting silent re-login...");
-                        attemptSilentReLogin(endpoint, innerMap, vin, callback);
+                        expireSession(callback);
                         return;
                       }
-                      callback.onError(
-                          "BYD 요청 거부 (코드 " + resCode + "). Sub 계정 공유 권한과 제어 PIN을 확인하세요", null);
+                      callback.onError("BYD 요청 거부 (코드 " + resCode + "). 잠시 후 다시 시도하세요", null);
                       return;
                     }
 
@@ -261,12 +265,12 @@ public class CloudProtocol {
     }
   }
 
-  private void attemptSilentReLogin(
-      String endpoint, Map<String, Object> inner, String vin, BydApiCallback<JSONObject> callback) {
+  private void expireSession(BydApiCallback<JSONObject> callback) {
     signToken = null;
     encryToken = null;
     if (sessionListener != null) sessionListener.onSessionExpired();
-    callback.onError("세션이 만료되었습니다. Sub 계정으로 다시 로그인하세요", null);
+    SessionExpiredException error = new SessionExpiredException();
+    callback.onError(error.getMessage(), error);
   }
 
   public void login(String username, String password, BydApiCallback<String> callback) {

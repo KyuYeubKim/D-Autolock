@@ -15,11 +15,14 @@ final class Controller {
   final android.content.SharedPreferences settings;
   final DiagnosticLog diagnostics;
   private final SecureStore store;
+  private final Supplier<CloudClient> clients;
+  volatile String loginUser = "";
+  private volatile String loginPassword = "";
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
   private final Handler main = new Handler(Looper.getMainLooper());
   private final AtomicInteger generation = new AtomicInteger();
   private final AtomicBoolean busy = new AtomicBoolean();
-  volatile CloudClient cloud = new CloudClient();
+  volatile CloudClient cloud;
   volatile JSONArray vehicles = new JSONArray();
   volatile JSONObject capabilities = new JSONObject();
   volatile String vin = "", pinHash = "", vehicleName = "차량을 연결하세요";
@@ -39,25 +42,36 @@ final class Controller {
   private final List<Runnable> observers = new CopyOnWriteArrayList<>();
 
   Controller(Context context) {
+    this(context, new SecureStore(context), CloudClient::new);
+  }
+
+  Controller(Context context, SecureStore store, Supplier<CloudClient> clients) {
     this.context = context;
+    this.store = store;
+    this.clients = clients;
     settings = context.getSharedPreferences("settings", 0);
     diagnostics = new DiagnosticLog(new java.io.File(context.getFilesDir(), "diagnostics"));
-    cloud.setDiagnostics(diagnostics::record);
+    cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.2.0 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
-    store = new SecureStore(context);
+        "APP_START", "version=0.2.1 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
             JSONObject saved = store.read();
-            if (saved.has("session")) cloud.protocol.restoreSession(saved.getJSONObject("session"));
+            loginUser = saved.optString("loginUser");
+            loginPassword = saved.optString("loginPassword");
             vin = saved.optString("vin");
             pinHash = saved.optString("pinHash");
             vehicleName = saved.optString("vehicleName", "차량을 연결하세요");
+            JSONObject session = saved.optJSONObject("session");
+            if (session != null && !session.optString("signToken").isEmpty())
+              cloud.protocol.restoreSession(session);
             note(
                 cloud.protocol.isLoggedIn()
-                    ? "계정 복원 완료 · 차량 목록과 권한을 새로고침하세요"
-                    : "BYD Sub 계정을 연결하세요");
+                    ? (hasSavedLogin()
+                        ? "저장된 계정과 차량을 복원했습니다"
+                        : "계정 복원 완료 · 비밀번호 자동 저장은 한 번 로그인하면 적용됩니다")
+                    : hasSavedLogin() ? "계정 저장됨 · 사용 시 자동 재연결합니다" : "BYD Sub 계정을 연결하세요");
           } catch (Exception e) {
             note("저장된 계정을 복원하지 못했습니다. 다시 로그인하세요");
           } finally {
@@ -65,6 +79,37 @@ final class Controller {
             changed();
           }
         });
+  }
+
+  private CloudClient configure(CloudClient client) {
+    client.setDiagnostics(diagnostics::record);
+    client.setSessionRecovery(
+        () -> {
+          if (client != cloud || !hasSavedLogin())
+            throw new Exception("Sub 계정 로그인 / 변경에서 계정을 한 번 저장하세요");
+          note("저장된 Sub 계정으로 재연결 중…");
+          client.login(loginUser, loginPassword);
+          save();
+          note("저장된 계정 재연결 완료 · 차량과 블루투스 선택 유지");
+        });
+    return client;
+  }
+
+  boolean hasSavedLogin() {
+    return !loginUser.isEmpty() && !loginPassword.isEmpty();
+  }
+
+  boolean sameAccount(String user) {
+    return !user.isEmpty()
+        && (user.equals(loginUser) || (loginUser.isEmpty() && cloud.protocol.matchesLogin(user)));
+  }
+
+  boolean savedPasswordFor(String user) {
+    return sameAccount(user) && !loginPassword.isEmpty();
+  }
+
+  boolean savedPinFor(String user) {
+    return sameAccount(user) && !pinHash.isEmpty();
   }
 
   void observe(Runnable r) {
@@ -129,36 +174,61 @@ final class Controller {
   }
 
   private void save() throws Exception {
-    store.save(
-        new JSONObject()
-            .put("session", cloud.protocol.exportSession())
-            .put("vin", vin)
-            .put("pinHash", pinHash)
-            .put("vehicleName", vehicleName));
+    store.save(accountData(cloud, loginUser, loginPassword, pinHash, vin, vehicleName));
+  }
+
+  private JSONObject accountData(
+      CloudClient client, String user, String password, String pin, String vehicle, String name)
+      throws Exception {
+    return new JSONObject()
+        .put("session", client.protocol.exportSession())
+        .put("loginUser", user)
+        .put("loginPassword", password)
+        .put("vin", vehicle)
+        .put("pinHash", pin)
+        .put("vehicleName", name);
   }
 
   void login(String user, String password, String pin) {
+    if (initializing || busy()) {
+      note("계정 복원 또는 이전 요청 완료 후 다시 연결하세요");
+      return;
+    }
     stop();
     run(
         () -> {
-          CloudClient next = new CloudClient();
-          next.setDiagnostics(diagnostics::record);
+          boolean same = sameAccount(user);
+          String savedPassword = password.isEmpty() && same ? loginPassword : password;
+          String savedPin = pin.isEmpty() && same ? pinHash : CryptoUtils.md5Hex(pin);
+          if (user.isEmpty()
+              || savedPassword.isEmpty()
+              || (pin.isEmpty() ? !same || pinHash.isEmpty() : !pin.matches("[0-9]{6}")))
+            throw new Exception("계정 정보와 6자리 제어 PIN을 입력하세요");
+          CloudClient next = configure(clients.get());
           note("한국 BYD 계정 연결 중…");
-          next.login(user, password);
+          next.login(user, savedPassword);
+          String nextVin = same ? vin : "";
+          String nextName = same ? vehicleName : "차량을 선택하세요";
+          // Commit the complete new account before replacing the last working account in memory.
+          store.save(accountData(next, user, savedPassword, savedPin, nextVin, nextName));
           cloud = next;
-          vin = "";
-          vehicleName = "차량을 선택하세요";
+          loginUser = user;
+          loginPassword = savedPassword;
+          vin = nextVin;
+          vehicleName = nextName;
+          pinHash = savedPin;
+          if (!same) settings.edit().remove("address").remove("deviceName").apply();
           snapshot = null;
           capabilities = new JSONObject();
           vehicles = new JSONArray();
           permissionSummary = "공유 권한은 차량 선택 후 확인합니다";
-          pinHash = CryptoUtils.md5Hex(pin);
-          save();
+          note("계정 정보를 암호화해 저장했습니다");
           vehicles = cloud.vehicles();
+          if (!vin.isEmpty()) capabilities = cloud.capabilities(vin);
           note(
               vehicles.length() == 0
                   ? "공유된 차량이 없습니다. BYD AUTO에서 Sub 계정 공유를 승인하세요"
-                  : "로그인 완료 · 차량 선택 버튼을 누르세요");
+                  : !vin.isEmpty() ? "로그인 완료 · 기존 차량과 블루투스 선택 유지" : "로그인 완료 · 차량 선택 버튼을 누르세요");
         });
   }
 
@@ -240,21 +310,25 @@ final class Controller {
     stop();
     run(
         () -> {
-          cloud = new CloudClient();
-          cloud.setDiagnostics(diagnostics::record);
+          store.clear();
+          cloud = configure(clients.get());
+          loginUser = "";
+          loginPassword = "";
           vin = "";
           pinHash = "";
           vehicleName = "차량을 연결하세요";
           snapshot = null;
           vehicles = new JSONArray();
           capabilities = new JSONObject();
-          store.clear();
-          note("계정과 저장된 차량 정보를 삭제했습니다");
+          permissionSummary = "공유 권한은 차량 선택 후 확인합니다";
+          settings.edit().remove("address").remove("deviceName").apply();
+          note("저장된 ID·비밀번호·PIN과 차량 연결 정보를 삭제했습니다");
         });
   }
 
   private void requireVehicle() throws Exception {
-    if (vin.isEmpty() || !cloud.protocol.isLoggedIn()) throw new Exception("계정 로그인 후 차량을 선택하세요");
+    if (vin.isEmpty()) throw new Exception("계정 로그인 후 차량을 선택하세요");
+    cloud.ensureAuthenticated();
   }
 
   void command(CloudClient.Command command, boolean automatic, BooleanSupplier proximityValid) {
@@ -393,7 +467,7 @@ final class Controller {
             + settings.getInt("near", -65)
             + " far="
             + settings.getInt("far", -80));
-    if (!cloud.protocol.isLoggedIn() || vin.isEmpty()) {
+    if ((!cloud.protocol.isLoggedIn() && !hasSavedLogin()) || vin.isEmpty()) {
       note("계정 로그인과 차량 선택 후 자동 제어를 켤 수 있습니다");
       return;
     }
@@ -413,7 +487,7 @@ final class Controller {
   String autoUnavailable() {
     if (initializing) return "계정 정보를 복원하고 있습니다";
     if (!monitoring) return "거리 관찰을 먼저 시작하세요";
-    if (!cloud.protocol.isLoggedIn()) return "BYD 계정 로그인이 필요합니다";
+    if (!cloud.protocol.isLoggedIn() && !hasSavedLogin()) return "BYD 계정 로그인이 필요합니다";
     if (vin.isEmpty()) return "공유 차량을 먼저 선택하세요";
     return null;
   }

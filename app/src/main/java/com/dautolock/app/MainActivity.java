@@ -9,7 +9,10 @@ import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.*;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
+import android.text.method.PasswordTransformationMethod;
 import android.view.*;
 import android.widget.*;
 import com.dautolock.app.api.CloudClient;
@@ -29,7 +32,7 @@ public final class MainActivity extends Activity {
   private TextView vehicle, state, signal, message, account, device, capabilities, log;
   private TextView signalDetails, autoDetails, autoReason, controlDetails;
   private ProgressBar signalGauge;
-  private Button monitor, refresh, chooseVehicle, logout;
+  private Button monitor, refresh, chooseVehicle, logout, login;
   private Switch auto;
   private boolean updating;
   private final List<Button> commands = new ArrayList<>();
@@ -241,7 +244,7 @@ public final class MainActivity extends Activity {
         "BYD AUTO에서 차량 공유를 승인한 Sub 계정으로 로그인하세요. 공유 차량 목록과 차량 기능을 조회하며, 실제 제어 권한은 BYD 서버가 확인합니다.",
         13,
         MUTED);
-    button(link, "Sub 계정 로그인 / 변경", v -> loginDialog());
+    login = button(link, "Sub 계정 로그인 / 변경", v -> loginDialog());
     button(link, "계정 차량 목록 불러오기", v -> controller.refreshVehicles());
     chooseVehicle = button(link, "공유 차량 선택", v -> vehicleDialog());
     logout =
@@ -250,7 +253,7 @@ public final class MainActivity extends Activity {
             "로그아웃 · 저장 정보 삭제",
             v ->
                 new AlertDialog.Builder(this)
-                    .setMessage("계정과 차량 정보를 이 휴대폰에서 삭제할까요?")
+                    .setMessage("저장된 ID·비밀번호·제어 PIN과 차량 연결 정보를 이 휴대폰에서 삭제할까요?")
                     .setNegativeButton("취소", null)
                     .setPositiveButton("삭제", (d, w) -> controller.logout())
                     .show());
@@ -337,9 +340,10 @@ public final class MainActivity extends Activity {
                 : "스위치를 켜면 실제 차량 명령을 보냅니다. 기능 지원은 실행 전 조회합니다.");
     updating = false;
     account.setText(
-        controller.cloud.protocol.isLoggedIn()
-            ? "계정 연결됨 · 대한민국\n" + controller.permissionSummary
-            : "계정 연결 전 · 대한민국");
+        (controller.cloud.protocol.isLoggedIn()
+                ? "계정 연결됨 · 대한민국\n" + controller.permissionSummary
+                : controller.hasSavedLogin() ? "계정 저장됨 · 사용 시 자동 재연결" : "계정 연결 전 · 대한민국")
+            + (controller.hasSavedLogin() ? "\n비밀번호 ******** · 암호화 저장됨" : ""));
     device.setText(
         controller.settings.getString("deviceName", "기기 선택 전")
             + "\n"
@@ -359,7 +363,8 @@ public final class MainActivity extends Activity {
     boolean ready = !controller.busy() && !controller.vin.isEmpty();
     refresh.setEnabled(ready);
     chooseVehicle.setEnabled(!controller.busy() && controller.vehicles.length() > 0);
-    logout.setEnabled(!controller.busy());
+    logout.setEnabled(!controller.busy() && !controller.initializing);
+    login.setEnabled(!controller.busy() && !controller.initializing);
     for (int i = 0; i < commands.size(); i++)
       commands
           .get(i)
@@ -378,6 +383,7 @@ public final class MainActivity extends Activity {
     e.setHintTextColor(MUTED);
     e.setMinHeight(dp(52));
     e.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+    e.setSaveEnabled(false);
     parent.addView(e);
     return e;
   }
@@ -390,10 +396,15 @@ public final class MainActivity extends Activity {
   }
 
   private void loginDialog() {
+    if (controller.initializing || controller.busy()) {
+      controller.note("계정 복원 또는 이전 요청 완료 후 다시 연결하세요");
+      return;
+    }
     LinearLayout f = form();
     text(
         f,
-        "대한민국 BYD AUTO Sub 계정\n로그인 비밀번호는 저장하지 않습니다. 세션과 제어 PIN 해시는 휴대폰 보안 키로 암호화합니다.",
+        "대한민국 BYD AUTO Sub 계정\n"
+            + "ID·비밀번호·세션·제어 PIN 해시를 이 휴대폰에 암호화해 저장합니다. 저장된 비밀번호와 PIN은 변경할 때만 입력하세요.",
         13,
         MUTED);
     EditText user =
@@ -409,6 +420,28 @@ public final class MainActivity extends Activity {
             f,
             "BYD 원격 제어 PIN (6자리)",
             InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+    pass.setTransformationMethod(PasswordTransformationMethod.getInstance());
+    pin.setTransformationMethod(PasswordTransformationMethod.getInstance());
+    user.setText(controller.loginUser);
+    Runnable hints =
+        () -> {
+          String id = user.getText().toString().trim();
+          pass.setHint(
+              controller.savedPasswordFor(id) ? "******** (저장됨 · 변경 시 입력)" : "BYD 로그인 비밀번호");
+          pin.setHint(
+              controller.savedPinFor(id) ? "****** (PIN 저장됨 · 변경 시 입력)" : "BYD 원격 제어 PIN (6자리)");
+        };
+    hints.run();
+    user.addTextChangedListener(
+        new TextWatcher() {
+          public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
+          public void onTextChanged(CharSequence s, int start, int before, int count) {
+            hints.run();
+          }
+
+          public void afterTextChanged(Editable e) {}
+        });
     AlertDialog dialog =
         new AlertDialog.Builder(this)
             .setTitle("BYD 계정 연결")
@@ -416,9 +449,9 @@ public final class MainActivity extends Activity {
             .setNegativeButton("취소", null)
             .setPositiveButton("연결", null)
             .create();
+    dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
     dialog.setOnShowListener(
         d -> {
-          dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
           dialog
               .getButton(-1)
               .setOnClickListener(
@@ -426,7 +459,9 @@ public final class MainActivity extends Activity {
                     String u = user.getText().toString().trim(),
                         p = pass.getText().toString(),
                         n = pin.getText().toString();
-                    if (u.isEmpty() || p.isEmpty() || !n.matches("[0-9]{6}")) {
+                    if (u.isEmpty()
+                        || (p.isEmpty() && !controller.savedPasswordFor(u))
+                        || (n.isEmpty() ? !controller.savedPinFor(u) : !n.matches("[0-9]{6}"))) {
                       pin.setError("계정 정보와 6자리 제어 PIN을 입력하세요");
                       return;
                     }
@@ -439,6 +474,11 @@ public final class MainActivity extends Activity {
                     pin.setText("");
                     dialog.dismiss();
                   });
+        });
+    dialog.setOnDismissListener(
+        d -> {
+          pass.setText("");
+          pin.setText("");
         });
     dialog.show();
   }

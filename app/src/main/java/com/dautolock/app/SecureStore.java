@@ -13,8 +13,20 @@ import org.json.JSONObject;
 final class SecureStore {
   private final Context context;
 
+  interface KeyProvider {
+    SecretKey get() throws Exception;
+  }
+
+  private final KeyProvider keys;
+
   SecureStore(Context context) {
     this.context = context;
+    this.keys = this::key;
+  }
+
+  SecureStore(Context context, KeyProvider keys) {
+    this.context = context;
+    this.keys = keys;
   }
 
   private SecretKey key() throws Exception {
@@ -40,7 +52,7 @@ final class SecureStore {
     Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
     c.init(
         Cipher.DECRYPT_MODE,
-        key(),
+        keys.get(),
         new GCMParameterSpec(128, Base64.decode(envelope.getString("iv"), Base64.NO_WRAP)));
     return new JSONObject(
         new String(
@@ -50,7 +62,7 @@ final class SecureStore {
 
   synchronized void save(JSONObject data) throws Exception {
     Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
-    c.init(Cipher.ENCRYPT_MODE, key());
+    c.init(Cipher.ENCRYPT_MODE, keys.get());
     String encrypted =
         Base64.encodeToString(
             c.doFinal(data.toString().getBytes(StandardCharsets.UTF_8)), Base64.NO_WRAP);
@@ -65,7 +77,8 @@ final class SecureStore {
         .commit()) throw new Exception("보안 저장소에 저장하지 못했습니다");
   }
 
-  void clear() {
-    context.getSharedPreferences("vault", 0).edit().clear().commit();
+  synchronized void clear() throws Exception {
+    if (!context.getSharedPreferences("vault", 0).edit().clear().commit())
+      throw new Exception("저장된 계정을 삭제하지 못했습니다. 다시 시도하세요");
   }
 }

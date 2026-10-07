@@ -9,11 +9,13 @@ public final class VehicleSnapshot {
   public final Double speed, battery;
   public final Boolean locked, doorsClosed, windowsClosed;
   public final long measuredAt, receivedAt;
+  private final boolean invalidEpb;
 
   public VehicleSnapshot(JSONObject data, long receivedAt) {
     this.receivedAt = receivedAt;
     power = integer(data, "powerGear");
     epb = integer(data, "epb");
+    invalidEpb = data.has("epb") && !data.isNull("epb") && (epb == null || (epb != 0 && epb != 1));
     speed = number(data, "speed");
     battery = number(data, "soc") != null ? number(data, "soc") : number(data, "elecPercent");
     locked =
@@ -119,6 +121,16 @@ public final class VehicleSnapshot {
     if (speed == null || speed != 0d) return "차량 정차를 확인하지 못했습니다";
     if (stop && (epb == null || epb != 1)) return "주차브레이크 체결을 확인하지 못했습니다";
     if (stop && (power == null || (power != 1 && power != 3))) return "차량 전원 상태를 확인하지 못했습니다";
+    return null;
+  }
+
+  /** Remote HVAC has its own guard; missing EPB is not evidence that it is engaged. */
+  public String climateBlock(long now) {
+    if (!fresh(now)) return "최신 차량 상태를 확인하지 못했습니다";
+    if (speed == null || speed != 0d) return "차량 정차를 확인하지 못했습니다";
+    if (power == null || (power != 1 && power != 3)) return "차량 전원 상태를 확인하지 못했습니다";
+    if (invalidEpb || (epb != null && epb != 1)) return "주차브레이크 해제 또는 알 수 없는 상태입니다";
+    if (power == 3 && epb == null) return "전원 ON에서는 주차브레이크 체결 확인이 필요합니다";
     return null;
   }
 

@@ -59,7 +59,7 @@ public final class ProximityService extends Service {
           controller.diagnostics.record("SCAN_RESTART", "requested=true");
         } catch (SecurityException e) {
           controller.note("주변 기기 권한이 없어 관찰을 종료합니다");
-          controller.diagnostics.record("SCAN_PERMISSION_DENIED","restart=true");
+          controller.diagnostics.record("SCAN_PERMISSION_DENIED", "restart=true");
           stopSelf();
         } catch (Exception e) {
           radioStatus = "BLE 재검색 실패";
@@ -124,7 +124,13 @@ public final class ProximityService extends Service {
                   + controller.settings.getInt("near", -65)
                   + " / 이탈 ≤ "
                   + controller.settings.getInt("far", -80)
-                  + " dBm";
+                  + " dBm\n접근 대기 "
+                  + controller.settings.getInt("nearWaitSeconds", 3)
+                  + "초 / 이탈 대기 "
+                  + controller.settings.getInt("farWaitSeconds", 8)
+                  + "초 / 신호 끊김 "
+                  + controller.settings.getInt("lossLockSeconds", 10)
+                  + "초";
           controller.signalDetail += "\n" + radioStatus;
           if (engine.count() == 0 && now - started >= 10000)
             controller.signalDetail +=
@@ -267,9 +273,7 @@ public final class ProximityService extends Service {
       deviceType = adapter.getRemoteDevice(address).getType();
       scanner = adapter.getBluetoothLeScanner();
       if (scanner == null) throw new Exception("BLE 관찰을 시작할 수 없습니다");
-      engine =
-          new ProximityEngine(
-              controller.settings.getInt("near", -65), controller.settings.getInt("far", -80));
+      engine = controller.proximityEngine();
       started = SystemClock.elapsedRealtime();
       scanning = true;
       scanner.startScan(
@@ -288,7 +292,12 @@ public final class ProximityService extends Service {
               + deviceType
               + " batteryUnrestricted="
               + (pm != null && pm.isIgnoringBatteryOptimizations(getPackageName()))
-              + " scanPermission=true lossLockSeconds=10");
+              + " scanPermission=true lossLockSeconds="
+              + controller.settings.getInt("lossLockSeconds", 10)
+              + " nearWaitSeconds="
+              + controller.settings.getInt("nearWaitSeconds", 3)
+              + " farWaitSeconds="
+              + controller.settings.getInt("farWaitSeconds", 8));
       controller.note("관찰 시작 · 1초마다 신호와 판단 상태를 표시하고 진단 로그에 저장합니다");
       controller.prepareMonitoring();
       handler.post(heartbeat);

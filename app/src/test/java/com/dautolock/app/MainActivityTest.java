@@ -16,6 +16,60 @@ import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = {28, 34})
 public class MainActivityTest {
+  @Test
+  public void sensitivitySlidersKeepGapAndSaveTimesUsedByEngine() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      find(a.get().getWindow().getDecorView(), "거리 감도 / 대기 시간").performClick();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      AlertDialog dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+      View decor = dialog.getWindow().getDecorView();
+      java.util.List<EditText> inputs = new java.util.ArrayList<>();
+      fields(decor, inputs);
+      assertTrue(inputs.isEmpty());
+      SeekBar near = decor.findViewWithTag("near"), far = decor.findViewWithTag("far");
+      near.setProgress(0); // -92; far is pushed to -100 to maintain separation.
+      assertEquals(0, far.getProgress());
+      far.setProgress(62); // -38; near moves to -30.
+      assertEquals(62, near.getProgress());
+      dialog.getButton(DialogInterface.BUTTON_NEUTRAL).performClick();
+      ((SeekBar) decor.findViewWithTag("nearWait")).setProgress(1);
+      ((SeekBar) decor.findViewWithTag("farWait")).setProgress(4);
+      ((SeekBar) decor.findViewWithTag("lossWait")).setProgress(15); // 20 seconds.
+      dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
+      assertEquals(-65, c.settings.getInt("near", 0));
+      assertEquals(-80, c.settings.getInt("far", 0));
+      assertEquals(1, c.settings.getInt("nearWaitSeconds", 0));
+      assertEquals(4, c.settings.getInt("farWaitSeconds", 0));
+      assertEquals(20, c.settings.getInt("lossLockSeconds", 0));
+      com.dautolock.app.core.ProximityEngine e = c.proximityEngine();
+      e.sample(-50, 0);
+      e.sample(-50, 200);
+      e.sample(-50, 400);
+      e.sample(-50, 1000);
+      assertEquals(com.dautolock.app.core.ProximityEngine.Action.UNLOCK, e.pending(1000));
+      assertTrue(e.diagnostic(1000).contains("lossLockMs=20000"));
+    }
+  }
+
+  @Test
+  public void cancellingSliderDialogDoesNotChangeSettings() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      find(a.get().getWindow().getDecorView(), "거리 감도 / 대기 시간").performClick();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      AlertDialog dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+      ((SeekBar) dialog.getWindow().getDecorView().findViewWithTag("nearWait")).setProgress(0);
+      dialog.getButton(DialogInterface.BUTTON_NEGATIVE).performClick();
+      assertEquals(3, c.settings.getInt("nearWaitSeconds", 3));
+      assertFalse(c.settings.contains("nearWaitSeconds"));
+    }
+  }
+
   private void fields(View v, java.util.List<EditText> result) {
     if (v instanceof EditText) result.add((EditText) v);
     if (v instanceof ViewGroup) {

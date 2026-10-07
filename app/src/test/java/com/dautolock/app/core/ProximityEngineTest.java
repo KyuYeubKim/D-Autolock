@@ -6,6 +6,56 @@ import static org.junit.Assert.*;
 import org.junit.Test;
 
 public class ProximityEngineTest {
+  @Test
+  public void configuredOneSecondApproachReplacesThreeSecondDefault() {
+    ProximityEngine e = new ProximityEngine(-65, -80, 1000, 8000, 10000);
+    e.sample(-50, 0);
+    e.sample(-50, 200);
+    e.sample(-50, 400);
+    e.sample(-50, 600);
+    assertEquals(NONE, e.pending(999));
+    assertEquals(UNLOCK, e.sample(-50, 1000));
+  }
+
+  @Test
+  public void zeroDelayStillRequiresFourDistinctFreshAdvertisements() {
+    ProximityEngine e = new ProximityEngine(-65, -80, 0, 0, 10000);
+    e.sample(-50, 0);
+    e.sample(-50, 100);
+    e.sample(-50, 200);
+    assertEquals(NONE, e.pending(200));
+    assertEquals(UNLOCK, e.sample(-50, 300));
+    assertTrue(e.claim(UNLOCK, 300));
+    assertEquals(NONE, e.pending(400));
+  }
+
+  @Test
+  public void configuredDepartureDelayIsUsed() {
+    ProximityEngine e = new ProximityEngine(-65, -80, 0, 3000, 10000);
+    feed(e, -50, 0, 3000);
+    e.alreadySatisfied(UNLOCK, 3000);
+    feed(e, -110, 4000, 7000);
+    assertEquals(NONE, e.pending(7999));
+    assertEquals(LOCK, e.sample(-110, 8000));
+  }
+
+  @Test
+  public void configuredLossTimeAndValidationAreApplied() {
+    ProximityEngine e = new ProximityEngine(-65, -80, 3000, 8000, 20000);
+    feed(e, -50, 0, 3000);
+    e.claim(UNLOCK, 3000);
+    assertEquals(NONE, e.pending(22999));
+    assertEquals(LOCK, e.pending(23000));
+    assertTrue(e.reason(23000).contains("20초"));
+    assertThrows(
+        IllegalArgumentException.class, () -> new ProximityEngine(-65, -80, -1, 8000, 10000));
+    assertThrows(
+        IllegalArgumentException.class, () -> new ProximityEngine(-65, -80, 16000, 8000, 10000));
+    assertThrows(
+        IllegalArgumentException.class, () -> new ProximityEngine(-65, -80, 0, 31000, 10000));
+    assertThrows(IllegalArgumentException.class, () -> new ProximityEngine(-65, -80, 0, 0, 4000));
+  }
+
   private void feed(ProximityEngine e, int rssi, long from, long to) {
     for (long t = from; t <= to; t += 1000) e.sample(rssi, t);
   }

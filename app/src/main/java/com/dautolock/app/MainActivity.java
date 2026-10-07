@@ -139,7 +139,7 @@ public final class MainActivity extends Activity {
     text(proximity, "가까워지면 잠금 해제 · 멀어지면 잠금", 17, TEXT);
     text(
         proximity,
-        "가까운 신호가 안정되면 해제합니다. 멀어지거나 신호가 10초 끊기면 잠금을 요청합니다. 정차·도어·전원 상태를 확인한 후 실행합니다.",
+        "설정한 시간 동안 가까운 신호가 유지되면 해제합니다. 이탈·신호 끊김 시간은 감도 설정에서 조절합니다. 정차·도어·전원 상태 확인 후 실행합니다.",
         13,
         MUTED);
     monitor =
@@ -179,7 +179,9 @@ public final class MainActivity extends Activity {
           new AlertDialog.Builder(this)
               .setTitle("자동 도어 제어 켜기")
               .setMessage(
-                  "접근 신호가 안정되면 잠금 해제합니다. 이탈하거나 수신하던 BLE 신호가 10초 끊기면 잠금을 요청합니다. 다른 탑승자와 키의 위치를"
+                  "접근 신호가 안정되면 잠금 해제합니다. 이탈하거나 수신하던 BLE 신호가 "
+                      + controller.settings.getInt("lossLockSeconds", 10)
+                      + "초 끊기면 잠금을 요청합니다. 다른 탑승자와 키의 위치를"
                       + " 확인하세요.")
               .setNegativeButton("취소", null)
               .setPositiveButton("자동 제어 켜기", (d, w) -> controller.auto(true))
@@ -233,8 +235,8 @@ public final class MainActivity extends Activity {
     text(controls, "READY · 공조 2초 동작 연동", 16, 0xffffc77d);
     text(
         controls,
-        "사용자 차량에서 확인한 공조 ON/OFF 동작입니다. 자동 해제 후 90초 안의 문 닫힘→열림을 확인하면 실행합니다. READY 자체는 계기판에서 확인하세요."
-            + " 이탈 시 자동 전원 종료는 포함되지 않습니다.",
+        "사용자 차량에서 확인한 공조 ON/OFF 동작입니다. 자동 해제 후 90초 안의 문 닫힘→열림을 확인하면 실행합니다. 주차브레이크 정보가 없으면 최신 전원"
+            + " OFF·속도 0 상태에서만 요청합니다. READY 자체는 계기판에서 확인하세요. 이탈 시 자동 전원 종료는 포함되지 않습니다.",
         13,
         MUTED);
     LinearLayout link = card("01  BYD AUTO 계정");
@@ -260,7 +262,7 @@ public final class MainActivity extends Activity {
     LinearLayout bluetooth = card("02  차량 블루투스");
     device = text(bluetooth, "기기 선택 전", 15, TEXT);
     button(bluetooth, "블루투스 기기 검색 / 선택", v -> pickDevice());
-    button(bluetooth, "거리 감도 조정", v -> thresholdDialog());
+    button(bluetooth, "거리 감도 / 대기 시간", v -> thresholdDialog());
     text(
         bluetooth,
         "블루투스는 거리 감지용입니다. 도어 제어에는 휴대폰과 차량의 인터넷 연결이 필요합니다. 전원을 끄면 신호가 사라지는 오디오 기기는 사용할 수 없습니다.",
@@ -352,7 +354,13 @@ public final class MainActivity extends Activity {
             + controller.settings.getInt("near", -65)
             + " / 이탈 "
             + controller.settings.getInt("far", -80)
-            + " dBm");
+            + " dBm\n접근 "
+            + controller.settings.getInt("nearWaitSeconds", 3)
+            + "초 / 이탈 "
+            + controller.settings.getInt("farWaitSeconds", 8)
+            + "초 / 신호 끊김 "
+            + controller.settings.getInt("lossLockSeconds", 10)
+            + "초");
     capabilities.setText(
         "차량 기능 · 잠금 "
             + controller.feature(CloudClient.Command.LOCK)
@@ -523,35 +531,150 @@ public final class MainActivity extends Activity {
 
   private void thresholdDialog() {
     LinearLayout f = form();
-    text(f, "RSSI는 미터 단위 거리가 아닙니다. 관찰 화면에서 신호를 확인하며 조정하세요. 접근·이탈 기준 간격은 8 dBm 이상입니다.", 13, MUTED);
-    EditText
-        near =
-            field(f, "접근 (-65)", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED),
-        far = field(f, "이탈 (-80)", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED);
-    near.setText(String.valueOf(controller.settings.getInt("near", -65)));
-    far.setText(String.valueOf(controller.settings.getInt("far", -80)));
+    text(f, "게이지를 움직여 조절하세요. dBm은 미터 단위 거리가 아닙니다. 접근·이탈 기준은 8 dBm 간격을 유지하도록 함께 조정됩니다.", 13, MUTED);
+    SeekBar[] sensitivity = new SeekBar[2];
+    sensitivity[0] =
+        settingSlider(
+            f,
+            "접근 감도",
+            "near",
+            -92,
+            -30,
+            controller.settings.getInt("near", -65),
+            " dBm 이상",
+            "멀리서도 해제 ← → 가까워야 해제",
+            value -> {
+              if (sensitivity[1] != null && value < sensitivity[1].getProgress() - 100 + 8)
+                sensitivity[1].setProgress(value - 8 + 100);
+            });
+    sensitivity[1] =
+        settingSlider(
+            f,
+            "이탈 감도",
+            "far",
+            -100,
+            -38,
+            controller.settings.getInt("far", -80),
+            " dBm 이하",
+            "더 멀어져야 잠금 ← → 가까운 곳부터 잠금",
+            value -> {
+              if (value > sensitivity[0].getProgress() - 92 - 8)
+                sensitivity[0].setProgress(value + 8 + 92);
+            });
+    SeekBar nearWait =
+        settingSlider(
+            f,
+            "접근 후 잠금 해제 대기",
+            "nearWait",
+            0,
+            15,
+            controller.settings.getInt("nearWaitSeconds", 3),
+            "초",
+            "0초 ← → 15초",
+            value -> {});
+    SeekBar farWait =
+        settingSlider(
+            f,
+            "이탈 후 잠금 대기",
+            "farWait",
+            0,
+            30,
+            controller.settings.getInt("farWaitSeconds", 8),
+            "초",
+            "0초 ← → 30초",
+            value -> {});
+    SeekBar lossWait =
+        settingSlider(
+            f,
+            "BLE 신호 끊김 후 잠금",
+            "lossWait",
+            5,
+            60,
+            controller.settings.getInt("lossLockSeconds", 10),
+            "초",
+            "5초 ← → 60초",
+            value -> {});
+    text(
+        f,
+        "기본값: 접근 −65 / 이탈 −80 dBm, 접근 3초 / 이탈 8초 / 신호 끊김 10초.\n"
+            + "0초도 유효 신호 4회와 차량 상태 조회가 필요합니다. 실제 동작에는 통신 시간과 명령 간격이 더해집니다. 저장하면 관찰이 종료되므로 거리 관찰과 자동"
+            + " 제어를 다시 켜세요.",
+        13,
+        MUTED);
+    ScrollView scroll = new ScrollView(this);
+    scroll.addView(f);
     AlertDialog d =
         new AlertDialog.Builder(this)
-            .setTitle("거리 감도")
-            .setView(f)
+            .setTitle("감도 · 대기 시간")
+            .setView(scroll)
             .setNegativeButton("취소", null)
+            .setNeutralButton("기본값", null)
             .setPositiveButton("저장", null)
             .create();
     d.setOnShowListener(
-        x ->
-            d.getButton(-1)
-                .setOnClickListener(
-                    v -> {
-                      try {
-                        controller.thresholds(
-                            Integer.parseInt(near.getText().toString()),
-                            Integer.parseInt(far.getText().toString()));
-                        d.dismiss();
-                      } catch (Exception e) {
-                        near.setError("-100 ~ -30, 접근이 이탈보다 8 이상 커야 합니다");
-                      }
-                    }));
+        x -> {
+          d.getButton(-3)
+              .setOnClickListener(
+                  v -> {
+                    sensitivity[0].setProgress(-65 + 92);
+                    sensitivity[1].setProgress(-80 + 100);
+                    nearWait.setProgress(3);
+                    farWait.setProgress(8);
+                    lossWait.setProgress(10 - 5);
+                  });
+          d.getButton(-1)
+              .setOnClickListener(
+                  v -> {
+                    try {
+                      controller.thresholds(
+                          sensitivity[0].getProgress() - 92,
+                          sensitivity[1].getProgress() - 100,
+                          nearWait.getProgress(),
+                          farWait.getProgress(),
+                          lossWait.getProgress() + 5);
+                      d.dismiss();
+                    } catch (Exception e) {
+                      Toast.makeText(this, "감도와 대기 시간 범위를 확인하세요", Toast.LENGTH_SHORT).show();
+                    }
+                  });
+        });
     d.show();
+  }
+
+  private SeekBar settingSlider(
+      LinearLayout parent,
+      String title,
+      String tag,
+      int min,
+      int max,
+      int value,
+      String suffix,
+      String direction,
+      java.util.function.IntConsumer changed) {
+    TextView caption = text(parent, title + " · " + value + suffix, 15, TEXT);
+    SeekBar bar = new SeekBar(this);
+    bar.setTag(tag);
+    bar.setMax(max - min);
+    bar.setProgress(value - min);
+    bar.setMinimumHeight(dp(48));
+    bar.setProgressTintList(android.content.res.ColorStateList.valueOf(MINT));
+    bar.setThumbTintList(android.content.res.ColorStateList.valueOf(MINT));
+    bar.setContentDescription(caption.getText());
+    bar.setOnSeekBarChangeListener(
+        new SeekBar.OnSeekBarChangeListener() {
+          public void onStartTrackingTouch(SeekBar b) {}
+
+          public void onStopTrackingTouch(SeekBar b) {}
+
+          public void onProgressChanged(SeekBar b, int progress, boolean fromUser) {
+            caption.setText(title + " · " + (min + progress) + suffix);
+            b.setContentDescription(caption.getText());
+            changed.accept(min + progress);
+          }
+        });
+    parent.addView(bar, new LinearLayout.LayoutParams(-1, dp(48)));
+    text(parent, direction, 12, MUTED);
+    return bar;
   }
 
   private boolean permissions(boolean notifications) {

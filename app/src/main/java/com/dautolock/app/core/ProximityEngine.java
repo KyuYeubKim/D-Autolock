@@ -16,6 +16,7 @@ public final class ProximityEngine {
 
   public static final long STALE_MS = 5000, COOLDOWN_MS = 10000, LOSS_LOCK_MS = 10000;
   private final int near, far;
+  private final long nearDwellMs, farDwellMs, lossLockMs;
   private double smoothed = Double.NaN;
   private int raw, samples;
   private long lastSample = -1, since = -1, lastDispatch = -COOLDOWN_MS, received;
@@ -23,10 +24,23 @@ public final class ProximityEngine {
   private boolean seenNear;
 
   public ProximityEngine(int near, int far) {
+    this(near, far, 3000, 8000, LOSS_LOCK_MS);
+  }
+
+  public ProximityEngine(int near, int far, long nearDwellMs, long farDwellMs, long lossLockMs) {
     if (near > -30 || far < -100 || near - far < 8)
       throw new IllegalArgumentException("거리 기준을 확인하세요");
+    if (nearDwellMs < 0
+        || nearDwellMs > 15000
+        || farDwellMs < 0
+        || farDwellMs > 30000
+        || lossLockMs < 5000
+        || lossLockMs > 60000) throw new IllegalArgumentException("대기 시간 범위를 확인하세요");
     this.near = near;
     this.far = far;
+    this.nearDwellMs = nearDwellMs;
+    this.farDwellMs = farDwellMs;
+    this.lossLockMs = lossLockMs;
   }
 
   public synchronized Action sample(int rssi, long now) {
@@ -59,7 +73,7 @@ public final class ProximityEngine {
   }
 
   private long dwell() {
-    return candidate == Zone.FAR ? 8000 : 3000;
+    return candidate == Zone.FAR ? farDwellMs : nearDwellMs;
   }
 
   public synchronized long age(long now) {
@@ -90,7 +104,7 @@ public final class ProximityEngine {
   private boolean lossLockReady(long now) {
     return lastSample >= 0
         && now >= lastSample
-        && now - lastSample >= LOSS_LOCK_MS
+        && now - lastSample >= lossLockMs
         && stable != Zone.UNKNOWN
         && received >= 4
         && handled != Zone.FAR
@@ -134,10 +148,8 @@ public final class ProximityEngine {
       if (lastSample < 0) return "선택 기기의 BLE 광고 수신 대기 · 아직 자동 잠금하지 않음";
       if (handled == Zone.FAR) return "신호 끊김 · 잠금 요청 처리됨";
       if (stable == Zone.UNKNOWN) return "신호 안정화 기록 부족 · 잠금 보류";
-      if (lossLockReady(now)) return "신호 10초 끊김 · 도어 잠금 조건 충족";
-      return "신호 끊김 잠금까지 "
-          + ((Math.max(LOSS_LOCK_MS - age(now), cooldown(now)) + 999) / 1000)
-          + "초";
+      if (lossLockReady(now)) return "신호 " + lossLockMs / 1000 + "초 끊김 · 도어 잠금 조건 충족";
+      return "신호 끊김 잠금까지 " + ((Math.max(lossLockMs - age(now), cooldown(now)) + 999) / 1000) + "초";
     }
     if (candidate == Zone.UNKNOWN) return "접근·이탈 기준 사이 · 거리 변화 대기";
     if (samples < 4 || now - since < dwell())
@@ -176,7 +188,13 @@ public final class ProximityEngine {
         + " cooldownMs="
         + cooldown(now)
         + " pending="
-        + pending(now);
+        + pending(now)
+        + " nearWaitMs="
+        + nearDwellMs
+        + " farWaitMs="
+        + farDwellMs
+        + " lossLockMs="
+        + lossLockMs;
   }
 
   public static int strength(double rssi) {

@@ -7,6 +7,36 @@ import org.junit.Test;
 
 public class VehicleSnapshotTest {
   @Test
+  public void missingEpbAllowsClimateOnlyForFreshOffAndStationaryVehicle() throws Exception {
+    JSONObject d = parked();
+    d.remove("epb");
+    VehicleSnapshot s = new VehicleSnapshot(d, now);
+    assertNull(s.epb);
+    assertNull(s.climateBlock(now));
+    assertNotNull(s.manualBlock(true, now)); // Stop retains its stronger guard.
+    assertNotNull(new VehicleSnapshot(d.put("powerGear", 3), now).climateBlock(now));
+  }
+
+  @Test
+  public void climateNeverIgnoresExplicitReleasedOrUnrecognizedBrake() throws Exception {
+    assertNotNull(new VehicleSnapshot(parked().put("epb", 0), now).climateBlock(now));
+    assertNotNull(new VehicleSnapshot(parked().put("epb", 2), now).climateBlock(now));
+    assertNotNull(new VehicleSnapshot(parked().put("epb", false), now).climateBlock(now));
+    assertNotNull(new VehicleSnapshot(parked().put("epb", "invalid"), now).climateBlock(now));
+    assertNull(new VehicleSnapshot(parked().put("powerGear", 3), now).climateBlock(now));
+  }
+
+  @Test
+  public void climateBlocksMovingUnknownOrStaleState() throws Exception {
+    assertNotNull(new VehicleSnapshot(parked().put("speed", 1), now).climateBlock(now));
+    assertNotNull(new VehicleSnapshot(parked().put("powerGear", 2), now).climateBlock(now));
+    JSONObject d = parked();
+    d.remove("speed");
+    assertNotNull(new VehicleSnapshot(d, now).climateBlock(now));
+    assertNotNull(new VehicleSnapshot(parked().put("time", now - 31000), now).climateBlock(now));
+  }
+
+  @Test
   public void partialLockPayloadDoesNotClaimUnlock() throws Exception {
     JSONObject j = new JSONObject().put("leftFrontDoorLock", 1);
     assertNull(new VehicleSnapshot(j, 1800000000000L).locked);

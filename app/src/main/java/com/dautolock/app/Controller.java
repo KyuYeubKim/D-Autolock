@@ -53,7 +53,7 @@ final class Controller {
     diagnostics = new DiagnosticLog(new java.io.File(context.getFilesDir(), "diagnostics"));
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.2.1 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.2.2 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -509,7 +509,10 @@ final class Controller {
     generation.incrementAndGet();
     autoEnabled = enabled;
     entryUntil = 0;
-    note(enabled ? "자동 도어 켜짐 · 접근 시 해제 / 이탈·신호 10초 끊김 시 잠금" : "관찰 모드 · 차량 명령을 보내지 않습니다");
+    note(
+        enabled
+            ? "자동 도어 켜짐 · 접근 시 해제 / 이탈·신호 " + settings.getInt("lossLockSeconds", 10) + "초 끊김 시 잠금"
+            : "관찰 모드 · 차량 명령을 보내지 않습니다");
   }
 
   void device(String name, String address) {
@@ -518,11 +521,39 @@ final class Controller {
     note("블루투스 기기 선택 완료 · 관찰에서 수신 여부를 확인하세요");
   }
 
-  void thresholds(int near, int far) {
-    new ProximityEngine(near, far);
+  ProximityEngine proximityEngine() {
+    return new ProximityEngine(
+        settings.getInt("near", -65),
+        settings.getInt("far", -80),
+        settings.getInt("nearWaitSeconds", 3) * 1000L,
+        settings.getInt("farWaitSeconds", 8) * 1000L,
+        settings.getInt("lossLockSeconds", 10) * 1000L);
+  }
+
+  void thresholds(int near, int far, int nearSeconds, int farSeconds, int lossSeconds) {
+    new ProximityEngine(near, far, nearSeconds * 1000L, farSeconds * 1000L, lossSeconds * 1000L);
     stop();
-    settings.edit().putInt("near", near).putInt("far", far).apply();
-    note("거리 기준 저장 · 다시 관찰을 시작하세요");
+    settings
+        .edit()
+        .putInt("near", near)
+        .putInt("far", far)
+        .putInt("nearWaitSeconds", nearSeconds)
+        .putInt("farWaitSeconds", farSeconds)
+        .putInt("lossLockSeconds", lossSeconds)
+        .apply();
+    diagnostics.record(
+        "PROXIMITY_SETTINGS",
+        "near="
+            + near
+            + " far="
+            + far
+            + " nearWaitSeconds="
+            + nearSeconds
+            + " farWaitSeconds="
+            + farSeconds
+            + " lossLockSeconds="
+            + lossSeconds);
+    note("감도·대기 시간 저장 · 거리 관찰과 자동 제어를 다시 켜세요");
   }
 
   void exportDiagnostics(android.net.Uri uri) {
@@ -647,9 +678,15 @@ final class Controller {
     if (!CloudClient.hasClimate(capabilities)) capabilities = cloud.capabilities(vin);
     if (!CloudClient.hasClimate(capabilities)) throw new Exception("이 차량의 공조 기능 지원을 확인하지 못했습니다");
     snapshot = cloud.snapshot(vin);
-    String block = snapshot.manualBlock(true, System.currentTimeMillis());
+    String block = snapshot.climateBlock(System.currentTimeMillis());
     diagnostics.record("READY_PREFLIGHT", snapshot.diagnostic(System.currentTimeMillis()));
     if (block != null) throw new Exception("공조 동작 보류: " + block);
+    diagnostics.record(
+        "READY_GUARD",
+        snapshot.epb == null
+            ? "basis=power_off_and_stationary epb=unknown"
+            : "basis=parking_brake_and_stationary");
+    if (snapshot.epb == null) note("주차브레이크 정보 미제공 · 전원 OFF·정차 확인 후 공조 요청");
     final CloudClient client = cloud;
     final String target = vin, code = pinHash;
     note("공조 ON → 응답 확인 후 2초 대기 → OFF 진행 중");

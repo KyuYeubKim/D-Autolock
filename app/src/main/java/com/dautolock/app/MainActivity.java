@@ -22,22 +22,25 @@ import java.util.*;
 import org.json.*;
 
 public final class MainActivity extends Activity {
-  private static final int BG = 0xff09111e,
-      CARD = 0xff142133,
-      MINT = 0xff71edcf,
-      TEXT = 0xffedf3fa,
-      MUTED = 0xffa9bbce;
+  private static final int BG = 0xff0b0f14,
+      CARD = 0xff171c24,
+      MINT = 0xff62dca7,
+      TEXT = 0xffe9edf3,
+      MUTED = 0xff919ba9;
   private Controller controller;
   private LinearLayout body;
   private TextView vehicle, state, signal, message, account, device, capabilities, log;
   private TextView signalDetails, autoDetails, autoReason, controlDetails;
-  private ProgressBar signalGauge;
+  private SignalGauge signalGauge;
+  private TextView updateStatus;
+  private Button installUpdate;
   private Button monitor, refresh, chooseVehicle, logout, login;
   private Switch auto;
   private boolean updating;
   private final List<Button> commands = new ArrayList<>();
   private final Runnable observer = this::update;
   private Runnable thresholdPreview;
+  private boolean foreground, resumePending;
   private BluetoothLeScanner pickerScanner;
   private ScanCallback pickerCallback;
   private final Handler handler = new Handler(Looper.getMainLooper());
@@ -53,12 +56,17 @@ public final class MainActivity extends Activity {
   @Override
   protected void onStart() {
     super.onStart();
+    foreground = true;
+    resumePending = true;
     controller.observe(observer);
     update();
+    controller.updater.foreground(true);
   }
 
   @Override
   protected void onStop() {
+    foreground = false;
+    controller.updater.foreground(false);
     controller.remove(observer);
     stopPicker();
     super.onStop();
@@ -88,10 +96,12 @@ public final class MainActivity extends Activity {
   private LinearLayout card(String title) {
     LinearLayout box = new LinearLayout(this);
     box.setOrientation(LinearLayout.VERTICAL);
-    box.setPadding(dp(18), dp(14), dp(18), dp(16));
-    box.setBackground(background(CARD, 20));
+    box.setPadding(dp(14), dp(12), dp(14), dp(14));
+    GradientDrawable shape = background(CARD, 18);
+    shape.setStroke(dp(1), 0xff252b35);
+    box.setBackground(shape);
     LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
-    p.setMargins(0, dp(12), 0, 0);
+    p.setMargins(0, dp(10), 0, 0);
     body.addView(box, p);
     text(box, title, 14, MINT).setTypeface(null, Typeface.BOLD);
     return box;
@@ -103,9 +113,13 @@ public final class MainActivity extends Activity {
     b.setTextColor(TEXT);
     b.setAllCaps(false);
     b.setTextSize(14);
-    b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff263b53));
+    b.setBackgroundTintList(null);
+    b.setBackground(background(0xff242e3d, 12));
+    b.setPadding(dp(8), dp(4), dp(8), dp(4));
     b.setOnClickListener(listener);
-    box.addView(b, new LinearLayout.LayoutParams(-1, dp(52)));
+    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(50));
+    params.topMargin = dp(6);
+    box.addView(b, params);
     return b;
   }
 
@@ -115,27 +129,37 @@ public final class MainActivity extends Activity {
     scroll.setFillViewport(true);
     body = new LinearLayout(this);
     body.setOrientation(LinearLayout.VERTICAL);
-    body.setPadding(dp(20), dp(24), dp(20), dp(32));
+    body.setPadding(dp(12), dp(18), dp(12), dp(24));
     scroll.addView(body);
     setContentView(scroll);
-    text(body, "D-Autolock", 30, TEXT).setTypeface(null, Typeface.BOLD);
-    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.0", 12, MUTED);
-    LinearLayout dash = card("MY DOLPHIN");
-    vehicle = text(dash, "차량을 연결하세요", 23, TEXT);
-    state = text(dash, "차량 상태 미확인", 15, MUTED);
+    text(body, "D-Autolock", 25, TEXT).setTypeface(null, Typeface.BOLD);
+    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.4", 12, MUTED);
+    LinearLayout alerts = card("알림 · 차량 상태");
+    alerts.setTag("alertsCard");
+    message = text(alerts, "", 17, TEXT);
+    controlDetails = text(alerts, "아직 제어 요청 없음", 14, MINT);
+    controlDetails.setOnClickListener(
+        v ->
+            new AlertDialog.Builder(this)
+                .setTitle("연동 기능 결과")
+                .setMessage(
+                    controller.climateStatus
+                        + "\n\n"
+                        + controller.windowsStatus
+                        + "\n\n"
+                        + controller.stopStatus)
+                .setPositiveButton("닫기", null)
+                .show());
+    controlDetails.setContentDescription("최근 도어 상태. 누르면 공조·창문·전원 종료 결과를 표시합니다");
+    LinearLayout dash = card("BLE 신호 상태");
+    dash.setTag("signalCard");
     signal = text(dash, "신호 대기", 20, MINT);
-    signalGauge = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-    signalGauge.setMax(100);
-    signalGauge.setProgressTintList(android.content.res.ColorStateList.valueOf(MINT));
-    signalGauge.setProgressBackgroundTintList(
-        android.content.res.ColorStateList.valueOf(0xff30465e));
-    dash.addView(signalGauge, new LinearLayout.LayoutParams(-1, dp(18)));
-    text(dash, "약함 −100 dBm                         강함 −30 dBm", 11, MUTED);
+    signalGauge = new SignalGauge(this);
+    dash.addView(signalGauge, new LinearLayout.LayoutParams(-1, dp(32)));
+    text(dash, "약함 −100     주황: 잠금 / 초록: 열림     강함 −30", 11, MUTED);
     signalDetails = text(dash, "현재 미수신 / 평균 —\n수신 0회 · 마지막 수신 없음", 13, MUTED);
     autoDetails = text(dash, "자동 제어 꺼짐", 14, MINT);
-    controlDetails = text(dash, "아직 제어 요청 없음", 13, MUTED);
-    message = text(dash, "", 14, TEXT);
-    refresh = button(dash, "차량 상태 새로고침", v -> controller.refresh());
+    button(dash, "거리 감도 / 대기 시간", v -> thresholdDialog());
     LinearLayout proximity = card("자동 도어");
     text(proximity, "가까워지면 잠금 해제 · 멀어지면 잠금", 17, TEXT);
     text(
@@ -154,7 +178,8 @@ public final class MainActivity extends Activity {
               } else if (permissions(true)) {
                 stopPicker();
                 try {
-                  startForegroundService(new Intent(this, ProximityService.class));
+                  controller.startMonitoring(
+                      controller.settings.getBoolean("autoStart", true), false);
                 } catch (Exception e) {
                   controller.note("거리 관찰을 시작하지 못했습니다. 권한을 확인하세요");
                 }
@@ -189,20 +214,43 @@ public final class MainActivity extends Activity {
               .show();
         });
     LinearLayout controls = card("차량 제어");
+    controls.setTag("controlsCard");
+    vehicle = text(controls, "차량을 연결하세요", 21, TEXT);
+    state = text(controls, "차량 상태 미확인", 14, MUTED);
+    LinearLayout doorRow = new LinearLayout(this);
+    doorRow.setOrientation(LinearLayout.HORIZONTAL);
+    controls.addView(doorRow);
     commands.add(
         button(
-            controls,
+            doorRow,
             "도어 잠금 해제",
             v -> controller.command(CloudClient.Command.UNLOCK, false, () -> true)));
     commands.add(
         button(
-            controls,
+            doorRow,
             "도어 잠금",
             v -> controller.command(CloudClient.Command.LOCK, false, () -> true)));
-    commands.add(button(controls, "Stop · 차량 종료 검증", v -> confirm(CloudClient.Command.STOP)));
+    for (int i = 0; i < doorRow.getChildCount(); i++) {
+      LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(56), 1);
+      p.setMargins(i == 0 ? 0 : dp(4), 0, i == 0 ? dp(4) : 0, 0);
+      doorRow.getChildAt(i).setLayoutParams(p);
+      Button b = (Button) doorRow.getChildAt(i);
+      GradientDrawable gradient =
+          new GradientDrawable(
+              GradientDrawable.Orientation.LEFT_RIGHT,
+              i == 0 ? new int[] {0xff487cf1, 0xff55bdce} : new int[] {0xff5874f3, 0xff7474f3});
+      gradient.setCornerRadius(dp(13));
+      b.setBackground(gradient);
+      b.setTypeface(null, Typeface.BOLD);
+    }
+    LinearLayout secondaryRow = new LinearLayout(this);
+    secondaryRow.setOrientation(LinearLayout.HORIZONTAL);
+    controls.addView(secondaryRow);
+    commands.add(button(secondaryRow, "Stop · 차량 종료", v -> confirm(CloudClient.Command.STOP)));
     capabilities = text(controls, "차량 기능 확인 전", 12, MUTED);
+    refresh = button(controls, "차량 상태 새로고침", v -> controller.refresh());
     button(
-        controls,
+        secondaryRow,
         "공조 2초 동작 · READY",
         v ->
             new AlertDialog.Builder(this)
@@ -213,13 +261,37 @@ public final class MainActivity extends Activity {
                 .setNegativeButton("취소", null)
                 .setPositiveButton("주차 확인 · 실행", (d, w) -> controller.manualPulse())
                 .show());
+    for (int i = 0; i < secondaryRow.getChildCount(); i++) {
+      LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(56), 1);
+      p.setMargins(i == 0 ? 0 : dp(4), dp(6), i == 0 ? dp(4) : 0, 0);
+      Button b = (Button) secondaryRow.getChildAt(i);
+      b.setLayoutParams(p);
+      b.setTextSize(13);
+      b.setTextColor(i == 0 ? 0xffddaa67 : 0xff66cce0);
+      b.setBackground(background(i == 0 ? 0xff3b3027 : 0xff203a43, 12));
+    }
+    LinearLayout options = card("자동 동작 설정");
+    Switch startSwitch = new Switch(this);
+    startSwitch.setText("앱 실행·감도 저장 시 자동 제어 시작");
+    startSwitch.setTextColor(TEXT);
+    startSwitch.setMinHeight(dp(56));
+    startSwitch.setChecked(controller.settings.getBoolean("autoStart", true));
+    options.addView(startSwitch);
+    startSwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          controller.settings.edit().putBoolean("autoStart", on).apply();
+          if (on) {
+            resumePending = true;
+            tryAutoResume();
+          }
+        });
     Switch readySwitch = new Switch(this);
     readySwitch.setText("자동 해제 후 문 열림 → 공조 2초");
     readySwitch.setTextColor(TEXT);
     readySwitch.setPadding(0, dp(12), 0, dp(12));
     readySwitch.setMinHeight(dp(56));
     readySwitch.setChecked(controller.settings.getBoolean("autoReady", false));
-    controls.addView(readySwitch);
+    options.addView(readySwitch);
     readySwitch.setOnCheckedChangeListener((b, on) -> controller.readyOption(on));
     Switch windowsSwitch = new Switch(this);
     windowsSwitch.setText("도어 잠금 시 전체 창문 닫기");
@@ -227,17 +299,30 @@ public final class MainActivity extends Activity {
     windowsSwitch.setPadding(0, dp(12), 0, dp(12));
     windowsSwitch.setMinHeight(dp(56));
     windowsSwitch.setChecked(controller.settings.getBoolean("closeWindows", true));
-    controls.addView(windowsSwitch);
+    options.addView(windowsSwitch);
     windowsSwitch.setOnCheckedChangeListener(
         (b, on) -> {
           controller.settings.edit().putBoolean("closeWindows", on).apply();
           controller.note(on ? "도어 잠금 시 전체 창문 닫기 켜짐" : "창문 닫기 연동 꺼짐");
         });
-    text(controls, "READY · 공조 2초 동작 연동", 16, 0xffffc77d);
+    Switch stopSwitch = new Switch(this);
+    stopSwitch.setText("자동 잠금 후 차량 전원 종료");
+    stopSwitch.setTextColor(TEXT);
+    stopSwitch.setMinHeight(dp(56));
+    stopSwitch.setChecked(controller.settings.getBoolean("autoStop", true));
+    options.addView(stopSwitch);
+    stopSwitch.setOnCheckedChangeListener(
+        (b, on) -> controller.settings.edit().putBoolean("autoStop", on).apply());
     text(
-        controls,
+        options,
+        "자동 종료는 최신 정차·잠금·도어 닫힘·주차브레이크 체결이 확인될 때 요청합니다. 전원 ON에서 주차브레이크 정보가 없으면 이유를 표시하고 보류합니다.",
+        13,
+        MUTED);
+    text(options, "READY · 공조 2초 동작 연동", 16, 0xffffc77d);
+    text(
+        options,
         "사용자 차량에서 확인한 공조 ON/OFF 동작입니다. 자동 해제 후 90초 안의 문 닫힘→열림을 확인하면 실행합니다. 주차브레이크 정보가 없으면 최신 전원"
-            + " OFF·속도 0 상태에서만 요청합니다. READY 자체는 계기판에서 확인하세요. 이탈 시 자동 전원 종료는 포함되지 않습니다.",
+            + " OFF·속도 0 상태에서만 요청합니다. READY 자체는 계기판에서 확인하세요.",
         13,
         MUTED);
     LinearLayout link = card("01  BYD AUTO 계정");
@@ -263,14 +348,44 @@ public final class MainActivity extends Activity {
     LinearLayout bluetooth = card("02  차량 블루투스");
     device = text(bluetooth, "기기 선택 전", 15, TEXT);
     button(bluetooth, "블루투스 기기 검색 / 선택", v -> pickDevice());
-    button(bluetooth, "거리 감도 / 대기 시간", v -> thresholdDialog());
+    button(
+        bluetooth,
+        "BLE 다시 검색",
+        v -> {
+          if (controller.monitoring)
+            startForegroundService(new Intent(this, ProximityService.class).setAction("RESCAN"));
+          else {
+            resumePending = true;
+            tryAutoResume();
+          }
+        });
+    button(
+        bluetooth,
+        "배터리 · 백그라운드 설정",
+        v ->
+            startActivity(
+                new Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.parse("package:" + getPackageName()))));
     text(
         bluetooth,
         "블루투스는 거리 감지용입니다. 도어 제어에는 휴대폰과 차량의 인터넷 연결이 필요합니다. 전원을 끄면 신호가 사라지는 오디오 기기는 사용할 수 없습니다.",
         13,
         MUTED);
-    LinearLayout events = card("최근 동작");
-    log = text(events, "", 12, MUTED);
+    LinearLayout events = card("알림 · 진단 로그 관리");
+    button(
+        events,
+        "휴대폰 알림 설정",
+        v -> {
+          if (Build.VERSION.SDK_INT >= 33
+              && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                  != PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 21);
+          else
+            startActivity(
+                new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName()));
+        });
     button(events, "진단 로그 보기", v -> showDiagnostics());
     button(
         events,
@@ -303,6 +418,56 @@ public final class MainActivity extends Activity {
         MUTED);
     button(body, "사용 안내 · 오픈소스", v -> about());
     text(body, "D-Autolock  ·  비공식 개인용 앱", 12, MUTED);
+    LinearLayout activityLog = card("활동 로그");
+    activityLog.setTag("logCard");
+    log = text(activityLog, "", 12, MUTED);
+    log.setTypeface(Typeface.MONOSPACE);
+    button(activityLog, "전체 로그 보기", v -> showDiagnostics());
+    LinearLayout updates = card("앱 업데이트");
+    updateStatus = text(updates, controller.updater.status, 13, MUTED);
+    Switch updateSwitch = new Switch(this);
+    updateSwitch.setText("새 버전 자동 확인·다운로드");
+    updateSwitch.setTextColor(TEXT);
+    updateSwitch.setMinHeight(dp(48));
+    updateSwitch.setChecked(controller.settings.getBoolean("autoUpdate", true));
+    updates.addView(updateSwitch);
+    updateSwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          controller.settings.edit().putBoolean("autoUpdate", on).apply();
+          if (on) controller.updater.check(false);
+        });
+    button(updates, "업데이트 확인", v -> controller.updater.check(true));
+    installUpdate =
+        button(
+            updates,
+            "업데이트 설치",
+            v -> controller.updater.install(this, () -> !controller.busy(), controller::stop));
+    text(
+        updates, "하루 한 번 GitHub 새 버전을 확인합니다. 다운로드 후 Android 설치 확인이 필요하며 계정과 설정은 유지됩니다.", 12, MUTED);
+    body.removeView(controls);
+    body.addView(controls, 3);
+    body.removeView(dash);
+    body.addView(dash, 3);
+    body.removeView(activityLog);
+    body.addView(activityLog, 5);
+    body.removeView(updates);
+    body.addView(updates, body.indexOfChild(link));
+    styleSwitches(body);
+  }
+
+  private void styleSwitches(View view) {
+    if (view instanceof Switch) {
+      Switch toggle = (Switch) view;
+      toggle.setTextSize(14);
+      toggle.setTrackTintList(
+          new android.content.res.ColorStateList(
+              new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},
+              new int[] {0xff54ba62, 0xff3d4653}));
+      toggle.setThumbTintList(android.content.res.ColorStateList.valueOf(TEXT));
+    } else if (view instanceof ViewGroup) {
+      ViewGroup group = (ViewGroup) view;
+      for (int i = 0; i < group.getChildCount(); i++) styleSwitches(group.getChildAt(i));
+    }
   }
 
   private void update() {
@@ -322,15 +487,18 @@ public final class MainActivity extends Activity {
                 + (s.battery == null ? "미확인" : s.battery.intValue() + "%")
                 + (s.fresh(System.currentTimeMillis()) ? "" : "\n상태가 오래되었거나 시각 미확인")));
     signal.setText(controller.signal);
-    signalGauge.setProgress(controller.signalStrength);
-    signalGauge.setContentDescription(
-        "BLE 수신 강도 " + controller.signalStrength + " / 100. 미수신 시 0.");
+    signalGauge.reading(
+        controller.averageRssi,
+        controller.settings.getInt("near", -65),
+        controller.settings.getInt("far", -80));
     signalDetails.setText(controller.signalDetail);
     if (thresholdPreview != null) thresholdPreview.run();
     autoDetails.setText(controller.autoDetail);
-    controlDetails.setText("최근 제어 · " + controller.lastControl);
+    controlDetails.setText(controller.lastControl + "\n공조 · 창문 · 자동 종료 결과 보기 ›");
     message.setText(controller.message);
-    log.setText(controller.log());
+    log.setText(controller.recentLog());
+    updateStatus.setText(controller.updater.status);
+    installUpdate.setEnabled(controller.updater.installReady && !controller.busy());
     monitor.setText(controller.monitoring ? "거리 관찰 종료" : "거리 관찰 시작");
     updating = true;
     auto.setChecked(controller.autoEnabled);
@@ -382,6 +550,21 @@ public final class MainActivity extends Activity {
               ready
                   && CloudClient.hasFeature(
                       controller.capabilities, CloudClient.Command.values()[i].feature));
+    tryAutoResume();
+  }
+
+  private void tryAutoResume() {
+    if (!foreground
+        || !resumePending
+        || controller.initializing
+        || controller.busy()
+        || !controller.settings.getBoolean("autoStart", true)
+        || !controller.setupReady()) return;
+    resumePending = false;
+    if (!permissions(true)) return;
+    if (controller.monitoring) {
+      if (!controller.autoEnabled) controller.auto(true);
+    } else controller.startMonitoring(true, false);
   }
 
   private EditText field(LinearLayout parent, String hint, int type) {
@@ -624,8 +807,8 @@ public final class MainActivity extends Activity {
     text(
         f,
         "기본값: 접근 −65 / 이탈 −80 dBm, 접근 3초 / 이탈 8초 / 신호 끊김 10초.\n"
-            + "0초도 유효 신호 4회와 차량 상태 조회가 필요합니다. 실제 동작에는 통신 시간과 명령 간격이 더해집니다. 저장하면 관찰이 종료되므로 거리 관찰과 자동"
-            + " 제어를 다시 켜세요.",
+            + "0초도 유효 신호 4회와 차량 상태 조회가 필요합니다. 조회 중 작은 신호 흔들림은 최대 10초·4 dBm 범위에서 허용합니다. 저장하면 자동 시작"
+            + " 설정에 따라 새 기준으로 관찰·자동 제어를 다시 시작합니다.",
         13,
         MUTED);
     ScrollView scroll = new ScrollView(this);
@@ -750,16 +933,7 @@ public final class MainActivity extends Activity {
         && Build.VERSION.SDK_INT >= 33
         && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED) {
-      {
-        {
-          {
-            missing.add(Manifest.permission.POST_NOTIFICATIONS);
-            controller.settings.edit().putBoolean("notificationAsked", true).apply();
-          }
-          controller.settings.edit().putBoolean("notificationAsked", true).apply();
-        }
-        controller.settings.edit().putBoolean("notificationAsked", true).apply();
-      }
+      missing.add(Manifest.permission.POST_NOTIFICATIONS);
       controller.settings.edit().putBoolean("notificationAsked", true).apply();
     }
     if (!missing.isEmpty()) {
@@ -772,7 +946,20 @@ public final class MainActivity extends Activity {
   @Override
   public void onRequestPermissionsResult(int r, String[] p, int[] g) {
     super.onRequestPermissionsResult(r, p, g);
-    if (r == 20) Toast.makeText(this, "권한 설정 후 원하는 버튼을 다시 누르세요", Toast.LENGTH_LONG).show();
+    if (r == 20) {
+      boolean bluetoothGranted = true;
+      for (int i = 0; i < p.length; i++)
+        if (!Manifest.permission.POST_NOTIFICATIONS.equals(p[i])
+            && (i >= g.length || g[i] != PackageManager.PERMISSION_GRANTED))
+          bluetoothGranted = false;
+      if (bluetoothGranted) {
+        resumePending = true;
+        tryAutoResume();
+      } else controller.note("자동 시작 보류 · 주변 기기 권한이 필요합니다");
+    }
+    if (r == 21)
+      controller.note(
+          DoorNotifications.enabled(this) ? "동작 알림 켜짐" : "알림 권한이 꺼져 있습니다. 휴대폰 설정에서 허용하세요");
   }
 
   private void stopPicker() {

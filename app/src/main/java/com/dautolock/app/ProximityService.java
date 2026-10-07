@@ -19,6 +19,8 @@ public final class ProximityService extends Service {
   private final Handler handler = new Handler(Looper.getMainLooper());
   private volatile boolean scanning;
   private boolean autoAttempt;
+  private boolean notificationAutomatic;
+  private long lastScanAttempt;
   private long nextPreflight, lastDiagnostic = -15000, lastCount = -1, started, lastIgnored = -5000;
   private int deviceType;
   private String radioStatus = "BLE 검색 중";
@@ -38,6 +40,7 @@ public final class ProximityService extends Service {
           BluetoothManager manager = getSystemService(BluetoothManager.class);
           BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
           if (adapter == null || !adapter.isEnabled()) return;
+          lastScanAttempt = SystemClock.elapsedRealtime();
           if (scanner != null)
             try {
               scanner.stopScan(this.callback);
@@ -107,6 +110,18 @@ public final class ProximityService extends Service {
         public void run() {
           if (!scanning) return;
           long now = SystemClock.elapsedRealtime();
+          if ((engine.age(now) >= 60000 || (engine.count() == 0 && now - started >= 60000))
+              && now - lastScanAttempt >= 120000) {
+            lastScanAttempt = now;
+            controller.diagnostics.record(
+                "SCAN_WATCHDOG", "noSamplesMs=" + engine.age(now) + " restart=true");
+            restartScan.run();
+          }
+          if (notificationAutomatic != controller.autoEnabled) {
+            notificationAutomatic = controller.autoEnabled;
+            getSystemService(NotificationManager.class)
+                .notify(1, DoorNotifications.ongoing(ProximityService.this, notificationAutomatic));
+          }
           boolean fresh = engine.fresh(now);
           controller.averageRssi = fresh ? engine.rssi() : Double.NaN;
           long cloudWait = controller.cloud.backoffMillis();
@@ -114,23 +129,21 @@ public final class ProximityService extends Service {
               engine.zone(now) + (fresh ? " · " + engine.raw() + " dBm" : " · — dBm");
           controller.signalStrength = fresh ? ProximityEngine.strength(engine.rssi()) : 0;
           controller.signalDetail =
-              "현재 "
-                  + (fresh ? engine.raw() + " dBm" : "미수신")
-                  + " / 평균 "
+              "평균 "
                   + (fresh ? Math.round(engine.rssi()) + " dBm" : "—")
-                  + "\n수신 "
+                  + " · 수신 "
                   + engine.count()
-                  + "회 · 마지막 수신 "
+                  + "회 · "
                   + (engine.age(now) < 0 ? "없음" : engine.age(now) / 1000 + "초 전")
                   + "\n접근 ≥ "
                   + controller.settings.getInt("near", -65)
                   + " / 이탈 ≤ "
                   + controller.settings.getInt("far", -80)
-                  + " dBm\n접근 대기 "
+                  + " dBm\n대기 "
                   + controller.settings.getInt("nearWaitSeconds", 3)
-                  + "초 / 이탈 대기 "
+                  + "초 / "
                   + controller.settings.getInt("farWaitSeconds", 8)
-                  + "초 / 신호 끊김 "
+                  + "초 · 신호 끊김 "
                   + controller.settings.getInt("lossLockSeconds", 10)
                   + "초";
           controller.signalDetail += "\n" + radioStatus;
@@ -179,22 +192,34 @@ public final class ProximityService extends Service {
                     ? CloudClient.Command.UNLOCK
                     : CloudClient.Command.LOCK;
             autoAttempt = true;
+            final ProximityEngine checkedEngine = engine;
+            checkedEngine.beginCheck(action, now);
             boolean accepted =
                 controller.automaticCommand(
                     command,
-                    () -> scanning && engine.stillValid(action, SystemClock.elapsedRealtime()),
-                    () -> scanning && engine.claim(action, SystemClock.elapsedRealtime()),
-                    () -> engine.alreadySatisfied(action, SystemClock.elapsedRealtime()),
+                    () ->
+                        scanning
+                            && engine == checkedEngine
+                            && checkedEngine.stillValid(action, SystemClock.elapsedRealtime()),
+                    () ->
+                        scanning
+                            && engine == checkedEngine
+                            && checkedEngine.claim(action, SystemClock.elapsedRealtime()),
+                    () -> checkedEngine.alreadySatisfied(action, SystemClock.elapsedRealtime()),
                     () ->
                         handler.post(
                             () -> {
                               autoAttempt = false;
+                              checkedEngine.endCheck();
                               long completed = SystemClock.elapsedRealtime();
                               nextPreflight =
                                   engine.pending(completed) == action ? completed + 15000 : 0;
                             }));
-            if (!accepted) autoAttempt = false;
-            else controller.diagnostics.record("AUTO_CHECK", action + " " + engine.diagnostic(now));
+            if (!accepted) {
+              autoAttempt = false;
+              checkedEngine.endCheck();
+            } else
+              controller.diagnostics.record("AUTO_CHECK", action + " " + engine.diagnostic(now));
           }
           if (!autoAttempt && !controller.busy())
             controller.pollEntry(
@@ -224,9 +249,7 @@ public final class ProximityService extends Service {
   public void onCreate() {
     super.onCreate();
     controller = ((DApplication) getApplication()).controller();
-    getSystemService(NotificationManager.class)
-        .createNotificationChannel(
-            new NotificationChannel("proximity", "차량 거리 관찰", NotificationManager.IMPORTANCE_LOW));
+    DoorNotifications.channels(this);
     IntentFilter filter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
     if (Build.VERSION.SDK_INT >= 33) registerReceiver(radio, filter, Context.RECEIVER_EXPORTED);
     else registerReceiver(radio, filter);
@@ -239,28 +262,23 @@ public final class ProximityService extends Service {
       stopSelf();
       return START_NOT_STICKY;
     }
-    if (scanning) return START_NOT_STICKY;
-    PendingIntent open =
-        PendingIntent.getActivity(
-            this,
-            0,
-            new Intent(this, MainActivity.class),
-            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-    PendingIntent stop =
-        PendingIntent.getService(
-            this,
-            1,
-            new Intent(this, ProximityService.class).setAction("STOP"),
-            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-    Notification notification =
-        new Notification.Builder(this, "proximity")
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("D-Autolock · 거리 관찰 중")
-            .setContentText("신호·자동 제어 상태와 진단 로그는 앱에서 확인하세요")
-            .setContentIntent(open)
-            .setOngoing(true)
-            .addAction(new Notification.Action.Builder(null, "관찰 종료", stop).build())
-            .build();
+    boolean automatic =
+        intent != null && intent.getBooleanExtra("automatic", false) && controller.setupReady();
+    if (scanning) {
+      if (intent != null && "RECONFIGURE".equals(intent.getAction())) {
+        engine = controller.proximityEngine();
+        nextPreflight = 0;
+        started = SystemClock.elapsedRealtime();
+        controller.averageRssi = Double.NaN;
+        controller.diagnostics.record("SCAN_RECONFIGURE", "freshSamplesRequired=true");
+      }
+      if (intent != null && "RESCAN".equals(intent.getAction())) restartScan.run();
+      if (intent != null && intent.hasExtra("automatic")) controller.autoEnabled = automatic;
+      controller.changed();
+      return START_NOT_STICKY;
+    }
+    Notification notification = DoorNotifications.ongoing(this, automatic);
+    notificationAutomatic = automatic;
     try {
       if (Build.VERSION.SDK_INT >= 31)
         startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
@@ -283,6 +301,7 @@ public final class ProximityService extends Service {
       if (scanner == null) throw new Exception("BLE 관찰을 시작할 수 없습니다");
       engine = controller.proximityEngine();
       started = SystemClock.elapsedRealtime();
+      lastScanAttempt = started;
       scanning = true;
       scanner.startScan(
           Collections.singletonList(new ScanFilter.Builder().setDeviceAddress(address).build()),
@@ -292,7 +311,7 @@ public final class ProximityService extends Service {
               .build(),
           callback);
       controller.monitoring = true;
-      controller.autoEnabled = false;
+      controller.autoEnabled = automatic;
       PowerManager pm = getSystemService(PowerManager.class);
       controller.diagnostics.record(
           "SCAN_START",
@@ -306,6 +325,16 @@ public final class ProximityService extends Service {
               + controller.settings.getInt("nearWaitSeconds", 3)
               + " farWaitSeconds="
               + controller.settings.getInt("farWaitSeconds", 8));
+      controller.diagnostics.record(
+          "AUTO_OPTIONS",
+          "automatic="
+              + automatic
+              + " climate="
+              + controller.settings.getBoolean("autoReady", false)
+              + " windows="
+              + controller.settings.getBoolean("closeWindows", true)
+              + " stop="
+              + controller.settings.getBoolean("autoStop", true));
       controller.note("관찰 시작 · 1초마다 신호와 판단 상태를 표시하고 진단 로그에 저장합니다");
       controller.prepareMonitoring();
       handler.post(heartbeat);

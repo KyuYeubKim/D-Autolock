@@ -7,6 +7,7 @@ import android.content.DialogInterface;
 import android.os.Looper;
 import android.view.*;
 import android.widget.*;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
@@ -16,6 +17,64 @@ import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = {28, 34})
 public class MainActivityTest {
+  @Before
+  public void noNetworkUpdateChecks() {
+    org.robolectric.RuntimeEnvironment.getApplication()
+        .getSharedPreferences("settings", 0)
+        .edit()
+        .putBoolean("autoUpdate", false)
+        .commit();
+  }
+
+  @Test
+  public void dashboardUsesRequestedCardOrder() {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      View root = a.get().getWindow().getDecorView();
+      View alerts = root.findViewWithTag("alertsCard"),
+          signal = root.findViewWithTag("signalCard"),
+          controls = root.findViewWithTag("controlsCard"),
+          logs = root.findViewWithTag("logCard");
+      ViewGroup parent = (ViewGroup) alerts.getParent();
+      assertTrue(parent.indexOfChild(alerts) < parent.indexOfChild(signal));
+      assertTrue(parent.indexOfChild(signal) < parent.indexOfChild(controls));
+      assertTrue(parent.indexOfChild(controls) < parent.indexOfChild(logs));
+      assertNotNull(find(signal, "거리 감도 / 대기 시간"));
+      assertNotNull(find(controls, "도어 잠금 해제"));
+    }
+  }
+
+  @Test
+  public void restoredSetupStartsAutomaticServiceAndSettingsReconfigureIt() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      org.robolectric.Shadows.shadowOf(a.get().getApplication())
+          .grantPermissions(
+              android.Manifest.permission.BLUETOOTH_SCAN,
+              android.Manifest.permission.BLUETOOTH_CONNECT,
+              android.Manifest.permission.ACCESS_FINE_LOCATION,
+              android.Manifest.permission.ACCESS_COARSE_LOCATION,
+              android.Manifest.permission.POST_NOTIFICATIONS);
+      c.vin = "test-car";
+      c.pinHash = "test-pin";
+      c.cloud.protocol.setSignToken("test-session");
+      c.settings.edit().putString("address", "AA:BB:CC:DD:EE:FF").commit();
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      android.content.Intent start =
+          org.robolectric.Shadows.shadowOf(a.get().getApplication()).getNextStartedService();
+      assertNotNull(start);
+      assertTrue(start.getBooleanExtra("automatic", false));
+      c.thresholds(-60, -75, 1, 4, 10);
+      android.content.Intent reconfigure =
+          org.robolectric.Shadows.shadowOf(a.get().getApplication()).getNextStartedService();
+      assertEquals("RECONFIGURE", reconfigure.getAction());
+      assertTrue(reconfigure.getBooleanExtra("automatic", false));
+    }
+  }
+
   @Test
   public void livePreviewComparesAverageWithDraftThresholdsAndPresetSavesOnlyOnApply()
       throws Exception {
@@ -176,7 +235,7 @@ public class MainActivityTest {
       assertNotNull(find(decor, "블루투스 기기 검색 / 선택"));
       assertNotNull(find(decor, "Sub 계정 로그인 / 변경"));
       assertFalse(find(decor, "도어 잠금 해제").isEnabled());
-      assertFalse(find(decor, "Stop · 차량 종료 검증").isEnabled());
+      assertFalse(find(decor, "Stop · 차량 종료").isEnabled());
       assertFalse(((Switch) find(decor, "실제 자동 도어 제어")).isChecked());
       assertNotNull(find(decor, "READY · 공조 2초 동작 연동"));
       assertNotNull(find(decor, "진단 로그 파일 저장"));

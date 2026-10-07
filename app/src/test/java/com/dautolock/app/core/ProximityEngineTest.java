@@ -7,6 +7,43 @@ import org.junit.Test;
 
 public class ProximityEngineTest {
   @Test
+  public void preflightAllowsSmallFreshDipWithoutChangingInitialThreshold() {
+    ProximityEngine e = new ProximityEngine(-60, -80, 1000, 2000, 10000);
+    for (int t = 0; t <= 2000; t += 200) e.sample(-59, t);
+    assertEquals(UNLOCK, e.pending(2000));
+    e.beginCheck(UNLOCK, 2000);
+    for (int t = 2200; t <= 6000; t += 200) e.sample(-62, t);
+    assertEquals(NONE, e.pending(6000));
+    assertTrue(e.stillValid(UNLOCK, 6000));
+    assertTrue(e.claim(UNLOCK, 6000));
+    assertFalse(e.stillValid(UNLOCK, 6000));
+  }
+
+  @Test
+  public void preflightReservationExpiresOrRevokesForRealDepartureAndLoss() {
+    for (int scenario = 0; scenario < 3; scenario++) {
+      ProximityEngine e = new ProximityEngine(-60, -80, 0, 2000, 10000);
+      feed(e, -50, 0, 3000);
+      e.beginCheck(UNLOCK, 3000);
+      if (scenario == 0) {
+        for (int t = 3200; t <= 13200; t += 200) e.sample(-63, t);
+        assertFalse(e.stillValid(UNLOCK, 13200));
+      } else if (scenario == 1) {
+        feed(e, -100, 4000, 6000);
+        assertFalse(e.stillValid(UNLOCK, 6000));
+      } else assertFalse(e.stillValid(UNLOCK, 9000));
+    }
+  }
+
+  @Test
+  public void unqualifiedSignalCannotReserveAnUnlock() {
+    ProximityEngine e = new ProximityEngine(-60, -80);
+    feed(e, -62, 0, 5000);
+    e.beginCheck(UNLOCK, 5000);
+    assertFalse(e.stillValid(UNLOCK, 5000));
+  }
+
+  @Test
   public void configuredOneSecondApproachReplacesThreeSecondDefault() {
     ProximityEngine e = new ProximityEngine(-65, -80, 1000, 8000, 10000);
     e.sample(-50, 0);

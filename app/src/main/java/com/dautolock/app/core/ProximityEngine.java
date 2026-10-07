@@ -22,6 +22,16 @@ public final class ProximityEngine {
   private long lastSample = -1, since = -1, lastDispatch = -COOLDOWN_MS, received;
   private Zone candidate = Zone.UNKNOWN, stable = Zone.UNKNOWN, handled = Zone.UNKNOWN;
   private boolean seenNear;
+  private long unlockCheckUntil = -1;
+
+  /** Qualify at the configured threshold, then tolerate a small dip during cloud preflight. */
+  public synchronized void beginCheck(Action action, long now) {
+    unlockCheckUntil = action == Action.UNLOCK && pending(now) == action ? now + 10000 : -1;
+  }
+
+  public synchronized void endCheck() {
+    unlockCheckUntil = -1;
+  }
 
   public ProximityEngine(int near, int far) {
     this(near, far, 3000, 8000, LOSS_LOCK_MS);
@@ -46,6 +56,7 @@ public final class ProximityEngine {
   public synchronized Action sample(int rssi, long now) {
     if (rssi < -110 || rssi > -20 || now < 0 || now <= lastSample) return Action.NONE;
     if (lastSample >= 0 && now - lastSample > STALE_MS) {
+      unlockCheckUntil = -1;
       smoothed = Double.NaN;
       candidate = Zone.UNKNOWN;
       stable = Zone.UNKNOWN;
@@ -56,6 +67,7 @@ public final class ProximityEngine {
     raw = rssi;
     received++;
     smoothed = Double.isNaN(smoothed) ? rssi : .3 * rssi + .7 * smoothed;
+    if (smoothed < near - 4) unlockCheckUntil = -1;
     Zone next = smoothed >= near ? Zone.NEAR : smoothed <= far ? Zone.FAR : Zone.UNKNOWN;
     if (next != candidate) {
       candidate = next;
@@ -112,6 +124,13 @@ public final class ProximityEngine {
   }
 
   public synchronized boolean stillValid(Action action, long now) {
+    if (action == Action.UNLOCK
+        && unlockCheckUntil >= now
+        && fresh(now)
+        && smoothed >= near - 4
+        && smoothed > far
+        && handled != Zone.NEAR
+        && cooldown(now) == 0) return true;
     return action != Action.NONE && pending(now) == action;
   }
 
@@ -119,11 +138,15 @@ public final class ProximityEngine {
     if (!stillValid(action, now)) return false;
     handled = action == Action.LOCK ? Zone.FAR : Zone.NEAR;
     lastDispatch = now;
+    unlockCheckUntil = -1;
     return true;
   }
 
   public synchronized void alreadySatisfied(Action action, long now) {
-    if (stillValid(action, now)) handled = action == Action.LOCK ? Zone.FAR : Zone.NEAR;
+    if (stillValid(action, now)) {
+      handled = action == Action.LOCK ? Zone.FAR : Zone.NEAR;
+      unlockCheckUntil = -1;
+    }
   }
 
   public synchronized double rssi() {
@@ -189,6 +212,8 @@ public final class ProximityEngine {
         + cooldown(now)
         + " pending="
         + pending(now)
+        + " unlockCheckMs="
+        + Math.max(0, unlockCheckUntil - now)
         + " nearWaitMs="
         + nearDwellMs
         + " farWaitMs="

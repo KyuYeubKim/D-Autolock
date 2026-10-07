@@ -10,12 +10,19 @@ public final class VehicleSnapshot {
   public final Boolean locked, doorsClosed, windowsClosed;
   public final long measuredAt, receivedAt;
   private final boolean invalidEpb;
+  public final String epbStatus;
 
   public VehicleSnapshot(JSONObject data, long receivedAt) {
     this.receivedAt = receivedAt;
     power = integer(data, "powerGear");
     epb = integer(data, "epb");
-    invalidEpb = data.has("epb") && !data.isNull("epb") && (epb == null || (epb != 0 && epb != 1));
+    Object brake = data.opt("epb");
+    boolean absentBrake = unavailableBrake(brake);
+    invalidEpb = !absentBrake && (epb == null || (epb != 0 && epb != 1));
+    epbStatus =
+        absentBrake
+            ? "unavailable"
+            : invalidEpb ? "invalid" : Integer.valueOf(1).equals(epb) ? "engaged" : "released";
     speed = number(data, "speed");
     battery = number(data, "soc") != null ? number(data, "soc") : number(data, "elecPercent");
     locked =
@@ -43,6 +50,25 @@ public final class VehicleSnapshot {
                 : data.has("timestamp") ? data.opt("timestamp") : data.opt("time"));
   }
 
+  private static boolean unavailableBrake(Object value) {
+    if (value == null || value == JSONObject.NULL) return true;
+    if (value instanceof Boolean) return false;
+    String text = String.valueOf(value).trim();
+    return text.isEmpty()
+        || text.equals("--")
+        || text.equalsIgnoreCase("NaN")
+        || text.equals("-1")
+        || text.equals("-1.0");
+  }
+
+  public String automaticStopBlock(long now) {
+    String block = manualBlock(true, now);
+    if (block != null) return block;
+    if (!Boolean.TRUE.equals(locked) || !Boolean.TRUE.equals(doorsClosed))
+      return "잠금·모든 도어 닫힘 확인이 필요합니다";
+    return null;
+  }
+
   private static Boolean physicalDoors(JSONObject d) {
     String[] keys = {"leftFrontDoor", "rightFrontDoor", "leftRearDoor", "rightRearDoor"};
     boolean unknown = false;
@@ -63,7 +89,9 @@ public final class VehicleSnapshot {
       else if (v == no) noCount++;
       else return null;
     }
-    return yesCount == keys.length ? true : noCount == keys.length ? false : null;
+    if (yesCount == keys.length) return Boolean.TRUE;
+    if (noCount == keys.length) return Boolean.FALSE;
+    return null;
   }
 
   private static Integer integer(JSONObject d, String key) {
@@ -147,6 +175,8 @@ public final class VehicleSnapshot {
         + power
         + " epb="
         + epb
+        + " epbStatus="
+        + epbStatus
         + " locked="
         + locked
         + " doorsClosed="

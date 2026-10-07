@@ -7,6 +7,31 @@ import org.junit.Test;
 
 public class VehicleSnapshotTest {
   @Test
+  public void unavailableBrakeSentinelsAllowOffClimateButNeverOnClimateOrStop() throws Exception {
+    for (Object value : new Object[] {"", "--", "NaN", -1, "-1", JSONObject.NULL}) {
+      JSONObject d = parked().put("epb", value);
+      VehicleSnapshot off = new VehicleSnapshot(d, now);
+      assertEquals("unavailable", off.epbStatus);
+      assertNull(off.climateBlock(now));
+      VehicleSnapshot on = new VehicleSnapshot(d.put("powerGear", 3), now);
+      assertNotNull(on.climateBlock(now));
+      assertNotNull(on.automaticStopBlock(now));
+    }
+  }
+
+  @Test
+  public void automaticStopRequiresFreshStationaryLockedClosedAndEngagedBrake() throws Exception {
+    assertNull(new VehicleSnapshot(parked().put("powerGear", 3), now).automaticStopBlock(now));
+    assertNotNull(
+        new VehicleSnapshot(parked().put("leftFrontDoor", 1), now).automaticStopBlock(now));
+    assertNotNull(
+        new VehicleSnapshot(parked().put("leftFrontDoorLock", 1), now).automaticStopBlock(now));
+    assertNotNull(new VehicleSnapshot(parked().put("speed", 1), now).automaticStopBlock(now));
+    assertNotNull(
+        new VehicleSnapshot(parked().put("time", now - 31000), now).automaticStopBlock(now));
+  }
+
+  @Test
   public void missingEpbAllowsClimateOnlyForFreshOffAndStationaryVehicle() throws Exception {
     JSONObject d = parked();
     d.remove("epb");

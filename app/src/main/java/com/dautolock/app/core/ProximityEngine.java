@@ -96,6 +96,16 @@ public final class ProximityEngine {
     return lastSample >= 0 && now >= lastSample && now - lastSample <= STALE_MS;
   }
 
+  /** Still valid after claiming a lock; loss alone and a returning phone do not qualify. */
+  public synchronized boolean departureConfirmed(long now) {
+    return fresh(now)
+        && seenNear
+        && candidate == Zone.FAR
+        && stable == Zone.FAR
+        && samples >= 4
+        && now - since >= farDwellMs;
+  }
+
   public synchronized long cooldown(long now) {
     return Math.max(0, COOLDOWN_MS - (now - lastDispatch));
   }

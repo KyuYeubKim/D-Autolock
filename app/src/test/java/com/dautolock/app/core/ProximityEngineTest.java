@@ -7,6 +7,21 @@ import org.junit.Test;
 
 public class ProximityEngineTest {
   @Test
+  public void departureEvidenceSurvivesClaimButExpiresWithLossOrReturn() {
+    ProximityEngine e = new ProximityEngine(-60, -80, 0, 1000, 10000);
+    feed(e, -50, 0, 3000);
+    assertFalse(e.departureConfirmed(3000));
+    e.alreadySatisfied(UNLOCK, 3000);
+    feed(e, -100, 4000, 9000);
+    assertTrue(e.departureConfirmed(9000));
+    assertTrue(e.claim(LOCK, 9000));
+    assertTrue(e.departureConfirmed(9000));
+    assertFalse(e.departureConfirmed(15000));
+    feed(e, -50, 15000, 19000);
+    assertFalse(e.departureConfirmed(19000));
+  }
+
+  @Test
   public void preflightAllowsSmallFreshDipWithoutChangingInitialThreshold() {
     ProximityEngine e = new ProximityEngine(-60, -80, 1000, 2000, 10000);
     for (int t = 0; t <= 2000; t += 200) e.sample(-59, t);

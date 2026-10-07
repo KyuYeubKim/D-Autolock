@@ -133,7 +133,7 @@ public final class MainActivity extends Activity {
     scroll.addView(body);
     setContentView(scroll);
     text(body, "D-Autolock", 25, TEXT).setTypeface(null, Typeface.BOLD);
-    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.5", 12, MUTED);
+    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.6", 12, MUTED);
     LinearLayout alerts = card("알림 · 차량 상태");
     alerts.setTag("alertsCard");
     message = text(alerts, "", 17, TEXT);
@@ -321,8 +321,8 @@ public final class MainActivity extends Activity {
         (b, on) -> controller.settings.edit().putBoolean("autoStop", on).apply());
     text(
         options,
-        "자동 종료는 신호로 이탈을 감지하고 최신 정차·잠금·도어 닫힘·주차브레이크 체결이 확인될 때 요청합니다. BLE 끊김만 감지했거나 주차브레이크 정보가 없으면"
-            + " 보류합니다.",
+        "전원 ON·주차브레이크 미제공이어도 신호로 이탈·정차·문 닫힘을 확인하면 도어는 잠급니다. 자동 종료에는 주차브레이크 체결 정보가 필요합니다."
+            + " 정보가 없으면 자동 종료할 수 없으며, P단·주차브레이크를 직접 확인한 뒤 수동 Stop을 사용하세요.",
         13,
         MUTED);
     text(options, "탑승 공조 · READY 상태 진단", 16, 0xffffc77d);
@@ -713,13 +713,17 @@ public final class MainActivity extends Activity {
         .setTitle(cmd.label)
         .setMessage(
             cmd == CloudClient.Command.STOP
-                ? "P단에 주차했고 차량 주변과 탑승자가 안전한지 확인하세요. 정차·주차브레이크 상태를 조회한 뒤 실제 차량 종료 명령을 한 번 전송합니다. 종료"
-                    + " 후 계기판에서 전원 OFF를 직접 확인하세요."
+                ? "차량이 P단이며 주차브레이크가 체결됐고, 주변과 탑승자가 안전한지 직접 확인하세요. 최신 정차 상태를 조회한 뒤 종료를 한 번 요청합니다."
+                    + " BYD가 주차브레이크 정보를 제공하지 않으면 이번 직접 확인을 사용합니다. 해제·유효하지 않은 값이 오면 차단합니다."
+                    + " 확인은 이번 요청에만 30초간 유효하며 자동 종료에는 적용되지 않습니다. 종료 후 계기판 전원 OFF를 확인하세요."
                 : "선택한 차량에 " + cmd.label + " 명령을 전송합니다.")
         .setNegativeButton("취소", null)
         .setPositiveButton(
-            cmd == CloudClient.Command.STOP ? "주차 확인 · 종료" : "실행",
-            (d, w) -> controller.command(cmd, false, () -> true))
+            cmd == CloudClient.Command.STOP ? "P단·주차브레이크 확인 · 종료" : "실행",
+            (d, w) -> {
+              if (cmd == CloudClient.Command.STOP) controller.manualStopAfterParkingConfirmation();
+              else controller.command(cmd, false, () -> true);
+            })
         .show();
   }
 

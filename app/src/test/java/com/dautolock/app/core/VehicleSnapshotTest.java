@@ -38,7 +38,8 @@ public class VehicleSnapshotTest {
     VehicleSnapshot s = new VehicleSnapshot(d, now);
     assertNull(s.epb);
     assertNull(s.climateBlock(now));
-    assertNotNull(s.manualBlock(true, now)); // Stop retains its stronger guard.
+    assertNull(s.manualBlock(true, now)); // Already OFF is skipped without a Stop command.
+    assertNotNull(new VehicleSnapshot(d.put("powerGear", 3), now).manualBlock(true, now));
     assertNotNull(new VehicleSnapshot(d.put("powerGear", 3), now).climateBlock(now));
   }
 
@@ -147,7 +148,58 @@ public class VehicleSnapshotTest {
 
   @Test
   public void stopRequiresParkingBrake() throws Exception {
-    assertNotNull(new VehicleSnapshot(parked().put("epb", 0), now).manualBlock(true, now));
+    assertNotNull(
+        new VehicleSnapshot(parked().put("powerGear", 3).put("epb", 0), now)
+            .manualBlock(true, now));
+  }
+
+  @Test
+  public void unavailableBrakeAllowsOnLockOnlyWithDepartureAndNeverAutomaticStop()
+      throws Exception {
+    JSONObject d = parked().put("powerGear", 3).put("epb", "--");
+    VehicleSnapshot s = new VehicleSnapshot(d, now);
+    assertNull(s.automaticBlock(true, now, true));
+    assertNotNull(s.automaticBlock(true, now, false));
+    assertNotNull(s.automaticBlock(false, now, true));
+    assertNotNull(s.automaticStopBlock(now));
+    for (Object brake : new Object[] {0, 2, false, "invalid"})
+      assertNotNull(new VehicleSnapshot(d.put("epb", brake), now).automaticBlock(true, now, true));
+  }
+
+  @Test
+  public void departureNeverOverridesMissingMovingStaleOrOpenDoorState() throws Exception {
+    JSONObject d = parked().put("powerGear", 3).put("epb", "--");
+    assertNotNull(new VehicleSnapshot(d.put("speed", 1), now).automaticBlock(true, now, true));
+    d.remove("speed");
+    assertNotNull(new VehicleSnapshot(d, now).automaticBlock(true, now, true));
+    d.put("speed", 0).put("leftFrontDoor", 1);
+    assertNotNull(new VehicleSnapshot(d, now).automaticBlock(true, now, true));
+    d.put("leftFrontDoor", 0).put("time", now - 31000);
+    assertNotNull(new VehicleSnapshot(d, now).automaticBlock(true, now, true));
+  }
+
+  @Test
+  public void manualConfirmationCoversOnlyUnavailableBrakeNotUnsafeOrUnknownMotion()
+      throws Exception {
+    JSONObject d = parked().put("powerGear", 3).put("epb", "--");
+    assertNull(new VehicleSnapshot(d, now).manualStopBlock(now, true));
+    assertNotNull(new VehicleSnapshot(d, now).manualStopBlock(now, false));
+    for (Object brake : new Object[] {0, 2, false, "invalid"})
+      assertNotNull(new VehicleSnapshot(d.put("epb", brake), now).manualStopBlock(now, true));
+    d.put("epb", "--").put("speed", 1);
+    assertNotNull(new VehicleSnapshot(d, now).manualStopBlock(now, true));
+    d.remove("speed");
+    assertNotNull(new VehicleSnapshot(d, now).manualStopBlock(now, true));
+    d.put("speed", 0).put("time", now - 31000);
+    assertNotNull(new VehicleSnapshot(d, now).manualStopBlock(now, true));
+  }
+
+  @Test
+  public void alreadyOffCanBeRecognizedWithoutBrakeButStillRequiresFreshStationaryState()
+      throws Exception {
+    JSONObject d = parked().put("epb", "--");
+    assertNull(new VehicleSnapshot(d, now).manualStopBlock(now, false));
+    assertNotNull(new VehicleSnapshot(d.put("speed", 1), now).manualStopBlock(now, true));
   }
 
   @Test

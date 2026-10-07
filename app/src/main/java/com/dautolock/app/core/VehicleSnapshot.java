@@ -136,20 +136,40 @@ public final class VehicleSnapshot {
   }
 
   public String automaticBlock(boolean lock, long now) {
+    return automaticBlock(lock, now, false);
+  }
+
+  /** Departure can qualify a door lock, never a power-off request. */
+  public String automaticBlock(boolean lock, long now, boolean departureConfirmed) {
     if (!fresh(now)) return "차량 상태가 오래되었거나 측정 시각이 없습니다";
     if (speed == null || speed != 0d) return "정차 상태를 확인하지 못했습니다";
-    if (power == null || (power != 1 && !(lock && power == 3 && Integer.valueOf(1).equals(epb))))
-      return lock ? "전원 OFF 또는 ON·주차브레이크 체결을 확인하지 못했습니다" : "자동 잠금 해제는 차량 전원 OFF 상태에서 실행합니다";
+    if (power == null || (power != 1 && power != 3)) return "차량 전원 상태를 확인하지 못했습니다";
+    if (!lock && power != 1) return "자동 잠금 해제는 차량 전원 OFF 상태에서 실행합니다";
+    if (lock && power == 3 && !Integer.valueOf(1).equals(epb)) {
+      if (!"unavailable".equals(epbStatus)) return "주차브레이크 해제 또는 알 수 없는 상태입니다";
+      if (!departureConfirmed) return "전원 ON·주차브레이크 미제공: 신호 세기로 이탈을 확인해야 잠급니다";
+    }
     if (locked == null) return "도어 잠금 상태를 확인하지 못했습니다";
     if (lock && !Boolean.TRUE.equals(doorsClosed)) return "모든 도어가 닫혔는지 확인하지 못했습니다";
     return null;
   }
 
   public String manualBlock(boolean stop, long now) {
+    if (stop) return manualStopBlock(now, false);
     if (!fresh(now)) return "최신 차량 상태를 확인하지 못했습니다";
     if (speed == null || speed != 0d) return "차량 정차를 확인하지 못했습니다";
-    if (stop && (epb == null || epb != 1)) return "주차브레이크 체결을 확인하지 못했습니다";
-    if (stop && (power == null || (power != 1 && power != 3))) return "차량 전원 상태를 확인하지 못했습니다";
+    return null;
+  }
+
+  /** A one-use manual parking confirmation may cover absent telemetry, never a released brake. */
+  public String manualStopBlock(long now, boolean parkingConfirmed) {
+    String block = manualBlock(false, now);
+    if (block != null) return block;
+    if (power == null || (power != 1 && power != 3)) return "차량 전원 상태를 확인하지 못했습니다";
+    if (power == 1) return null; // Already OFF: skip the command without requiring EPB telemetry.
+    if (Integer.valueOf(1).equals(epb)) return null;
+    if (!"unavailable".equals(epbStatus)) return "주차브레이크 해제 또는 알 수 없는 상태입니다";
+    if (!parkingConfirmed) return "주차브레이크 정보 미제공 · 자동 종료 불가. P단·주차브레이크를 직접 확인한 뒤 수동 Stop을 사용하세요";
     return null;
   }
 

@@ -247,7 +247,7 @@ public class CloudProtocol {
                         callback.onError(error.getMessage(), error);
                         return;
                       }
-                      callback.onError("BYD 요청 거부 (코드 " + resCode + "). 잠시 후 다시 시도하세요", null);
+                      callback.onError("BYD 요청 거부 (코드 " + resCode + "). 차량 상태·명령 지원 여부를 확인하세요", null);
                       return;
                     }
 

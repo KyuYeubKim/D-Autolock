@@ -22,6 +22,7 @@ public class CommandFlowTest {
     boolean doorOpen, openOnUnlock, rejectClimate, rejectHvac;
     Object okLight = JSONObject.NULL;
     int statusRequests, hvacRequests;
+    Runnable beforeStatus = () -> {};
     final List<String> commands = new ArrayList<>();
 
     Protocol() {
@@ -44,6 +45,7 @@ public class CommandFlowTest {
           }
           cb.onSuccess(new JSONObject().put("status", 1).put("time", System.currentTimeMillis()));
         } else if (endpoint.endsWith("vehicleRealTimeResult")) {
+          beforeStatus.run();
           JSONObject s =
               new JSONObject()
                   .put("time", System.currentTimeMillis())
@@ -121,7 +123,7 @@ public class CommandFlowTest {
   }
 
   @Test
-  public void automaticLockClosesWindowsThenStopsOnlyWithKnownBrake() throws Exception {
+  public void automaticLockStopsThenClosesWindowsOnlyWithKnownBrake() throws Exception {
     Protocol p = new Protocol();
     p.power = 3;
     p.epb = 1;
@@ -130,7 +132,7 @@ public class CommandFlowTest {
     c.autoEnabled = true;
     c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {});
     complete(c);
-    assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW", "TURNOFFENGINE"), p.commands);
+    assertEquals(Arrays.asList("LOCKDOOR", "TURNOFFENGINE", "CLOSEWINDOW"), p.commands);
     assertTrue(c.stopStatus.contains("전원 OFF 확인"));
   }
 
@@ -246,5 +248,74 @@ public class CommandFlowTest {
     assertEquals(Collections.singletonList("OPENAIR"), p.commands);
     main.idleFor(java.time.Duration.ofMinutes(5));
     assertEquals(6, p.statusRequests);
+  }
+
+  @Test
+  public void poweredUnavailableBrakeVehicleLocksOnDepartureButNeverAutomaticallyStops()
+      throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
+    assertTrue(c.stopStatus.contains("자동 종료 불가"));
+  }
+
+  @Test
+  public void lostDepartureEvidenceCannotAuthorizePoweredLockWithMissingBrake() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    java.util.concurrent.atomic.AtomicBoolean far =
+        new java.util.concurrent.atomic.AtomicBoolean(true);
+    p.beforeStatus = () -> far.set(false);
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(
+        CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, far::get);
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertTrue(c.lastControl.contains("신호 세기로 이탈"));
+  }
+
+  @Test
+  public void manualParkingConfirmationStopsOnceAndClosesLockedWindowsAfterPowerOff()
+      throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    p.locked = true;
+    Controller c = create(p);
+    c.manualStopAfterParkingConfirmation();
+    complete(c);
+    assertEquals(Arrays.asList("TURNOFFENGINE", "CLOSEWINDOW"), p.commands);
+    assertTrue(c.stopStatus.contains("완료"));
+    p.power = 3;
+    c.command(CloudClient.Command.STOP, false, () -> true);
+    complete(c);
+    assertEquals(Arrays.asList("TURNOFFENGINE", "CLOSEWINDOW"), p.commands);
+    assertTrue(c.lastControl.contains("주차브레이크 정보 미제공"));
+  }
+
+  @Test
+  public void manualParkingConfirmationExpiresDuringSlowStatusRequest() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    p.beforeStatus =
+        () -> org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(31));
+    Controller c = create(p);
+    c.manualStopAfterParkingConfirmation();
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+  }
+
+  @Test
+  public void manualStopAlreadyOffWithoutBrakeIsSkippedNotBlocked() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    c.manualStopAfterParkingConfirmation();
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertTrue(c.stopStatus.contains("이미 전원 OFF"));
   }
 }

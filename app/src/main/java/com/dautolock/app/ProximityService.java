@@ -215,7 +215,10 @@ public final class ProximityService extends Service {
                               nextPreflight =
                                   engine.pending(completed) == action ? completed + 15000 : 0;
                             }),
-                    engine.fresh(now));
+                    () ->
+                        scanning
+                            && engine == checkedEngine
+                            && checkedEngine.departureConfirmed(SystemClock.elapsedRealtime()));
             if (!accepted) {
               autoAttempt = false;
               checkedEngine.endCheck();

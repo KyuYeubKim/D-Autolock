@@ -61,7 +61,7 @@ final class Controller {
     diagnostics = new DiagnosticLog(new java.io.File(context.getFilesDir(), "diagnostics"));
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.2.5 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.2.6 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -385,7 +385,22 @@ final class Controller {
   }
 
   void command(CloudClient.Command command, boolean automatic, BooleanSupplier proximityValid) {
-    executeCommand(command, automatic, proximityValid, () -> true, () -> {}, () -> {}, false);
+    executeCommand(
+        command, automatic, proximityValid, () -> true, () -> {}, () -> {}, () -> false, -1);
+  }
+
+  /** Called only by this operation's P/parking-brake confirmation button; never persisted. */
+  void manualStopAfterParkingConfirmation() {
+    diagnostics.record("MANUAL_PARKING_CONFIRM", "oneUse=true expiresSeconds=30");
+    executeCommand(
+        CloudClient.Command.STOP,
+        false,
+        () -> true,
+        () -> true,
+        () -> {},
+        () -> {},
+        () -> false,
+        SystemClock.elapsedRealtime());
   }
 
   boolean automaticCommand(
@@ -404,7 +419,41 @@ final class Controller {
       Runnable alreadyDone,
       Runnable finished,
       boolean departureConfirmed) {
-    return executeCommand(command, true, valid, claim, alreadyDone, finished, departureConfirmed);
+    return automaticCommand(command, valid, claim, alreadyDone, finished, () -> departureConfirmed);
+  }
+
+  boolean automaticCommand(
+      CloudClient.Command command,
+      BooleanSupplier valid,
+      BooleanSupplier claim,
+      Runnable alreadyDone,
+      Runnable finished,
+      BooleanSupplier departureConfirmed) {
+    return executeCommand(
+        command, true, valid, claim, alreadyDone, finished, departureConfirmed, -1);
+  }
+
+  private boolean parkingConfirmationCurrent(long confirmedAt) {
+    long elapsed = SystemClock.elapsedRealtime() - confirmedAt;
+    return confirmedAt >= 0 && elapsed >= 0 && elapsed <= 30000;
+  }
+
+  private String controlBlock(
+      VehicleSnapshot state,
+      CloudClient.Command command,
+      boolean automatic,
+      boolean departureConfirmed,
+      boolean parkingConfirmed) {
+    long now = System.currentTimeMillis();
+    boolean lock = command == CloudClient.Command.LOCK;
+    String block =
+        command == CloudClient.Command.STOP
+            ? state.manualStopBlock(now, !automatic && parkingConfirmed)
+            : automatic && !(lock && Boolean.TRUE.equals(state.locked))
+                ? state.automaticBlock(lock, now, departureConfirmed)
+                : state.manualBlock(false, now);
+    if (block != null) return block;
+    return lock && !Boolean.TRUE.equals(state.doorsClosed) ? "모든 도어가 닫혔는지 확인하지 못했습니다" : null;
   }
 
   private boolean executeCommand(
@@ -414,13 +463,15 @@ final class Controller {
       BooleanSupplier claim,
       Runnable alreadyDone,
       Runnable finished,
-      boolean departureConfirmed) {
+      BooleanSupplier departureConfirmed,
+      long parkingConfirmedAt) {
     int ticket = generation.get();
     String target = vin;
     BooleanSupplier valid =
         () ->
             ticket == generation.get()
                 && target.equals(vin)
+                && (parkingConfirmedAt < 0 || parkingConfirmationCurrent(parkingConfirmedAt))
                 && (!automatic || (monitoring && autoEnabled && proximityValid.getAsBoolean()));
     return run(
         () -> {
@@ -444,13 +495,15 @@ final class Controller {
                     + snapshot.diagnostic(System.currentTimeMillis()));
             boolean lock = command == CloudClient.Command.LOCK,
                 stop = command == CloudClient.Command.STOP;
+            VehicleSnapshot checked = snapshot;
             String block =
-                automatic && !(lock && Boolean.TRUE.equals(snapshot.locked))
-                    ? snapshot.automaticBlock(lock, System.currentTimeMillis())
-                    : snapshot.manualBlock(stop, System.currentTimeMillis());
+                controlBlock(
+                    checked,
+                    command,
+                    automatic,
+                    departureConfirmed.getAsBoolean(),
+                    parkingConfirmationCurrent(parkingConfirmedAt));
             if (block != null) throw new Exception("제어 보류: " + block);
-            if (lock && !Boolean.TRUE.equals(snapshot.doorsClosed))
-              throw new Exception("모든 도어가 닫혔는지 확인하지 못했습니다");
             if ((stop && Integer.valueOf(1).equals(snapshot.power))
                 || (!stop && Boolean.valueOf(lock).equals(snapshot.locked))) {
               if (automatic && valid.getAsBoolean()) alreadyDone.run();
@@ -458,6 +511,7 @@ final class Controller {
                   && command == CloudClient.Command.UNLOCK
                   && validSession(ticket, target)) armEntry(ticket, snapshot);
               lastControl = "BYD 조회상 이미 " + command.label + " 상태 · 명령 생략";
+              if (stop) stopStatus = "차량 종료 · BYD 조회상 이미 전원 OFF";
               diagnostics.record(
                   "CONTROL_SKIP_STATE",
                   (automatic ? "AUTO " : "MANUAL ") + command + " source=cloud");
@@ -483,7 +537,30 @@ final class Controller {
                 pinHash,
                 command,
                 () -> {
-                  if (!valid.getAsBoolean() || (automatic && !claim.getAsBoolean())) return false;
+                  if (!valid.getAsBoolean()) return false;
+                  String dispatchBlock =
+                      controlBlock(
+                          checked,
+                          command,
+                          automatic,
+                          departureConfirmed.getAsBoolean(),
+                          parkingConfirmationCurrent(parkingConfirmedAt));
+                  if (dispatchBlock != null) {
+                    diagnostics.record("CONTROL_RECHECK_BLOCK", dispatchBlock);
+                    return false;
+                  }
+                  if (automatic && !claim.getAsBoolean()) return false;
+                  if (lock
+                      && automatic
+                      && Integer.valueOf(3).equals(checked.power)
+                      && "unavailable".equals(checked.epbStatus))
+                    diagnostics.record(
+                        "LOCK_GUARD",
+                        "basis=stationary_closed_fresh_departure epb=unavailable"
+                            + " stopAuthorized=false");
+                  if (stop && "unavailable".equals(checked.epbStatus))
+                    diagnostics.record(
+                        "STOP_GUARD", "basis=one_use_manual_parking_confirmation epb=unavailable");
                   diagnostics.record("CONTROL_SEND", (automatic ? "AUTO " : "MANUAL ") + command);
                   dispatched.set(true);
                   lastControl = command.label + " · 전송 중";
@@ -505,6 +582,7 @@ final class Controller {
                     ? command.label + " 완료 · 차량 상태 확인됨"
                     : "명령 응답 수신 · 실제 차량 상태는 미확인. 차량에서 확인하세요");
             note(lastControl);
+            if (stop) stopStatus = "수동 종료 · " + lastControl;
             DoorNotifications.result(
                 context,
                 verified ? command.label + " 확인" : command.label + " 결과 미확인",
@@ -514,6 +592,8 @@ final class Controller {
                   () -> validSession(ticket, target) && (!automatic || (monitoring && autoEnabled)),
                   automatic,
                   departureConfirmed);
+            if (stop && verified && Boolean.TRUE.equals(after.locked))
+              closeWindowsAfterLock(() -> validSession(ticket, target));
             if (automatic
                 && command == CloudClient.Command.UNLOCK
                 && verified
@@ -524,6 +604,7 @@ final class Controller {
             }
           } catch (Exception e) {
             lastControl = command.label + " · " + e.getMessage();
+            if (command == CloudClient.Command.STOP) stopStatus = "차량 종료 미완료 · " + e.getMessage();
             diagnostics.record(
                 "CONTROL_BLOCK_OR_ERROR", (automatic ? "AUTO " : "MANUAL ") + lastControl);
             if (!automatic || dispatched.get())
@@ -659,18 +740,21 @@ final class Controller {
     return ticket == generation.get() && target.equals(vin);
   }
 
-  private void afterLock(BooleanSupplier valid, boolean automatic, boolean departureConfirmed) {
+  private void afterLock(
+      BooleanSupplier valid, boolean automatic, BooleanSupplier departureConfirmed) {
     cancelReadinessWatch("도어 잠금 처리");
     entryUntil = 0;
-    closeWindowsAfterLock(valid);
     if (automatic && settings.getBoolean("autoStop", true)) {
-      if (departureConfirmed) stopAfterLock(valid);
+      if (departureConfirmed.getAsBoolean())
+        stopAfterLock(() -> valid.getAsBoolean() && departureConfirmed.getAsBoolean());
       else {
-        stopStatus = "자동 종료 보류 · BLE 끊김만으로 하차를 판단하지 않습니다";
-        diagnostics.record("AUTO_STOP_SKIP", "reason=signal_loss_only departureConfirmed=false");
+        stopStatus = "자동 종료 보류 · BLE 끊김 또는 이탈 신호 미확인";
+        diagnostics.record(
+            "AUTO_STOP_SKIP", "reason=departure_not_confirmed departureConfirmed=false");
         note(stopStatus);
       }
     }
+    closeWindowsAfterLock(valid);
   }
 
   private void stopAfterLock(BooleanSupplier valid) {

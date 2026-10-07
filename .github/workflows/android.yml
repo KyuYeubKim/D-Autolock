@@ -25,4 +25,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: D-Autolock-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            bridge/build/outputs/apk/debug/bridge-debug.apk

@@ -24,3 +24,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 OkHttp 4.12.0 and Okio: Apache License 2.0. https://square.github.io/okhttp/
 Kotlin standard library: Apache License 2.0. https://kotlinlang.org/
+ZXing core and ZXing Android Embedded: Apache License 2.0.
+https://github.com/zxing/zxing
+https://github.com/journeyapps/zxing-android-embedded
+
+The read-only DiLink gearbox adapter references the vehicle API mappings and
+getter Context compatibility supplied by the vehicle owner in etc/.
+The supplied application sources are not bundled or published with this project.

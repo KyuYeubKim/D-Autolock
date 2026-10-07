@@ -63,8 +63,20 @@ public final class VehicleSnapshot {
   }
 
   public String automaticStopBlock(long now) {
-    String block = manualBlock(true, now);
+    return automaticStopBlock(now, false, -1);
+  }
+
+  /** A verified live P may cover absent EPB only, never explicit released/invalid telemetry. */
+  public String automaticStopBlock(long now, boolean livePark, int vehicleBrake) {
+    String block = manualBlock(false, now);
     if (block != null) return block;
+    if (power == null || (power != 1 && power != 3)) return "차량 전원 상태를 확인하지 못했습니다";
+    if (power == 3) {
+      if (vehicleBrake == 0 || "released".equals(epbStatus) || "invalid".equals(epbStatus))
+        return "주차브레이크 해제 또는 알 수 없는 상태입니다";
+      if (!Integer.valueOf(1).equals(epb) && !livePark)
+        return "주차브레이크 정보 미제공 · 자동 종료 불가. 차량 보조 앱의 최신 P단 또는 수동 주차 확인이 필요합니다";
+    }
     if (!Boolean.TRUE.equals(locked) || !Boolean.TRUE.equals(doorsClosed))
       return "잠금·모든 도어 닫힘 확인이 필요합니다";
     return null;

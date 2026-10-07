@@ -112,6 +112,117 @@ public class CommandFlowTest {
     assertFalse(c.busy());
   }
 
+  private void bridgeParked(Controller c) throws Exception {
+    c.settings.edit().putBoolean("vehicleLinkRequired", true).commit();
+    java.lang.reflect.Field pair = VehicleLink.class.getDeclaredField("pairing");
+    pair.setAccessible(true);
+    pair.set(c.vehicleLink, com.dautolock.link.Pairing.create());
+    java.lang.reflect.Field vehicle = VehicleLink.class.getDeclaredField("vehicle");
+    vehicle.setAccessible(true);
+    vehicle.set(c.vehicleLink, c.vin);
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(3));
+    long now = android.os.SystemClock.elapsedRealtime();
+    com.dautolock.link.LinkProtocol.Sample sample =
+        new com.dautolock.link.LinkProtocol.Sample(0, -1, 1, 3, -1, 0);
+    for (long offset : new long[] {2000, 1000, 0})
+      c.vehicleLink.state.accept(sample, now - offset, now - offset);
+  }
+
+  @Test
+  public void pairedLivePAllowsMissingBrakeStopAfterLockAndVerifiesOff() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    bridgeParked(c);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    assertEquals(Arrays.asList("LOCKDOOR", "TURNOFFENGINE", "CLOSEWINDOW"), p.commands);
+    assertTrue(c.stopStatus.contains("전원 OFF 확인"));
+  }
+
+  @Test
+  public void lostBridgeAfterDoorLockNeverFallsBackToCloudBrake() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    p.epb = 1;
+    Controller c = create(p);
+    bridgeParked(c);
+    p.beforeStatus =
+        () -> {
+          if (p.statusRequests >= 3) c.vehicleLink.state.clear();
+        };
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
+    assertTrue(c.stopStatus.contains("연결 끊김"));
+  }
+
+  @Test
+  public void changedGearAfterLockCancelsStop() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    bridgeParked(c);
+    p.beforeStatus =
+        () -> {
+          if (p.statusRequests >= 3) {
+            long n = android.os.SystemClock.elapsedRealtime();
+            c.vehicleLink.state.accept(
+                new com.dautolock.link.LinkProtocol.Sample(3, -1, 4, 2, -1, 0), n, n);
+          }
+        };
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
+    assertTrue(c.stopStatus.contains("P단 미확인"));
+  }
+
+  @Test
+  public void removedOrWrongVehiclePairingCannotAuthorizeStop() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    p.epb = 1;
+    Controller c = create(p);
+    bridgeParked(c);
+    c.vin = "another-car";
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    assertFalse(p.commands.contains("TURNOFFENGINE"));
+    assertTrue(c.stopStatus.contains("QR"));
+  }
+
+  @Test
+  public void stalePairingCannotAuthorizeStopEvenWithCloudBrake() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    p.epb = 1;
+    Controller c = create(p);
+    bridgeParked(c);
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(4));
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    assertFalse(p.commands.contains("TURNOFFENGINE"));
+  }
+
+  @Test
+  public void livePDoesNotReplaceFreshDepartureSignal() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    p.locked = true;
+    Controller c = create(p);
+    bridgeParked(c);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, false);
+    complete(c);
+    assertFalse(p.commands.contains("TURNOFFENGINE"));
+    assertTrue(c.stopStatus.contains("이탈"));
+  }
+
   @Test
   public void manualLockSendsCloseWindowsEvenIfCloudAlreadyReportsClosed() throws Exception {
     Protocol p = new Protocol();

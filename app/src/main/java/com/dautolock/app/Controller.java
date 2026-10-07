@@ -15,6 +15,7 @@ final class Controller {
   final android.content.SharedPreferences settings;
   final DiagnosticLog diagnostics;
   final AutoUpdater updater;
+  final VehicleLink vehicleLink;
   private final SecureStore store;
   private final Supplier<CloudClient> clients;
   volatile String loginUser = "";
@@ -59,9 +60,10 @@ final class Controller {
     settings = context.getSharedPreferences("settings", 0);
     updater = new AutoUpdater(context, settings, this::changed);
     diagnostics = new DiagnosticLog(new java.io.File(context.getFilesDir(), "diagnostics"));
+    vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.2.6 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.2.7 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -83,6 +85,7 @@ final class Controller {
           } catch (Exception e) {
             note("저장된 계정을 복원하지 못했습니다. 다시 로그인하세요");
           } finally {
+            vehicleLink.restore();
             initializing = false;
             changed();
           }
@@ -167,6 +170,7 @@ final class Controller {
       return;
     }
     try {
+      startVehicleLink();
       context.startForegroundService(
           new Intent(context, ProximityService.class)
               .setAction(reconfigure ? "RECONFIGURE" : "START")
@@ -255,6 +259,7 @@ final class Controller {
           vehicleName = nextName;
           pinHash = savedPin;
           if (!same) settings.edit().remove("address").remove("deviceName").apply();
+          if (!same) vehicleLink.forget();
           snapshot = null;
           capabilities = new JSONObject();
           vehicles = new JSONArray();
@@ -283,6 +288,7 @@ final class Controller {
         () -> {
           String selectedVin = vehicle.getString("vin");
           if (!selectedVin.equals(vin)) {
+            vehicleLink.forget();
             settings.edit().remove("address").remove("deviceName").apply();
           }
           vin = selectedVin;
@@ -348,6 +354,7 @@ final class Controller {
     run(
         () -> {
           store.clear();
+          vehicleLink.forget();
           cloud = configure(clients.get());
           loginUser = "";
           loginPassword = "";
@@ -453,6 +460,12 @@ final class Controller {
                 ? state.automaticBlock(lock, now, departureConfirmed)
                 : state.manualBlock(false, now);
     if (block != null) return block;
+    if (command == CloudClient.Command.STOP
+        && !Integer.valueOf(1).equals(state.power)
+        && vehicleLink.required()) {
+      String liveBlock = vehicleLink.block();
+      if (liveBlock != null) return liveBlock;
+    }
     return lock && !Boolean.TRUE.equals(state.doorsClosed) ? "모든 도어가 닫혔는지 확인하지 못했습니다" : null;
   }
 
@@ -659,6 +672,8 @@ final class Controller {
     entryUntil = 0;
     monitoring = false;
     context.stopService(new Intent(context, ProximityService.class));
+    vehicleLink.stop();
+    context.stopService(new Intent(context, VehicleLinkService.class));
     changed();
   }
 
@@ -768,7 +783,7 @@ final class Controller {
         changed();
         return;
       }
-      String block = snapshot.automaticStopBlock(System.currentTimeMillis());
+      String block = automaticStopBlock();
       if (block != null) throw new Exception(block);
       if (!CloudClient.hasFeature(capabilities, CloudClient.Command.STOP.feature))
         capabilities = cloud.capabilities(vin);
@@ -780,9 +795,15 @@ final class Controller {
           pinHash,
           CloudClient.Command.STOP,
           () -> {
-            if (!valid.getAsBoolean()
-                || snapshot.automaticStopBlock(System.currentTimeMillis()) != null) return false;
-            diagnostics.record("AUTO_STOP_SEND", "afterLock=true");
+            String latestBlock = automaticStopBlock();
+            if (!valid.getAsBoolean() || latestBlock != null) {
+              diagnostics.record(
+                  "AUTO_STOP_RECHECK_BLOCK", latestBlock == null ? "이탈·세션 조건 변경" : latestBlock);
+              return false;
+            }
+            diagnostics.record(
+                "AUTO_STOP_SEND",
+                "afterLock=true source=" + (vehicleLink.required() ? "live_P" : "cloud_EPB"));
             return true;
           });
       observeSnapshot(cloud.snapshot(vin), true);
@@ -799,6 +820,21 @@ final class Controller {
       note(stopStatus);
       diagnostics.record("AUTO_STOP_BLOCK_OR_ERROR", e.getMessage());
       DoorNotifications.result(context, "도어 잠김 · 자동 종료 미완료", e.getMessage());
+    }
+  }
+
+  private String automaticStopBlock() {
+    if (vehicleLink.required()) return vehicleLink.automaticStopBlock(snapshot);
+    return snapshot.automaticStopBlock(System.currentTimeMillis());
+  }
+
+  void startVehicleLink() {
+    if (!vehicleLink.configured()) return;
+    try {
+      context.startForegroundService(new Intent(context, VehicleLinkService.class));
+    } catch (Exception e) {
+      vehicleLink.status = "차량 상태 연결 시작 보류 · 주변 기기 권한을 확인하세요";
+      diagnostics.record("VEHICLE_LINK_START_ERROR", e.getClass().getSimpleName());
     }
   }
 

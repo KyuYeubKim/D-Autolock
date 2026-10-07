@@ -5,3 +5,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = 'D-Autolock'
 include ':app'
+include ':vehiclelink', ':bridge'

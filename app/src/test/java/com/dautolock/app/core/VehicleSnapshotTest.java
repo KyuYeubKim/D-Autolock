@@ -7,6 +7,28 @@ import org.junit.Test;
 
 public class VehicleSnapshotTest {
   @Test
+  public void livePOnlyCoversUnavailableBrakeAndKeepsOtherStopConditions() throws Exception {
+    JSONObject d = parked().put("powerGear", 3).put("epb", JSONObject.NULL);
+    assertNull(new VehicleSnapshot(d, now).automaticStopBlock(now, true, -1));
+    assertNotNull(new VehicleSnapshot(d, now).automaticStopBlock(now, false, -1));
+    assertNotNull(new VehicleSnapshot(d, now).automaticStopBlock(now, true, 0));
+    for (Object v : new Object[] {0, 2, false})
+      assertNotNull(
+          new VehicleSnapshot(new JSONObject(d.toString()).put("epb", v), now)
+              .automaticStopBlock(now, true, 1));
+    for (String key : new String[] {"speed", "leftFrontDoor"})
+      assertNotNull(
+          new VehicleSnapshot(new JSONObject(d.toString()).put(key, 1), now)
+              .automaticStopBlock(now, true, -1));
+    assertNotNull(
+        new VehicleSnapshot(new JSONObject(d.toString()).put("leftFrontDoorLock", 1), now)
+            .automaticStopBlock(now, true, -1));
+    assertNotNull(
+        new VehicleSnapshot(new JSONObject(d.toString()).put("time", now - 31000), now)
+            .automaticStopBlock(now, true, -1));
+  }
+
+  @Test
   public void unavailableBrakeSentinelsAllowOffClimateButNeverOnClimateOrStop() throws Exception {
     for (Object value : new Object[] {"", "--", "NaN", -1, "-1", JSONObject.NULL}) {
       JSONObject d = parked().put("epb", value);

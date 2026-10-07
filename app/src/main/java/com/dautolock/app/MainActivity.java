@@ -33,6 +33,7 @@ public final class MainActivity extends Activity {
   private TextView signalDetails, autoDetails, autoReason, controlDetails, readyDetails;
   private SignalGauge signalGauge;
   private TextView updateStatus;
+  private TextView bridgeStatus;
   private Button installUpdate;
   private Button monitor, refresh, chooseVehicle, logout, login;
   private Switch auto;
@@ -41,6 +42,7 @@ public final class MainActivity extends Activity {
   private final Runnable observer = this::update;
   private Runnable thresholdPreview;
   private boolean foreground, resumePending;
+  private boolean bridgeResumePending;
   private BluetoothLeScanner pickerScanner;
   private ScanCallback pickerCallback;
   private final Handler handler = new Handler(Looper.getMainLooper());
@@ -58,6 +60,7 @@ public final class MainActivity extends Activity {
     super.onStart();
     foreground = true;
     resumePending = true;
+    bridgeResumePending = true;
     controller.observe(observer);
     update();
     controller.updater.foreground(true);
@@ -133,7 +136,7 @@ public final class MainActivity extends Activity {
     scroll.addView(body);
     setContentView(scroll);
     text(body, "D-Autolock", 25, TEXT).setTypeface(null, Typeface.BOLD);
-    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.6", 12, MUTED);
+    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.7", 12, MUTED);
     LinearLayout alerts = card("알림 · 차량 상태");
     alerts.setTag("alertsCard");
     message = text(alerts, "", 17, TEXT);
@@ -166,6 +169,8 @@ public final class MainActivity extends Activity {
     signalDetails = text(dash, "현재 미수신 / 평균 —\n수신 0회 · 마지막 수신 없음", 13, MUTED);
     autoDetails = text(dash, "자동 제어 꺼짐", 14, MINT);
     button(dash, "거리 감도 / 대기 시간", v -> thresholdDialog());
+    bridgeStatus = text(dash, "차량 보조 앱 미등록", 13, MUTED);
+    button(dash, "차량 보조 앱 연결 / QR", v -> bridgeDialog());
     LinearLayout proximity = card("자동 도어");
     text(proximity, "가까워지면 잠금 해제 · 멀어지면 잠금", 17, TEXT);
     text(
@@ -321,8 +326,8 @@ public final class MainActivity extends Activity {
         (b, on) -> controller.settings.edit().putBoolean("autoStop", on).apply());
     text(
         options,
-        "전원 ON·주차브레이크 미제공이어도 신호로 이탈·정차·문 닫힘을 확인하면 도어는 잠급니다. 자동 종료에는 주차브레이크 체결 정보가 필요합니다."
-            + " 정보가 없으면 자동 종료할 수 없으며, P단·주차브레이크를 직접 확인한 뒤 수동 Stop을 사용하세요.",
+        "자동 잠금 후 최신 정차·모든 문 닫힘을 확인해 Stop을 요청합니다. 차량 보조 앱을 등록하면 2초 연속 P단 확인도 필요합니다."
+            + " P단으로 미제공 주차브레이크 정보를 보완하며, 브레이크 해제·연결 끊김·오래된 정보는 종료를 보류합니다.",
         13,
         MUTED);
     text(options, "탑승 공조 · READY 상태 진단", 16, 0xffffc77d);
@@ -480,6 +485,12 @@ public final class MainActivity extends Activity {
 
   private void update() {
     if (isFinishing()) return;
+    if (foreground && bridgeResumePending && !controller.initializing) {
+      bridgeResumePending = false;
+      if (Build.VERSION.SDK_INT < 31
+          || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
+              == PackageManager.PERMISSION_GRANTED) controller.startVehicleLink();
+    }
     vehicle.setText(controller.vehicleName);
     VehicleSnapshot s = controller.snapshot;
     state.setText(
@@ -500,6 +511,7 @@ public final class MainActivity extends Activity {
         controller.settings.getInt("near", -65),
         controller.settings.getInt("far", -80));
     signalDetails.setText(controller.signalDetail);
+    bridgeStatus.setText(controller.vehicleLink.describe());
     if (thresholdPreview != null) thresholdPreview.run();
     autoDetails.setText(controller.autoDetail);
     controlDetails.setText(controller.lastControl + "\n공조 · 창문 · 자동 종료 결과 보기 ›");
@@ -956,6 +968,125 @@ public final class MainActivity extends Activity {
     return true;
   }
 
+  private void bridgeDialog() {
+    LinearLayout box = form();
+    text(box, controller.vehicleLink.describe(), 15, TEXT);
+    text(
+        box,
+        "차량 DiLink에 D-Autolock Bridge를 설치하고 ‘조회·연결 시작’ → ‘휴대폰 연결 QR 표시’를 누르세요. QR 스캔 후 페어링된 차량"
+            + " Bluetooth를 선택합니다. 거리 감지용 BYD BLE 선택은 그대로 유지됩니다.",
+        14,
+        MUTED);
+    AlertDialog dialog =
+        new AlertDialog.Builder(this)
+            .setTitle("차량 보조 앱 연결")
+            .setView(box)
+            .setNegativeButton("닫기", null)
+            .create();
+    button(
+        box,
+        "차량 화면의 QR 스캔",
+        v -> {
+          if (controller.vin.isEmpty() || controller.busy()) {
+            controller.note("계정·차량 연결 완료 후 QR을 등록하세요");
+            return;
+          }
+          if (!permissions(false)) return;
+          dialog.dismiss();
+          new com.google.zxing.integration.android.IntentIntegrator(this)
+              .setCaptureActivity(BridgeQrActivity.class)
+              .setDesiredBarcodeFormats(Collections.singletonList("QR_CODE"))
+              .setPrompt("차량 D-Autolock Bridge의 QR 코드를 스캔하세요")
+              .setBeepEnabled(false)
+              .setBarcodeImageEnabled(false)
+              .setOrientationLocked(false)
+              .initiateScan();
+        });
+    button(
+        box,
+        "저장된 연결로 재연결",
+        v -> {
+          if (permissions(false)) controller.startVehicleLink();
+          dialog.dismiss();
+        });
+    button(
+        box,
+        "Bluetooth 시스템 설정",
+        v -> startActivity(new Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)));
+    button(
+        box,
+        "차량 보조 앱 연결 해제",
+        v ->
+            new AlertDialog.Builder(this)
+                .setTitle("차량 상태 연결 해제")
+                .setMessage("저장된 연결키를 삭제합니다. 자동 Stop에 차량 P단을 사용하려면 QR을 다시 등록해야 합니다.")
+                .setNegativeButton("취소", null)
+                .setPositiveButton(
+                    "해제",
+                    (d, w) -> {
+                      controller.stop();
+                      try {
+                        controller.vehicleLink.forget();
+                        controller.note("차량 상태 연결을 해제했습니다");
+                      } catch (Exception e) {
+                        controller.note("연결 해제 실패 · 다시 시도하세요");
+                      }
+                      dialog.dismiss();
+                    })
+                .show());
+    dialog.show();
+  }
+
+  private void selectBridgeDevice(String qr) {
+    try {
+      if (Build.VERSION.SDK_INT >= 31
+          && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
+              != PackageManager.PERMISSION_GRANTED)
+        throw new Exception("주변 기기 권한을 허용한 뒤 QR을 다시 스캔하세요");
+      com.dautolock.link.Pairing.parse(qr);
+      BluetoothManager manager = getSystemService(BluetoothManager.class);
+      BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
+      if (adapter == null || !adapter.isEnabled())
+        throw new Exception("Bluetooth를 켜고 QR을 다시 스캔하세요");
+      ArrayList<BluetoothDevice> peers = new ArrayList<>(adapter.getBondedDevices());
+      if (peers.isEmpty()) throw new Exception("시스템 Bluetooth 설정에서 차량과 페어링한 뒤 QR을 다시 스캔하세요");
+      String[] labels = new String[peers.size()];
+      for (int i = 0; i < peers.size(); i++)
+        labels[i] =
+            (peers.get(i).getName() == null ? "이름 없음" : peers.get(i).getName())
+                + "\n"
+                + peers.get(i).getAddress();
+      new AlertDialog.Builder(this)
+          .setTitle("QR을 표시한 차량의 Bluetooth 선택")
+          .setItems(
+              labels,
+              (d, index) -> {
+                if (controller.busy()) {
+                  controller.note("차량 명령 완료 후 다시 연결하세요");
+                  return;
+                }
+                controller.stop();
+                try {
+                  controller.vehicleLink.configure(qr, peers.get(index).getAddress());
+                  controller.note("차량 QR 등록 완료 · 기어가 계기판과 일치하는지 확인하세요");
+                  controller.startVehicleLink();
+                  resumePending = true;
+                  tryAutoResume();
+                } catch (Exception e) {
+                  controller.note("QR 연결 저장 실패 · " + e.getClass().getSimpleName());
+                }
+              })
+          .setNegativeButton("취소", null)
+          .show();
+    } catch (Exception e) {
+      new AlertDialog.Builder(this)
+          .setTitle("차량 연결 확인")
+          .setMessage(e.getMessage())
+          .setPositiveButton("확인", null)
+          .show();
+    }
+  }
+
   @Override
   public void onRequestPermissionsResult(int r, String[] p, int[] g) {
     super.onRequestPermissionsResult(r, p, g);
@@ -1127,6 +1258,13 @@ public final class MainActivity extends Activity {
   @Override
   protected void onActivityResult(int request, int result, Intent data) {
     super.onActivityResult(request, result, data);
+    com.google.zxing.integration.android.IntentResult qr =
+        com.google.zxing.integration.android.IntentIntegrator.parseActivityResult(
+            request, result, data);
+    if (qr != null) {
+      if (qr.getContents() != null) selectBridgeDevice(qr.getContents());
+      return;
+    }
     if (request == 51 && result == RESULT_OK && data != null && data.getData() != null)
       controller.exportDiagnostics(data.getData());
   }

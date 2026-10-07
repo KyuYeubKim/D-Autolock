@@ -11,7 +11,10 @@ public final class CloudClient {
   public enum Command {
     UNLOCK("OPENDOOR", "1006", "잠금 해제"),
     LOCK("LOCKDOOR", "1005", "도어 잠금"),
-    STOP("TURNOFFENGINE", "1031", "차량 종료");
+    STOP("TURNOFFENGINE", "1031", "차량 종료"),
+    CLIMATE_ON("OPENAIR", "1001", "공조 ON"),
+    CLIMATE_OFF("CLOSEAIR", "1001", "공조 OFF"),
+    CLOSE_WINDOWS("CLOSEWINDOW", "1026", "전체 창문 닫기");
     public final String wire, feature, label;
 
     Command(String wire, String feature, String label) {
@@ -22,6 +25,11 @@ public final class CloudClient {
   }
 
   public final CloudProtocol protocol = new CloudProtocol(BydConfig.fromRegion("KR"));
+  private java.util.function.BiConsumer<String, String> diagnostics = (event, detail) -> {};
+
+  public void setDiagnostics(java.util.function.BiConsumer<String, String> diagnostics) {
+    this.diagnostics = diagnostics;
+  }
 
   private interface Starter<T> {
     void start(BydApiCallback<T> cb);
@@ -55,7 +63,22 @@ public final class CloudClient {
   public JSONObject request(String endpoint, Map<String, Object> data, String vin)
       throws Exception {
     if (!protocol.isLoggedIn()) throw new Exception("BYD Sub 계정으로 로그인하세요");
-    return await(cb -> protocol.postTokenSecure(endpoint, data, vin, cb));
+    long started = System.nanoTime();
+    try {
+      JSONObject result = await(cb -> protocol.postTokenSecure(endpoint, data, vin, cb));
+      diagnostics.accept(
+          "API_OK", endpoint + " durationMs=" + (System.nanoTime() - started) / 1000000);
+      return result;
+    } catch (Exception e) {
+      diagnostics.accept(
+          "API_ERROR",
+          endpoint
+              + " durationMs="
+              + (System.nanoTime() - started) / 1000000
+              + " "
+              + e.getMessage());
+      throw e;
+    }
   }
 
   public JSONArray vehicles() throws Exception {
@@ -124,10 +147,11 @@ public final class CloudClient {
 
   public void command(String vin, String pinHash, Command command, BooleanSupplier valid)
       throws Exception {
-    if (!valid.getAsBoolean()) throw new Exception("설정 또는 거리 상태가 바뀌어 제어를 취소했습니다");
     Map<String, Object> m = protocol.buildInnerBaseMap(vin, null);
     m.put("commandPwd", pinHash);
     m.put("commandType", command.wire);
+    if (command == Command.CLIMATE_ON) m.put("controlParamsMap", climateParams().toString());
+    if (!valid.getAsBoolean()) throw new Exception("설정 또는 거리 상태가 바뀌어 제어를 취소했습니다");
     JSONObject r = request("/control/remoteControl", m, vin);
     String serial = r.optString("requestSerial");
     for (int i = 0; i < 10; i++) {
@@ -139,8 +163,27 @@ public final class CloudClient {
       m = protocol.buildInnerBaseMap(vin, serial);
       m.put("commandPwd", pinHash);
       m.put("commandType", command.wire);
+      if (command == Command.CLIMATE_ON) m.put("controlParamsMap", climateParams().toString());
       r = request("/control/remoteControlResult", m, vin);
     }
     throw new Exception("명령 결과 미확인. 재전송하지 않았습니다. 차량에서 직접 확인하세요");
+  }
+
+  public static JSONObject climateParams() throws Exception {
+    return new JSONObject()
+        .put("airSet", JSONObject.NULL)
+        .put("remoteMode", 4)
+        .put("timeSpan", 1)
+        .put("mainSettingTemp", 13)
+        .put("copilotSettingTemp", 13)
+        .put("cycleMode", 1)
+        .put("airAccuracy", 2)
+        .put("airConditioningMode", 1);
+  }
+
+  public static boolean hasClimate(JSONObject features) {
+    return hasFeature(features, "1001")
+        || hasFeature(features, "10300001")
+        || hasFeature(features, "1015");
   }
 }

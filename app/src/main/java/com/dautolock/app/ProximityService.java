@@ -17,16 +17,67 @@ public final class ProximityService extends Service {
   private BluetoothLeScanner scanner;
   private ProximityEngine engine;
   private final Handler handler = new Handler(Looper.getMainLooper());
-  private long lastUi;
   private volatile boolean scanning;
-  private final Object engineLock = new Object();
+  private boolean autoAttempt;
+  private long nextPreflight, lastDiagnostic = -15000, lastCount = -1, started, lastIgnored = -5000;
+  private int deviceType;
+  private String radioStatus = "BLE 검색 중";
+  private final Runnable restartScan =
+      () -> {
+        if (!scanning) return;
+        if (Build.VERSION.SDK_INT >= 31
+            && (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
+                    != PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
+                    != PackageManager.PERMISSION_GRANTED)) {
+          controller.note("주변 기기 권한이 없어 관찰을 종료합니다");
+          stopSelf();
+          return;
+        }
+        try {
+          BluetoothManager manager = getSystemService(BluetoothManager.class);
+          BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
+          if (adapter == null || !adapter.isEnabled()) return;
+          if (scanner != null)
+            try {
+              scanner.stopScan(this.callback);
+            } catch (SecurityException ignored) {
+            }
+          scanner = adapter.getBluetoothLeScanner();
+          if (scanner == null) throw new IllegalStateException("scanner unavailable");
+          scanner.startScan(
+              Collections.singletonList(
+                  new ScanFilter.Builder()
+                      .setDeviceAddress(controller.settings.getString("address", ""))
+                      .build()),
+              new ScanSettings.Builder()
+                  .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                  .setReportDelay(0)
+                  .build(),
+              this.callback);
+          radioStatus = "BLE 검색 중";
+          controller.diagnostics.record("SCAN_RESTART", "requested=true");
+        } catch (SecurityException e) {
+          controller.note("주변 기기 권한이 없어 관찰을 종료합니다");
+          controller.diagnostics.record("SCAN_PERMISSION_DENIED","restart=true");
+          stopSelf();
+        } catch (Exception e) {
+          radioStatus = "BLE 재검색 실패";
+          controller.diagnostics.record("SCAN_RESTART_ERROR", e.getClass().getSimpleName());
+        }
+      };
   private final BroadcastReceiver radio =
       new BroadcastReceiver() {
         public void onReceive(Context c, Intent i) {
-          if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(i.getAction())
-              && i.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1) != BluetoothAdapter.STATE_ON) {
-            controller.note("블루투스가 꺼져 관찰을 종료했습니다");
-            stopSelf();
+          if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(i.getAction())) {
+            int state = i.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1);
+            if (state == BluetoothAdapter.STATE_OFF) {
+              radioStatus = "휴대폰 Bluetooth OFF";
+              controller.note("블루투스 OFF · 이전 수신 기록이 있으면 신호 끊김 잠금 조건을 계속 확인합니다");
+            } else if (state == BluetoothAdapter.STATE_ON) {
+              handler.removeCallbacks(restartScan);
+              handler.postDelayed(restartScan, 1000);
+            }
           }
         }
       };
@@ -44,57 +95,115 @@ public final class ProximityService extends Service {
 
         @Override
         public void onScanFailed(int code) {
-          controller.note("블루투스 관찰 실패 (" + code + ") · 잠시 후 다시 시작하세요");
-          stopSelf();
+          controller.diagnostics.record("SCAN_FAILED", "code=" + code);
+          radioStatus = "BLE 검색 실패 (" + code + ")";
+          controller.note(radioStatus + " · 30초 후 재검색. 이전 수신 기록의 신호 끊김 잠금 조건은 유지됩니다");
+          handler.removeCallbacks(restartScan);
+          handler.postDelayed(restartScan, 30000);
         }
       };
   private final Runnable heartbeat =
       new Runnable() {
         public void run() {
           if (!scanning) return;
-          synchronized (engineLock) {
-            controller.signal =
-                engine.zone(SystemClock.elapsedRealtime())
-                    + (Double.isNaN(engine.rssi())
-                        ? ""
-                        : " · " + Math.round(engine.rssi()) + " dBm");
+          long now = SystemClock.elapsedRealtime();
+          boolean fresh = engine.fresh(now);
+          controller.signal =
+              engine.zone(now) + (fresh ? " · " + engine.raw() + " dBm" : " · — dBm");
+          controller.signalStrength = fresh ? ProximityEngine.strength(engine.rssi()) : 0;
+          controller.signalDetail =
+              "현재 "
+                  + (fresh ? engine.raw() + " dBm" : "미수신")
+                  + " / 평균 "
+                  + (fresh ? Math.round(engine.rssi()) + " dBm" : "—")
+                  + "\n수신 "
+                  + engine.count()
+                  + "회 · 마지막 수신 "
+                  + (engine.age(now) < 0 ? "없음" : engine.age(now) / 1000 + "초 전")
+                  + "\n접근 ≥ "
+                  + controller.settings.getInt("near", -65)
+                  + " / 이탈 ≤ "
+                  + controller.settings.getInt("far", -80)
+                  + " dBm";
+          controller.signalDetail += "\n" + radioStatus;
+          if (engine.count() == 0 && now - started >= 10000)
+            controller.signalDetail +=
+                "\n"
+                    + (deviceType == BluetoothDevice.DEVICE_TYPE_CLASSIC
+                        ? "선택 기기는 일반 Bluetooth입니다. 차량 BLE 기기를 다시 검색하세요."
+                        : "선택 주소에서 BLE 광고를 받지 못했습니다. 차량 기기·권한·전원 OFF 시 광고 여부를 확인하세요.");
+          controller.autoDetail =
+              (controller.autoEnabled ? "자동 제어 ON · " : "관찰 모드 · 자동 제어 OFF\n") + engine.reason(now);
+          if (controller.autoEnabled) {
+            if (autoAttempt) controller.autoDetail += "\n차량 상태 조회 / 명령 결과 확인 중";
+            else if (nextPreflight > now)
+              controller.autoDetail +=
+                  "\n미전송 조건 재검토까지 " + ((nextPreflight - now + 999) / 1000) + "초";
+            else if (controller.busy()) controller.autoDetail += "\n다른 요청 완료 대기 · 감지 조건 유지";
           }
+          if (now - lastDiagnostic >= 1000
+              && (engine.count() != lastCount || now - lastDiagnostic >= 15000)) {
+            controller.diagnostics.record(
+                "SCAN_STATUS",
+                engine.diagnostic(now)
+                    + " auto="
+                    + controller.autoEnabled
+                    + " busy="
+                    + controller.busy()
+                    + " "
+                    + engine.reason(now));
+            lastDiagnostic = now;
+            lastCount = engine.count();
+          }
+          ProximityEngine.Action action = engine.pending(now);
+          if (controller.autoEnabled
+              && !autoAttempt
+              && now >= nextPreflight
+              && action != ProximityEngine.Action.NONE) {
+            CloudClient.Command command =
+                action == ProximityEngine.Action.UNLOCK
+                    ? CloudClient.Command.UNLOCK
+                    : CloudClient.Command.LOCK;
+            autoAttempt = true;
+            boolean accepted =
+                controller.automaticCommand(
+                    command,
+                    () -> scanning && engine.stillValid(action, SystemClock.elapsedRealtime()),
+                    () -> scanning && engine.claim(action, SystemClock.elapsedRealtime()),
+                    () -> engine.alreadySatisfied(action, SystemClock.elapsedRealtime()),
+                    () ->
+                        handler.post(
+                            () -> {
+                              autoAttempt = false;
+                              long completed = SystemClock.elapsedRealtime();
+                              nextPreflight =
+                                  engine.pending(completed) == action ? completed + 15000 : 0;
+                            }));
+            if (!accepted) autoAttempt = false;
+            else controller.diagnostics.record("AUTO_CHECK", action + " " + engine.diagnostic(now));
+          }
+          if (!autoAttempt && !controller.busy())
+            controller.pollEntry(
+                () ->
+                    scanning
+                        && engine.fresh(SystemClock.elapsedRealtime())
+                        && engine.rssi() > controller.settings.getInt("far", -80));
           controller.changed();
-          handler.postDelayed(this, 2000);
+          handler.postDelayed(this, 1000);
         }
       };
 
   private void accept(ScanResult result) {
     if (!scanning || engine == null) return;
-    // Ignore buffered advertisements; arrival time alone is not freshness evidence.
-    long now = SystemClock.elapsedRealtime();
-    long sampleAt = result.getTimestampNanos() / 1000000;
-    if (now - sampleAt > 3000 || sampleAt > now) return;
-    ProximityEngine.Action action;
-    synchronized (engineLock) {
-      action = engine.sample(result.getRssi(), sampleAt);
-    }
-    if (now - lastUi > 800) {
-      lastUi = now;
-      controller.changed();
-    }
-    if (action == ProximityEngine.Action.NONE) return;
-    if (!controller.autoEnabled) {
-      controller.note(action == ProximityEngine.Action.UNLOCK ? "접근 감지 · 관찰 모드" : "이탈 감지 · 관찰 모드");
+    long now = SystemClock.elapsedRealtime(), sampleAt = result.getTimestampNanos() / 1000000;
+    if (now - sampleAt > 3000 || sampleAt > now) {
+      if (now - lastIgnored > 5000) {
+        lastIgnored = now;
+        controller.diagnostics.record("SAMPLE_IGNORED", "ageMs=" + (now - sampleAt));
+      }
       return;
     }
-    CloudClient.Command command =
-        action == ProximityEngine.Action.UNLOCK
-            ? CloudClient.Command.UNLOCK
-            : CloudClient.Command.LOCK;
-    controller.command(
-        command,
-        true,
-        () -> {
-          synchronized (engineLock) {
-            return scanning && engine.stillValid(action, SystemClock.elapsedRealtime());
-          }
-        });
+    engine.sample(result.getRssi(), sampleAt);
   }
 
   @Override
@@ -116,6 +225,7 @@ public final class ProximityService extends Service {
       stopSelf();
       return START_NOT_STICKY;
     }
+    if (scanning) return START_NOT_STICKY;
     PendingIntent open =
         PendingIntent.getActivity(
             this,
@@ -130,22 +240,19 @@ public final class ProximityService extends Service {
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
     Notification notification =
         new Notification.Builder(this, "proximity")
-            .setSmallIcon(com.dautolock.app.R.drawable.ic_notification)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("D-Autolock · 거리 관찰 중")
-            .setContentText("자동 제어 상태는 앱에서 확인하세요")
+            .setContentText("신호·자동 제어 상태와 진단 로그는 앱에서 확인하세요")
             .setContentIntent(open)
             .setOngoing(true)
             .addAction(new Notification.Action.Builder(null, "관찰 종료", stop).build())
             .build();
-    if (scanning) return START_NOT_STICKY;
     try {
-      if (Build.VERSION.SDK_INT >= 31) {
+      if (Build.VERSION.SDK_INT >= 31)
         startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
-      } else if (Build.VERSION.SDK_INT >= 29) {
+      else if (Build.VERSION.SDK_INT >= 29)
         startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
-      } else {
-        startForeground(1, notification);
-      }
+      else startForeground(1, notification);
       if (Build.VERSION.SDK_INT >= 31
           && (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
                   != PackageManager.PERMISSION_GRANTED
@@ -157,11 +264,14 @@ public final class ProximityService extends Service {
       BluetoothManager manager = getSystemService(BluetoothManager.class);
       BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
       if (adapter == null || !adapter.isEnabled()) throw new Exception("휴대폰 블루투스를 켜세요");
+      deviceType = adapter.getRemoteDevice(address).getType();
       scanner = adapter.getBluetoothLeScanner();
       if (scanner == null) throw new Exception("BLE 관찰을 시작할 수 없습니다");
       engine =
           new ProximityEngine(
               controller.settings.getInt("near", -65), controller.settings.getInt("far", -80));
+      started = SystemClock.elapsedRealtime();
+      scanning = true;
       scanner.startScan(
           Collections.singletonList(new ScanFilter.Builder().setDeviceAddress(address).build()),
           new ScanSettings.Builder()
@@ -169,10 +279,18 @@ public final class ProximityService extends Service {
               .setReportDelay(0)
               .build(),
           callback);
-      scanning = true;
       controller.monitoring = true;
       controller.autoEnabled = false;
-      controller.note("관찰 시작 · 첫 거리 구간에서는 도어를 제어하지 않습니다");
+      PowerManager pm = getSystemService(PowerManager.class);
+      controller.diagnostics.record(
+          "SCAN_START",
+          "type="
+              + deviceType
+              + " batteryUnrestricted="
+              + (pm != null && pm.isIgnoringBatteryOptimizations(getPackageName()))
+              + " scanPermission=true lossLockSeconds=10");
+      controller.note("관찰 시작 · 1초마다 신호와 판단 상태를 표시하고 진단 로그에 저장합니다");
+      controller.prepareMonitoring();
       handler.post(heartbeat);
     } catch (Exception e) {
       controller.note(e.getMessage() == null ? "거리 관찰을 시작하지 못했습니다" : e.getMessage());
@@ -196,7 +314,11 @@ public final class ProximityService extends Service {
     }
     controller.monitoring = false;
     controller.autoEnabled = false;
-    controller.signal = "관찰 중지";
+    controller.signal = "관찰 중지 · — dBm";
+    controller.signalStrength = 0;
+    controller.signalDetail = "거리 관찰을 시작하면 신호를 표시합니다";
+    controller.autoDetail = "자동 제어 꺼짐";
+    controller.diagnostics.record("SCAN_STOP", "monitoring=false auto=false");
     controller.changed();
     stopForeground(STOP_FOREGROUND_REMOVE);
     super.onDestroy();

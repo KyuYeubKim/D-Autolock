@@ -13,6 +13,7 @@ import org.json.*;
 final class Controller {
   final Context context;
   final android.content.SharedPreferences settings;
+  final DiagnosticLog diagnostics;
   private final SecureStore store;
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
   private final Handler main = new Handler(Looper.getMainLooper());
@@ -26,12 +27,24 @@ final class Controller {
   volatile VehicleSnapshot snapshot;
   volatile boolean monitoring = false, autoEnabled = false;
   volatile String signal = "신호 대기", message = "BYD 계정과 차량 블루투스를 연결하세요";
+  volatile String signalDetail = "거리 관찰을 시작하면 현재 신호를 표시합니다",
+      autoDetail = "자동 제어 꺼짐",
+      lastControl = "아직 제어 요청 없음";
+  volatile int signalStrength = 0;
+  volatile boolean initializing = true;
+  private volatile long entryUntil, nextEntryCheck;
+  private int entryTicket;
+  private boolean entrySawClosed, entryOpened;
   private final LinkedList<String> events = new LinkedList<>();
   private final List<Runnable> observers = new CopyOnWriteArrayList<>();
 
   Controller(Context context) {
     this.context = context;
     settings = context.getSharedPreferences("settings", 0);
+    diagnostics = new DiagnosticLog(new java.io.File(context.getFilesDir(), "diagnostics"));
+    cloud.setDiagnostics(diagnostics::record);
+    diagnostics.record(
+        "APP_START", "version=0.2.0 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     store = new SecureStore(context);
     worker.execute(
         () -> {
@@ -47,6 +60,9 @@ final class Controller {
                     : "BYD Sub 계정을 연결하세요");
           } catch (Exception e) {
             note("저장된 계정을 복원하지 못했습니다. 다시 로그인하세요");
+          } finally {
+            initializing = false;
+            changed();
           }
         });
   }
@@ -68,6 +84,7 @@ final class Controller {
 
   synchronized void note(String value) {
     message = value;
+    diagnostics.record("EVENT", value);
     events.addFirst(
         new java.text.SimpleDateFormat("HH:mm:ss", Locale.KOREA).format(new Date()) + "  " + value);
     while (events.size() > 30) events.removeLast();
@@ -86,10 +103,14 @@ final class Controller {
     void run() throws Exception;
   }
 
-  private void run(Work work) {
+  private boolean run(Work work) {
+    return run(work, () -> {}, false);
+  }
+
+  private boolean run(Work work, Runnable finished, boolean quietBusy) {
     if (!busy.compareAndSet(false, true)) {
-      note("이전 요청을 처리 중입니다");
-      return;
+      if (!quietBusy) note("이전 요청을 처리 중입니다");
+      return false;
     }
     changed();
     worker.execute(
@@ -100,9 +121,11 @@ final class Controller {
             note(e.getMessage() == null ? "요청을 처리하지 못했습니다" : e.getMessage());
           } finally {
             busy.set(false);
+            finished.run();
             changed();
           }
         });
+    return true;
   }
 
   private void save() throws Exception {
@@ -119,6 +142,7 @@ final class Controller {
     run(
         () -> {
           CloudClient next = new CloudClient();
+          next.setDiagnostics(diagnostics::record);
           note("한국 BYD 계정 연결 중…");
           next.login(user, password);
           cloud = next;
@@ -217,6 +241,7 @@ final class Controller {
     run(
         () -> {
           cloud = new CloudClient();
+          cloud.setDiagnostics(diagnostics::record);
           vin = "";
           pinHash = "";
           vehicleName = "차량을 연결하세요";
@@ -233,6 +258,25 @@ final class Controller {
   }
 
   void command(CloudClient.Command command, boolean automatic, BooleanSupplier proximityValid) {
+    executeCommand(command, automatic, proximityValid, () -> true, () -> {}, () -> {});
+  }
+
+  boolean automaticCommand(
+      CloudClient.Command command,
+      BooleanSupplier valid,
+      BooleanSupplier claim,
+      Runnable alreadyDone,
+      Runnable finished) {
+    return executeCommand(command, true, valid, claim, alreadyDone, finished);
+  }
+
+  private boolean executeCommand(
+      CloudClient.Command command,
+      boolean automatic,
+      BooleanSupplier proximityValid,
+      BooleanSupplier claim,
+      Runnable alreadyDone,
+      Runnable finished) {
     int ticket = generation.get();
     String target = vin;
     BooleanSupplier valid =
@@ -240,68 +284,164 @@ final class Controller {
             ticket == generation.get()
                 && target.equals(vin)
                 && (!automatic || (monitoring && autoEnabled && proximityValid.getAsBoolean()));
+    return run(
+        () -> {
+          try {
+            requireVehicle();
+            if (pinHash.isEmpty()) throw new Exception("제어 PIN이 없습니다. 다시 로그인하세요");
+            if (!valid.getAsBoolean()) return;
+            if (!CloudClient.hasFeature(capabilities, command.feature) && automatic)
+              capabilities = cloud.capabilities(target);
+            if (!CloudClient.hasFeature(capabilities, command.feature))
+              throw new Exception("이 차량의 " + command.label + " 지원을 확인하지 못했습니다. 상태를 새로고침하세요");
+            note(command.label + " 전 차량 상태 확인 중…");
+            lastControl = (automatic ? "자동 " : "수동 ") + command.label + " · 상태 확인 중";
+            snapshot = cloud.snapshot(vin);
+            diagnostics.record(
+                "PREFLIGHT",
+                (automatic ? "AUTO " : "MANUAL ")
+                    + command
+                    + " "
+                    + snapshot.diagnostic(System.currentTimeMillis()));
+            boolean lock = command == CloudClient.Command.LOCK,
+                stop = command == CloudClient.Command.STOP;
+            String block =
+                automatic
+                    ? snapshot.automaticBlock(lock, System.currentTimeMillis())
+                    : snapshot.manualBlock(stop, System.currentTimeMillis());
+            if (block != null) throw new Exception("제어 보류: " + block);
+            if (lock && !Boolean.TRUE.equals(snapshot.doorsClosed))
+              throw new Exception("모든 도어가 닫혔는지 확인하지 못했습니다");
+            if ((stop && Integer.valueOf(1).equals(snapshot.power))
+                || (!stop && Boolean.valueOf(lock).equals(snapshot.locked))) {
+              if (automatic && valid.getAsBoolean()) alreadyDone.run();
+              if (automatic
+                  && command == CloudClient.Command.UNLOCK
+                  && validSession(ticket, target)) armEntry(ticket, snapshot);
+              lastControl = command.label + " · 이미 요청한 상태";
+              note("이미 요청한 상태입니다");
+              if (lock)
+                closeWindowsAfterLock(
+                    () ->
+                        validSession(ticket, target)
+                            && (!automatic || (monitoring && autoEnabled)));
+              return;
+            }
+            if (!valid.getAsBoolean()) {
+              note("거리 또는 설정이 바뀌어 제어를 취소했습니다");
+              return;
+            }
+            long sentAt = System.currentTimeMillis();
+            boolean wasClosed = Boolean.TRUE.equals(snapshot.doorsClosed);
+            cloud.command(
+                target,
+                pinHash,
+                command,
+                () -> {
+                  if (!valid.getAsBoolean() || (automatic && !claim.getAsBoolean())) return false;
+                  diagnostics.record("CONTROL_SEND", (automatic ? "AUTO " : "MANUAL ") + command);
+                  lastControl = command.label + " · 전송 중";
+                  changed();
+                  return true;
+                });
+            VehicleSnapshot after = cloud.snapshot(target);
+            snapshot = after;
+            diagnostics.record(
+                "READBACK", command + " " + after.diagnostic(System.currentTimeMillis()));
+            boolean verified =
+                after.fresh(System.currentTimeMillis())
+                    && after.measuredAt >= sentAt
+                    && (stop
+                        ? Integer.valueOf(1).equals(after.power)
+                        : Boolean.valueOf(lock).equals(after.locked));
+            lastControl =
+                (verified
+                    ? command.label + " 완료 · 차량 상태 확인됨"
+                    : "명령 응답 수신 · 실제 차량 상태는 미확인. 차량에서 확인하세요");
+            note(lastControl);
+            if (lock && verified)
+              closeWindowsAfterLock(
+                  () ->
+                      validSession(ticket, target) && (!automatic || (monitoring && autoEnabled)));
+            if (automatic
+                && command == CloudClient.Command.UNLOCK
+                && verified
+                && validSession(ticket, target)) {
+              armEntry(ticket, after);
+              entrySawClosed = wasClosed;
+              entryOpened = wasClosed && Boolean.FALSE.equals(after.doorsClosed);
+            }
+          } catch (Exception e) {
+            lastControl = command.label + " · " + e.getMessage();
+            diagnostics.record(
+                "CONTROL_BLOCK_OR_ERROR", (automatic ? "AUTO " : "MANUAL ") + lastControl);
+            throw e;
+          }
+        },
+        finished,
+        automatic);
+  }
+
+  void prepareMonitoring() {
+    diagnostics.record(
+        "MONITOR_SETUP",
+        "account="
+            + cloud.protocol.isLoggedIn()
+            + " vehicleSelected="
+            + !vin.isEmpty()
+            + " near="
+            + settings.getInt("near", -65)
+            + " far="
+            + settings.getInt("far", -80));
+    if (!cloud.protocol.isLoggedIn() || vin.isEmpty()) {
+      note("계정 로그인과 차량 선택 후 자동 제어를 켤 수 있습니다");
+      return;
+    }
     run(
         () -> {
-          requireVehicle();
-          if (pinHash.isEmpty()) throw new Exception("제어 PIN이 없습니다. 다시 로그인하세요");
-          if (!valid.getAsBoolean()) return;
-          if (!CloudClient.hasFeature(capabilities, command.feature))
-            throw new Exception("이 차량의 " + command.label + " 지원을 확인하지 못했습니다. 상태를 새로고침하세요");
-          note(command.label + " 전 차량 상태 확인 중…");
-          snapshot = cloud.snapshot(vin);
-          boolean lock = command == CloudClient.Command.LOCK,
-              stop = command == CloudClient.Command.STOP;
-          String block =
-              automatic
-                  ? snapshot.automaticBlock(lock, System.currentTimeMillis())
-                  : snapshot.manualBlock(stop, System.currentTimeMillis());
-          if (block != null) throw new Exception("제어 보류: " + block);
-          if (lock && !Boolean.TRUE.equals(snapshot.doorsClosed))
-            throw new Exception("모든 도어가 닫혔는지 확인하지 못했습니다");
-          if ((stop && Integer.valueOf(1).equals(snapshot.power))
-              || (!stop && Boolean.valueOf(lock).equals(snapshot.locked))) {
-            note("이미 요청한 상태입니다");
-            return;
-          }
-          if (!valid.getAsBoolean()) {
-            note("거리 또는 설정이 바뀌어 제어를 취소했습니다");
-            return;
-          }
-          long sentAt = System.currentTimeMillis();
-          cloud.command(target, pinHash, command, valid);
-          VehicleSnapshot after = cloud.snapshot(target);
-          snapshot = after;
-          boolean verified =
-              after.fresh(System.currentTimeMillis())
-                  && after.measuredAt >= sentAt
-                  && (stop
-                      ? Integer.valueOf(1).equals(after.power)
-                      : Boolean.valueOf(lock).equals(after.locked));
-          note(
-              verified
-                  ? command.label + " 완료 · 차량 상태 확인됨"
-                  : "명령 응답 수신 · 실제 차량 상태는 미확인. 차량에서 확인하세요");
+          capabilities = cloud.capabilities(vin);
+          diagnostics.record(
+              "CAPABILITIES",
+              "lock="
+                  + feature(CloudClient.Command.LOCK)
+                  + " unlock="
+                  + feature(CloudClient.Command.UNLOCK));
+          note("거리 관찰 준비 · 차량 기능 확인 완료");
         });
+  }
+
+  String autoUnavailable() {
+    if (initializing) return "계정 정보를 복원하고 있습니다";
+    if (!monitoring) return "거리 관찰을 먼저 시작하세요";
+    if (!cloud.protocol.isLoggedIn()) return "BYD 계정 로그인이 필요합니다";
+    if (vin.isEmpty()) return "공유 차량을 먼저 선택하세요";
+    return null;
   }
 
   void stop() {
     generation.incrementAndGet();
     autoEnabled = false;
+    entryUntil = 0;
     monitoring = false;
     context.stopService(new Intent(context, ProximityService.class));
     changed();
   }
 
   void auto(boolean enabled) {
+    if (enabled && autoUnavailable() != null) {
+      note(autoUnavailable());
+      return;
+    }
     generation.incrementAndGet();
     autoEnabled = enabled;
-    note(enabled ? "자동 도어 제어 켜짐 · OFF·정차·최신 상태 확인 시 실행" : "관찰 모드 · 차량 명령을 보내지 않습니다");
+    entryUntil = 0;
+    note(enabled ? "자동 도어 켜짐 · 접근 시 해제 / 이탈·신호 10초 끊김 시 잠금" : "관찰 모드 · 차량 명령을 보내지 않습니다");
   }
 
   void device(String name, String address) {
     stop();
     settings.edit().putString("deviceName", name).putString("address", address).apply();
-    note("블루투스 기기 선택: " + name);
+    note("블루투스 기기 선택 완료 · 관찰에서 수신 여부를 확인하세요");
   }
 
   void thresholds(int near, int far) {
@@ -309,5 +449,168 @@ final class Controller {
     stop();
     settings.edit().putInt("near", near).putInt("far", far).apply();
     note("거리 기준 저장 · 다시 관찰을 시작하세요");
+  }
+
+  void exportDiagnostics(android.net.Uri uri) {
+    diagnostics.snapshot(
+        data -> {
+          try (java.io.OutputStream out =
+              context.getContentResolver().openOutputStream(uri, "wt")) {
+            if (out == null) throw new java.io.IOException("output");
+            out.write(data.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            note("진단 로그를 저장했습니다");
+          } catch (Exception e) {
+            note("진단 로그 내보내기 실패: " + e.getClass().getSimpleName());
+          }
+        });
+  }
+
+  private boolean validSession(int ticket, String target) {
+    return ticket == generation.get() && target.equals(vin);
+  }
+
+  private void closeWindowsAfterLock(BooleanSupplier valid) {
+    if (!settings.getBoolean("closeWindows", true)) return;
+    try {
+      if (!valid.getAsBoolean()) return;
+      if (!CloudClient.hasFeature(capabilities, CloudClient.Command.CLOSE_WINDOWS.feature))
+        throw new Exception("차량의 창문 닫기 지원 미확인");
+      if (snapshot == null
+          || !snapshot.fresh(System.currentTimeMillis())
+          || snapshot.speed == null
+          || snapshot.speed != 0d
+          || !Boolean.TRUE.equals(snapshot.locked)) throw new Exception("최신 정차·잠금 상태 미확인");
+      if (Boolean.TRUE.equals(snapshot.windowsClosed)) {
+        lastControl = "도어 잠김 · 전체 창문 닫힘 확인";
+        note(lastControl);
+        return;
+      }
+      long sent = System.currentTimeMillis();
+      cloud.command(
+          vin,
+          pinHash,
+          CloudClient.Command.CLOSE_WINDOWS,
+          () -> {
+            if (!valid.getAsBoolean()) return false;
+            diagnostics.record("WINDOWS_SEND", "afterLock=true");
+            return true;
+          });
+      snapshot = cloud.snapshot(vin);
+      diagnostics.record("WINDOWS_READBACK", snapshot.diagnostic(System.currentTimeMillis()));
+      boolean confirmed =
+          snapshot.fresh(System.currentTimeMillis())
+              && snapshot.measuredAt >= sent
+              && Boolean.TRUE.equals(snapshot.windowsClosed);
+      lastControl = confirmed ? "도어 잠금 + 전체 창문 닫힘 확인" : "도어 잠김 · 창문 닫기 응답 수신, 실제 창문 상태 미확인";
+      note(lastControl);
+    } catch (Exception e) {
+      lastControl = "도어 잠김 · 창문 닫기 미완료: " + e.getMessage();
+      note(lastControl);
+      diagnostics.record("WINDOWS_ERROR", e.getMessage());
+    }
+  }
+
+  void readyOption(boolean enabled) {
+    settings.edit().putBoolean("autoReady", enabled).apply();
+    entryUntil = 0;
+    note(enabled ? "문 열림 시 공조 2초 동작 켜짐 · 자동 해제 후 문 열림을 기다립니다" : "문 열림 공조 동작 꺼짐");
+  }
+
+  private void armEntry(int ticket, VehicleSnapshot s) {
+    if (!settings.getBoolean("autoReady", false)) return;
+    entryTicket = ticket;
+    entrySawClosed = Boolean.TRUE.equals(s.doorsClosed);
+    entryOpened = false;
+    entryUntil = SystemClock.elapsedRealtime() + 90000;
+    nextEntryCheck = 0;
+    diagnostics.record("ENTRY_WATCH", "armed=true closed=" + entrySawClosed + " expiresSeconds=90");
+  }
+
+  boolean pollEntry(BooleanSupplier nearby) {
+    long now = SystemClock.elapsedRealtime();
+    if (entryUntil == 0
+        || now >= entryUntil
+        || now < nextEntryCheck
+        || !autoEnabled
+        || !monitoring
+        || !settings.getBoolean("autoReady", false)
+        || !nearby.getAsBoolean()) return false;
+    String target = vin;
+    int ticket = entryTicket;
+    return run(
+        () -> {
+          nextEntryCheck = SystemClock.elapsedRealtime() + 10000;
+          if (!validSession(ticket, target) || !nearby.getAsBoolean()) return;
+          VehicleSnapshot s = cloud.snapshot(target);
+          snapshot = s;
+          diagnostics.record("ENTRY_STATE", s.diagnostic(System.currentTimeMillis()));
+          if (!s.fresh(System.currentTimeMillis())) return;
+          if (Boolean.TRUE.equals(s.doorsClosed)) entrySawClosed = true;
+          if (entrySawClosed && Boolean.FALSE.equals(s.doorsClosed)) entryOpened = true;
+          if (!entryOpened || !Boolean.FALSE.equals(s.locked)) return;
+          entryUntil = 0;
+          pulse(
+              () ->
+                  validSession(ticket, target)
+                      && autoEnabled
+                      && monitoring
+                      && settings.getBoolean("autoReady", false)
+                      && nearby.getAsBoolean());
+        },
+        () -> {},
+        true);
+  }
+
+  void manualPulse() {
+    int ticket = generation.get();
+    String target = vin;
+    run(() -> pulse(() -> validSession(ticket, target)));
+  }
+
+  private void pulse(BooleanSupplier valid) throws Exception {
+    requireVehicle();
+    if (pinHash.isEmpty()) throw new Exception("제어 PIN이 필요합니다");
+    if (!CloudClient.hasClimate(capabilities)) capabilities = cloud.capabilities(vin);
+    if (!CloudClient.hasClimate(capabilities)) throw new Exception("이 차량의 공조 기능 지원을 확인하지 못했습니다");
+    snapshot = cloud.snapshot(vin);
+    String block = snapshot.manualBlock(true, System.currentTimeMillis());
+    diagnostics.record("READY_PREFLIGHT", snapshot.diagnostic(System.currentTimeMillis()));
+    if (block != null) throw new Exception("공조 동작 보류: " + block);
+    final CloudClient client = cloud;
+    final String target = vin, code = pinHash;
+    note("공조 ON → 응답 확인 후 2초 대기 → OFF 진행 중");
+    try {
+      ClimatePulse.run(
+          dispatched ->
+              client.command(
+                  target,
+                  code,
+                  CloudClient.Command.CLIMATE_ON,
+                  () -> {
+                    if (!valid.getAsBoolean()) return false;
+                    dispatched.run();
+                    diagnostics.record("READY_ON_SEND", "targetTemperatureC=23");
+                    return true;
+                  }),
+          () ->
+              client.command(
+                  target,
+                  code,
+                  CloudClient.Command.CLIMATE_OFF,
+                  () -> {
+                    diagnostics.record("READY_OFF_SEND", "cleanup=true");
+                    return true;
+                  }),
+          milliseconds -> {
+            diagnostics.record("READY_DELAY", "milliseconds=" + milliseconds);
+            Thread.sleep(milliseconds);
+          });
+      lastControl = "공조 2초 ON/OFF 응답 완료 · READY/OK는 계기판에서 확인";
+      note(lastControl);
+    } catch (Exception e) {
+      lastControl = "공조 2초 동작: " + e.getMessage();
+      note(lastControl);
+      throw e;
+    }
   }
 }

@@ -27,6 +27,8 @@ public final class MainActivity extends Activity {
   private Controller controller;
   private LinearLayout body;
   private TextView vehicle, state, signal, message, account, device, capabilities, log;
+  private TextView signalDetails, autoDetails, autoReason, controlDetails;
+  private ProgressBar signalGauge;
   private Button monitor, refresh, chooseVehicle, logout;
   private Switch auto;
   private boolean updating;
@@ -113,18 +115,28 @@ public final class MainActivity extends Activity {
     scroll.addView(body);
     setContentView(scroll);
     text(body, "D-Autolock", 30, TEXT).setTypeface(null, Typeface.BOLD);
-    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.1.0", 12, MUTED);
+    text(body, "DOLPHIN  /  대한민국  /  테스트 버전 0.2.0", 12, MUTED);
     LinearLayout dash = card("MY DOLPHIN");
     vehicle = text(dash, "차량을 연결하세요", 23, TEXT);
     state = text(dash, "차량 상태 미확인", 15, MUTED);
     signal = text(dash, "신호 대기", 20, MINT);
+    signalGauge = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+    signalGauge.setMax(100);
+    signalGauge.setProgressTintList(android.content.res.ColorStateList.valueOf(MINT));
+    signalGauge.setProgressBackgroundTintList(
+        android.content.res.ColorStateList.valueOf(0xff30465e));
+    dash.addView(signalGauge, new LinearLayout.LayoutParams(-1, dp(18)));
+    text(dash, "약함 −100 dBm                         강함 −30 dBm", 11, MUTED);
+    signalDetails = text(dash, "현재 미수신 / 평균 —\n수신 0회 · 마지막 수신 없음", 13, MUTED);
+    autoDetails = text(dash, "자동 제어 꺼짐", 14, MINT);
+    controlDetails = text(dash, "아직 제어 요청 없음", 13, MUTED);
     message = text(dash, "", 14, TEXT);
     refresh = button(dash, "차량 상태 새로고침", v -> controller.refresh());
     LinearLayout proximity = card("자동 도어");
     text(proximity, "가까워지면 잠금 해제 · 멀어지면 잠금", 17, TEXT);
     text(
         proximity,
-        "BLE 신호가 계속 잡히는 차량 기기를 선택하세요. 신호 끊김만으로 잠그지 않습니다. 차량 OFF·정차·최신 상태 확인 후 동작합니다.",
+        "가까운 신호가 안정되면 해제합니다. 멀어지거나 신호가 10초 끊기면 잠금을 요청합니다. 정차·도어·전원 상태를 확인한 후 실행합니다.",
         13,
         MUTED);
     monitor =
@@ -150,6 +162,7 @@ public final class MainActivity extends Activity {
     auto.setPadding(dp(4), dp(12), dp(4), dp(12));
     auto.setMinHeight(dp(48));
     proximity.addView(auto);
+    autoReason = text(proximity, "거리 관찰을 먼저 시작하세요", 13, MUTED);
     auto.setOnCheckedChangeListener(
         (b, on) -> {
           if (updating) return;
@@ -163,22 +176,62 @@ public final class MainActivity extends Activity {
           new AlertDialog.Builder(this)
               .setTitle("자동 도어 제어 켜기")
               .setMessage(
-                  "이 휴대폰의 거리 변화로 차량을 잠그거나 잠금 해제합니다. 차량 전원을 끈 상태에서 신호를 먼저 확인하고, 다른 탑승자와 키의 위치를"
+                  "접근 신호가 안정되면 잠금 해제합니다. 이탈하거나 수신하던 BLE 신호가 10초 끊기면 잠금을 요청합니다. 다른 탑승자와 키의 위치를"
                       + " 확인하세요.")
               .setNegativeButton("취소", null)
               .setPositiveButton("자동 제어 켜기", (d, w) -> controller.auto(true))
               .show();
         });
     LinearLayout controls = card("차량 제어");
-    commands.add(button(controls, "도어 잠금 해제", v -> confirm(CloudClient.Command.UNLOCK)));
-    commands.add(button(controls, "도어 잠금", v -> confirm(CloudClient.Command.LOCK)));
+    commands.add(
+        button(
+            controls,
+            "도어 잠금 해제",
+            v -> controller.command(CloudClient.Command.UNLOCK, false, () -> true)));
+    commands.add(
+        button(
+            controls,
+            "도어 잠금",
+            v -> controller.command(CloudClient.Command.LOCK, false, () -> true)));
     commands.add(button(controls, "Stop · 차량 종료 검증", v -> confirm(CloudClient.Command.STOP)));
     capabilities = text(controls, "차량 기능 확인 전", 12, MUTED);
-    text(controls, "자동 READY · 지원 확인 필요", 16, 0xffffc77d);
+    button(
+        controls,
+        "공조 2초 동작 · READY",
+        v ->
+            new AlertDialog.Builder(this)
+                .setTitle("공조 2초 동작")
+                .setMessage(
+                    "P단 주차를 확인하세요. 23°C로 공조 ON 응답을 확인한 뒤 2초를 기다리고 OFF를 보냅니다. 통신 시간 때문에 실제 작동 시간은 더"
+                        + " 길 수 있습니다. 완료 후 계기판 READY/OK 표시를 확인하세요.")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("주차 확인 · 실행", (d, w) -> controller.manualPulse())
+                .show());
+    Switch readySwitch = new Switch(this);
+    readySwitch.setText("자동 해제 후 문 열림 → 공조 2초");
+    readySwitch.setTextColor(TEXT);
+    readySwitch.setPadding(0, dp(12), 0, dp(12));
+    readySwitch.setMinHeight(dp(56));
+    readySwitch.setChecked(controller.settings.getBoolean("autoReady", false));
+    controls.addView(readySwitch);
+    readySwitch.setOnCheckedChangeListener((b, on) -> controller.readyOption(on));
+    Switch windowsSwitch = new Switch(this);
+    windowsSwitch.setText("도어 잠금 시 전체 창문 닫기");
+    windowsSwitch.setTextColor(TEXT);
+    windowsSwitch.setPadding(0, dp(12), 0, dp(12));
+    windowsSwitch.setMinHeight(dp(56));
+    windowsSwitch.setChecked(controller.settings.getBoolean("closeWindows", true));
+    controls.addView(windowsSwitch);
+    windowsSwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          controller.settings.edit().putBoolean("closeWindows", on).apply();
+          controller.note(on ? "도어 잠금 시 전체 창문 닫기 켜짐" : "창문 닫기 연동 꺼짐");
+        });
+    text(controls, "READY · 공조 2초 동작 연동", 16, 0xffffc77d);
     text(
         controls,
-        "문 열림 → 주행 READY 명령은 확인되지 않았습니다. 자동 시동·이탈 시 자동 종료는 이 버전에 포함되지 않습니다. Stop은 주차 상태에서 수동"
-            + " 검증합니다.",
+        "사용자 차량에서 확인한 공조 ON/OFF 동작입니다. 자동 해제 후 90초 안의 문 닫힘→열림을 확인하면 실행합니다. READY 자체는 계기판에서 확인하세요."
+            + " 이탈 시 자동 전원 종료는 포함되지 않습니다.",
         13,
         MUTED);
     LinearLayout link = card("01  BYD AUTO 계정");
@@ -212,6 +265,36 @@ public final class MainActivity extends Activity {
         MUTED);
     LinearLayout events = card("최근 동작");
     log = text(events, "", 12, MUTED);
+    button(events, "진단 로그 보기", v -> showDiagnostics());
+    button(
+        events,
+        "진단 로그 파일 저장",
+        v -> {
+          Intent save =
+              new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                  .addCategory(Intent.CATEGORY_OPENABLE)
+                  .setType("text/plain")
+                  .putExtra(
+                      Intent.EXTRA_TITLE,
+                      "D-Autolock-diagnostics-"
+                          + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", Locale.KOREA)
+                              .format(new Date())
+                          + ".txt");
+          try {
+            startActivityForResult(save, 51);
+          } catch (ActivityNotFoundException e) {
+            controller.note("파일 저장 앱을 찾지 못했습니다. 진단 로그 보기를 사용하세요");
+          }
+        });
+    button(
+        events,
+        "저장된 진단 로그 삭제",
+        v -> controller.diagnostics.clear(() -> controller.note("진단 로그를 삭제했습니다")));
+    text(
+        events,
+        "신호·판단·제어 결과를 휴대폰에 자동 저장합니다(최대 약 1.5 MB). 계정·비밀번호·PIN·VIN·기기 주소와 서버 원문은 포함하지 않습니다.",
+        12,
+        MUTED);
     button(body, "사용 안내 · 오픈소스", v -> about());
     text(body, "D-Autolock  ·  비공식 개인용 앱", 12, MUTED);
   }
@@ -233,16 +316,25 @@ public final class MainActivity extends Activity {
                 + (s.battery == null ? "미확인" : s.battery.intValue() + "%")
                 + (s.fresh(System.currentTimeMillis()) ? "" : "\n상태가 오래되었거나 시각 미확인")));
     signal.setText(controller.signal);
+    signalGauge.setProgress(controller.signalStrength);
+    signalGauge.setContentDescription(
+        "BLE 수신 강도 " + controller.signalStrength + " / 100. 미수신 시 0.");
+    signalDetails.setText(controller.signalDetail);
+    autoDetails.setText(controller.autoDetail);
+    controlDetails.setText("최근 제어 · " + controller.lastControl);
     message.setText(controller.message);
     log.setText(controller.log());
     monitor.setText(controller.monitoring ? "거리 관찰 종료" : "거리 관찰 시작");
     updating = true;
     auto.setChecked(controller.autoEnabled);
-    auto.setEnabled(
-        controller.monitoring
-            && !controller.vin.isEmpty()
-            && CloudClient.hasFeature(controller.capabilities, "1005")
-            && CloudClient.hasFeature(controller.capabilities, "1006"));
+    String unavailable = controller.autoUnavailable();
+    auto.setEnabled(unavailable == null);
+    autoReason.setText(
+        unavailable != null
+            ? unavailable
+            : controller.autoEnabled
+                ? "자동 제어 ON · 진단 로그에서 판단과 결과를 확인하세요"
+                : "스위치를 켜면 실제 차량 명령을 보냅니다. 기능 지원은 실행 전 조회합니다.");
     updating = false;
     account.setText(
         controller.cloud.protocol.isLoggedIn()
@@ -439,7 +531,16 @@ public final class MainActivity extends Activity {
         && Build.VERSION.SDK_INT >= 33
         && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED) {
-      missing.add(Manifest.permission.POST_NOTIFICATIONS);
+      {
+        {
+          {
+            missing.add(Manifest.permission.POST_NOTIFICATIONS);
+            controller.settings.edit().putBoolean("notificationAsked", true).apply();
+          }
+          controller.settings.edit().putBoolean("notificationAsked", true).apply();
+        }
+        controller.settings.edit().putBoolean("notificationAsked", true).apply();
+      }
       controller.settings.edit().putBoolean("notificationAsked", true).apply();
     }
     if (!missing.isEmpty()) {
@@ -484,12 +585,18 @@ public final class MainActivity extends Activity {
       }
       stopPicker();
       LinkedHashMap<String, String> found = new LinkedHashMap<>();
+      HashMap<String, String> names = new HashMap<>();
       ArrayList<String> addresses = new ArrayList<>();
       ArrayList<String> rows = new ArrayList<>();
       for (BluetoothDevice b : adapter.getBondedDevices()) {
+        String label = b.getName() == null ? "이름 없음" : b.getName();
+        names.put(b.getAddress(), label);
         found.put(
             b.getAddress(),
-            (b.getName() == null ? "이름 없음" : b.getName()) + " · 저장된 기기 (BLE 신호 확인 필요)");
+            label
+                + (b.getType() == BluetoothDevice.DEVICE_TYPE_CLASSIC
+                    ? " · 일반 Bluetooth · BLE 미확인"
+                    : " · 저장된 기기 · BLE 수신 미확인"));
       }
       LinearLayout f = form();
       TextView status = text(f, "20초 동안 BLE 신호를 찾습니다. 차량 가까이에서 선택하세요.", 13, MUTED);
@@ -516,7 +623,7 @@ public final class MainActivity extends Activity {
       list.setOnItemClickListener(
           (p, v, index, id) -> {
             String address = addresses.get(index);
-            String label = found.get(address);
+            String label = names.get(address);
             controller.device(label, address);
             d.dismiss();
           });
@@ -538,10 +645,11 @@ public final class MainActivity extends Activity {
                       String name = b.getName();
                       if (name == null && result.getScanRecord() != null)
                         name = result.getScanRecord().getDeviceName();
+                      names.put(b.getAddress(), name == null ? "이름 없는 BLE 기기" : name);
                       found.put(
                           b.getAddress(),
                           (name == null ? "이름 없는 BLE 기기" : name)
-                              + " · "
+                              + " · BLE 수신 "
                               + result.getRssi()
                               + " dBm");
                       redraw.run();
@@ -568,6 +676,40 @@ public final class MainActivity extends Activity {
     } catch (SecurityException e) {
       controller.note("블루투스 권한을 확인하세요");
     }
+  }
+
+  private void showDiagnostics() {
+    controller.diagnostics.snapshot(
+        data ->
+            runOnUiThread(
+                () -> {
+                  if (isFinishing() || isDestroyed()) return;
+                  String recent =
+                      data.length() > 24000
+                          ? "최근 기록만 표시합니다. 전체 기록은 파일로 저장하세요.\n"
+                              + data.substring(data.length() - 24000)
+                          : data;
+                  TextView text = new TextView(this);
+                  text.setText(recent);
+                  text.setTextIsSelectable(true);
+                  text.setTextColor(TEXT);
+                  text.setTextSize(12);
+                  text.setPadding(dp(16), dp(12), dp(16), dp(12));
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.addView(text);
+                  new AlertDialog.Builder(this)
+                      .setTitle("진단 로그 · 시간 UTC")
+                      .setView(scroll)
+                      .setPositiveButton("닫기", null)
+                      .show();
+                }));
+  }
+
+  @Override
+  protected void onActivityResult(int request, int result, Intent data) {
+    super.onActivityResult(request, result, data);
+    if (request == 51 && result == RESULT_OK && data != null && data.getData() != null)
+      controller.exportDiagnostics(data.getData());
   }
 
   private void about() {

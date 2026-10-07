@@ -6,10 +6,12 @@ import org.json.JSONObject;
 import org.junit.Test;
 
 public class VehicleSnapshotTest {
-  @Test public void partialLockPayloadDoesNotClaimUnlock() throws Exception {
+  @Test
+  public void partialLockPayloadDoesNotClaimUnlock() throws Exception {
     JSONObject j = new JSONObject().put("leftFrontDoorLock", 1);
     assertNull(new VehicleSnapshot(j, 1800000000000L).locked);
   }
+
   private final long now = 1800000000000L;
 
   private JSONObject parked() throws Exception {
@@ -25,6 +27,26 @@ public class VehicleSnapshotTest {
   @Test
   public void completeParkedStatusAllowsDoors() throws Exception {
     assertNull(new VehicleSnapshot(parked(), now).automaticBlock(true, now));
+  }
+
+  @Test
+  public void onVehicleCanLockOnlyWhenParkBrakeIsSet() throws Exception {
+    assertNull(new VehicleSnapshot(parked().put("powerGear", 3), now).automaticBlock(true, now));
+    assertNotNull(
+        new VehicleSnapshot(parked().put("powerGear", 3).put("epb", 0), now)
+            .automaticBlock(true, now));
+  }
+
+  @Test
+  public void windowReadbackDoesNotGuessMissingFields() throws Exception {
+    JSONObject d = parked();
+    assertNull(new VehicleSnapshot(d, now).windowsClosed);
+    for (String k :
+        new String[] {"leftFrontWindow", "rightFrontWindow", "leftRearWindow", "rightRearWindow"})
+      d.put(k, 1);
+    assertTrue(new VehicleSnapshot(d, now).windowsClosed);
+    d.put("leftFrontWindow", 0);
+    assertNull(new VehicleSnapshot(d, now).windowsClosed);
   }
 
   @Test

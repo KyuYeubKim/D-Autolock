@@ -7,7 +7,7 @@ import org.json.JSONObject;
 public final class VehicleSnapshot {
   public final Integer power, epb;
   public final Double speed, battery;
-  public final Boolean locked, doorsClosed;
+  public final Boolean locked, doorsClosed, windowsClosed;
   public final long measuredAt, receivedAt;
 
   public VehicleSnapshot(JSONObject data, long receivedAt) {
@@ -26,6 +26,14 @@ public final class VehicleSnapshot {
             1);
     // A physical door close code is intentionally NOT guessed across firmware versions.
     doorsClosed = physicalDoors(data);
+    windowsClosed =
+        aggregate(
+            data,
+            new String[] {
+              "leftFrontWindow", "rightFrontWindow", "leftRearWindow", "rightRearWindow"
+            },
+            1,
+            2);
     measuredAt =
         timestamp(
             data.has("timeStamp")
@@ -99,7 +107,8 @@ public final class VehicleSnapshot {
   public String automaticBlock(boolean lock, long now) {
     if (!fresh(now)) return "차량 상태가 오래되었거나 측정 시각이 없습니다";
     if (speed == null || speed != 0d) return "정차 상태를 확인하지 못했습니다";
-    if (power == null || power != 1) return "차량 전원 OFF 상태에서만 자동 도어를 제어합니다";
+    if (power == null || (power != 1 && !(lock && power == 3 && Integer.valueOf(1).equals(epb))))
+      return lock ? "전원 OFF 또는 ON·주차브레이크 체결을 확인하지 못했습니다" : "자동 잠금 해제는 차량 전원 OFF 상태에서 실행합니다";
     if (locked == null) return "도어 잠금 상태를 확인하지 못했습니다";
     if (lock && !Boolean.TRUE.equals(doorsClosed)) return "모든 도어가 닫혔는지 확인하지 못했습니다";
     return null;
@@ -117,5 +126,26 @@ public final class VehicleSnapshot {
     return power == null
         ? "미확인"
         : power == 1 ? "OFF" : power == 3 ? "ON · READY 별도 확인" : "미확인 (" + power + ")";
+  }
+
+  public String diagnostic(long now) {
+    return "speed="
+        + speed
+        + " power="
+        + power
+        + " epb="
+        + epb
+        + " locked="
+        + locked
+        + " doorsClosed="
+        + doorsClosed
+        + " windowsClosed="
+        + windowsClosed
+        + " measuredAt="
+        + measuredAt
+        + " ageMs="
+        + (measuredAt == 0 ? -1 : now - measuredAt)
+        + " fresh="
+        + fresh(now);
   }
 }

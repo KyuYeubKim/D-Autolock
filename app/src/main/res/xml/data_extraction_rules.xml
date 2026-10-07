@@ -1,6 +1,6 @@
 <data-extraction-rules>
     <cloud-backup disableIfNoEncryptionCapabilities="true">
-        <exclude domain="root" path="."/><exclude domain="sharedpref" path="."/>
+        <exclude domain="root" path="."/><exclude domain="sharedpref" path="."/><exclude domain="file" path="."/>
     </cloud-backup>
-    <device-transfer><exclude domain="root" path="."/><exclude domain="sharedpref" path="."/></device-transfer>
+    <device-transfer><exclude domain="root" path="."/><exclude domain="sharedpref" path="."/><exclude domain="file" path="."/></device-transfer>
 </data-extraction-rules>

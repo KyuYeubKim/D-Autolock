@@ -8,6 +8,15 @@ import org.junit.Test;
 
 public class CloudProtocolTest {
   @Test
+  public void climatePulseUsesKoreanParameters() throws Exception {
+    org.json.JSONObject p = CloudClient.climateParams();
+    assertEquals(13, p.getInt("mainSettingTemp"));
+    assertEquals(1, p.getInt("timeSpan"));
+    assertEquals(2, p.getInt("airAccuracy"));
+    assertEquals("CLOSEWINDOW", CloudClient.Command.CLOSE_WINDOWS.wire);
+  }
+
+  @Test
   public void pendingIsNotSuccess() throws Exception {
     assertEquals(0, CloudClient.resultState(new JSONObject("{\"res\":1}")));
     assertEquals(0, CloudClient.resultState(new JSONObject()));

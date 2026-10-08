@@ -33,6 +33,9 @@ public final class MainActivity extends Activity {
   private LinearLayout body;
   private TextView signal, message, account, device, capabilities, checkedTime;
   private ImageView refreshIcon;
+  private LinearLayout chargeCard;
+  private TextView chargeHeadline, chargeDetail;
+  private ProgressBar chargeBar;
   private android.animation.ObjectAnimator refreshSpin;
   private LinearLayout activityRows;
   private String activityKey = "";
@@ -265,6 +268,21 @@ public final class MainActivity extends Activity {
     message.setContentDescription("최근 알림. 누르면 자세한 결과를 표시합니다");
     message.setOnClickListener(v -> showVehicleDetails());
     alerts.setOnClickListener(v -> showVehicleDetails());
+    chargeCard = card("충전 상태");
+    chargeCard.setTag("chargeCard");
+    body.removeView(chargeCard);
+    body.addView(chargeCard, 0); // Above 차량 상태, only while charging.
+    chargeHeadline = text(chargeCard, "", 20, TEXT);
+    chargeHeadline.setTypeface(null, Typeface.BOLD);
+    chargeHeadline.setTag("chargeHeadline");
+    chargeBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+    chargeBar.setMax(100);
+    chargeBar.setProgressTintList(android.content.res.ColorStateList.valueOf(MINT));
+    chargeBar.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff2a3340));
+    chargeCard.addView(chargeBar, new LinearLayout.LayoutParams(-1, dp(14)));
+    chargeDetail = text(chargeCard, "", 14, TEXT);
+    chargeDetail.setTag("chargeDetail");
+    chargeCard.setVisibility(View.GONE);
     LinearLayout dash = card("BLE 신호 상태");
     dash.setTag("signalCard");
     signal = text(dash, "신호 대기", 20, MINT);
@@ -622,7 +640,7 @@ public final class MainActivity extends Activity {
     }
     button(settingsBody, "처음 설정 안내", v -> showSetup());
     button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    text(settingsBody, "D-Autolock 0.3.1 · 비공식 개인용 앱", 12, MUTED);
+    text(settingsBody, "D-Autolock 0.3.2 · 비공식 개인용 앱", 12, MUTED);
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
     button(setupBanner, "처음 설정 이어하기", v -> showSetup());
@@ -1089,6 +1107,14 @@ public final class MainActivity extends Activity {
     String checked = DashboardStatus.checked(controller.snapshot, now);
     checkedTime.setText(controller.statusReading ? "차량 상태 확인 중… · " + checked : checked);
     spin(controller.statusReading);
+    com.dautolock.app.core.VehicleSnapshot state = controller.snapshot;
+    String[] charge = DashboardStatus.charging(state, now);
+    chargeCard.setVisibility(charge == null ? View.GONE : View.VISIBLE);
+    if (charge != null) {
+      chargeHeadline.setText("⚡ " + charge[0]);
+      chargeBar.setProgress(state.battery == null ? 0 : (int) Math.round(state.battery));
+      chargeDetail.setText(charge[1] + "\n" + charge[2] + "\n" + charge[3]);
+    }
     refreshIcon.setAlpha(controller.vin.isEmpty() ? .45f : 1f);
     renderActivity(now);
     updateStatus.setText(controller.updater.status);

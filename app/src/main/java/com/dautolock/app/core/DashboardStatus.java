@@ -41,6 +41,36 @@ public final class DashboardStatus {
     return (today ? CLOCK : DAY_CLOCK).format(at);
   }
 
+  static final long CHARGE_MAX_AGE_MS = 15 * 60 * 1000;
+
+  /**
+   * Null unless the last status says charging (state 1) and was received within 15 minutes.
+   * Returns {state, battery, remaining, completion}. Completion = vehicle measurement time +
+   * reported time-to-full, so the countdown keeps moving between reads.
+   */
+  public static String[] charging(VehicleSnapshot s, long now) {
+    if (s == null || !s.charging() || s.receivedAt <= 0 || now - s.receivedAt > CHARGE_MAX_AGE_MS)
+      return null;
+    String state = s.fresh(now) ? "충전 중" : "충전 중 · " + Math.max(1, (now - s.receivedAt) / 60000) + "분 전 정보";
+    String battery =
+        s.battery == null ? "배터리 미확인" : "배터리 " + Math.round(s.battery) + "%"
+            + (s.range == null ? "" : " · 주행 가능 " + Math.round(s.range) + " km");
+    long base = s.measuredAt > 0 ? s.measuredAt : s.receivedAt;
+    if (s.chargeUnderOneMinute) return new String[] {state, battery, "남은 시간 1분 미만", "완료 예상 곧"};
+    if (s.chargeMinutes == null)
+      return new String[] {state, battery, "남은 시간 미확인", "완료 예상 미확인"};
+    long done = base + s.chargeMinutes * 60000L;
+    long left = Math.max(0, (done - now + 59999) / 60000);
+    String remaining =
+        left == 0
+            ? "남은 시간 1분 미만"
+            : "남은 시간 " + (left >= 60 ? left / 60 + "시간 " + (left % 60 > 0 ? left % 60 + "분" : "") : left + "분");
+    String at = kst(done, now);
+    return new String[] {
+      state, battery, remaining.trim(), "완료 예상 " + at.substring(0, at.length() - 3) + " KST"
+    };
+  }
+
   public static String brief(String message) {
     if (message == null || message.isEmpty()) return "차량 상태 확인 대기";
     if (message.startsWith("저장된 계정과 차량을 복원")) return "저장된 연결 복원 완료";

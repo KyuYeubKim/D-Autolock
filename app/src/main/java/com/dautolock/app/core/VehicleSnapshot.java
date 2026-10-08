@@ -6,7 +6,10 @@ import org.json.JSONObject;
 /** Missing fields stay unknown. Power state is not transmission gear or READY. */
 public final class VehicleSnapshot {
   public final Integer power, epb, okLight;
-  public final Double speed, battery;
+  public final Double speed, battery, range;
+  /** Realtime charge state (pyBYD: chargeState authoritative, chargingState fallback; 1=charging). */
+  public final Integer chargeState, chargeMinutes;
+  public final boolean chargeUnderOneMinute;
   public final Boolean locked, doorsClosed, windowsClosed;
   public final long measuredAt, receivedAt;
   private final boolean invalidEpb;
@@ -26,6 +29,21 @@ public final class VehicleSnapshot {
             : invalidEpb ? "invalid" : Integer.valueOf(1).equals(epb) ? "engaged" : "released";
     speed = number(data, "speed");
     battery = number(data, "soc") != null ? number(data, "soc") : number(data, "elecPercent");
+    range = number(data, "enduranceMileage");
+    // Negative values (-1 after wake/deep sleep) are already treated as missing by number().
+    chargeState =
+        data.has("chargeState") && !data.isNull("chargeState")
+            ? integer(data, "chargeState")
+            : integer(data, "chargingState");
+    Integer hours = integer(data, "fullHour"), minutes = integer(data, "fullMinute");
+    if (hours == null || minutes == null) {
+      hours = integer(data, "remainingHours");
+      minutes = integer(data, "remainingMinutes");
+    }
+    chargeMinutes = hours == null || minutes == null ? null : hours * 60 + minutes;
+    Object lessOne = data.opt("lessOneMin");
+    chargeUnderOneMinute =
+        Boolean.TRUE.equals(lessOne) || "true".equals(String.valueOf(lessOne)) || "1".equals(String.valueOf(lessOne));
     locked =
         aggregate(
             data,
@@ -198,6 +216,10 @@ public final class VehicleSnapshot {
     return null;
   }
 
+  public boolean charging() {
+    return Integer.valueOf(1).equals(chargeState);
+  }
+
   public String powerLabel() {
     return power == null
         ? "미확인"
@@ -230,6 +252,12 @@ public final class VehicleSnapshot {
         + doorsClosed
         + " windowsClosed="
         + windowsClosed
+        + " charge="
+        + chargeState
+        + " chargeMin="
+        + (chargeUnderOneMinute ? "<1" : chargeMinutes)
+        + " soc="
+        + battery
         + " measuredAt="
         + measuredAt
         + " ageMs="

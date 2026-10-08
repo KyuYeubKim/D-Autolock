@@ -478,6 +478,41 @@ public class MainActivityTest {
   }
 
   @Test
+  public void chargingCardAppearsAboveVehicleStatusOnlyWhileCharging() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      View root = a.get().getWindow().getDecorView();
+      View card = root.findViewWithTag("chargeCard");
+      assertEquals(View.GONE, card.getVisibility());
+      long now = System.currentTimeMillis();
+      org.json.JSONObject data =
+          new org.json.JSONObject()
+              .put("time", now)
+              .put("chargeState", 1)
+              .put("elecPercent", 80)
+              .put("fullHour", 0)
+              .put("fullMinute", 30);
+      c.snapshot = new com.dautolock.app.core.VehicleSnapshot(data, now);
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertEquals(View.VISIBLE, card.getVisibility());
+      ViewGroup parent = (ViewGroup) card.getParent();
+      assertTrue(parent.indexOfChild(card) < parent.indexOfChild(root.findViewWithTag("alertsCard")));
+      assertEquals("⚡ 충전 중", ((TextView) root.findViewWithTag("chargeHeadline")).getText().toString());
+      String detail = ((TextView) root.findViewWithTag("chargeDetail")).getText().toString();
+      assertTrue(detail.contains("배터리 80%"));
+      assertTrue(detail.contains("남은 시간 30분"));
+      assertTrue(detail.contains("완료 예상"));
+      c.snapshot = new com.dautolock.app.core.VehicleSnapshot(data.put("chargeState", 0), now);
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertEquals(View.GONE, card.getVisibility());
+    }
+  }
+
+  @Test
   public void manualDoorTapDoesNotShowConfirmation() {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {

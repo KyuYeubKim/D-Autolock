@@ -139,6 +139,61 @@ public class ProximityEngineTest {
     assertThrows(IllegalArgumentException.class, () -> new ProximityEngine(-65, -80, 0, 0, 4000));
   }
 
+  @Test
+  public void walkingAwayWithFewFarSamplesAfterGapStillLocksOnSignalLoss() {
+    // Real log 21:54: NEAR, a 5 s reception gap reset `stable`, three far samples, then lost.
+    ProximityEngine e = new ProximityEngine(-70, -80, 0, 2000, 10000);
+    feed(e, -55, 0, 6000);
+    assertTrue(e.claim(UNLOCK, 6000));
+    e.sample(-83, 12000);
+    e.sample(-79, 15000);
+    e.sample(-78, 17000);
+    assertEquals(NONE, e.pending(20000));
+    assertEquals(LOCK, e.pending(27000)); // 10 s after the last sample.
+  }
+
+  @Test
+  public void neverStableReceptionStillDoesNotLockOnLoss() {
+    ProximityEngine e = new ProximityEngine(-70, -80, 0, 2000, 10000);
+    e.sample(-75, 0);
+    e.sample(-75, 1000);
+    e.sample(-75, 2000);
+    e.sample(-75, 3000);
+    assertEquals(NONE, e.pending(30000));
+  }
+
+  @Test
+  public void standingByTheCarAfterUnlockNeedsTwentySecondsFarBeforeLocking() {
+    // Real log 21:21: unlock, then -80..-87 for a few seconds while standing still → lock.
+    ProximityEngine e = new ProximityEngine(-70, -80, 0, 2000, 10000);
+    feed(e, -65, 0, 4000);
+    assertTrue(e.claim(UNLOCK, 4000));
+    for (long t = 20000; t <= 30000; t += 500) e.sample(-86, t);
+    assertEquals(NONE, e.pending(30000)); // 10 s far: still treated as standing nearby.
+    for (long t = 30500; t <= 40500; t += 500) e.sample(-86, t);
+    assertEquals(LOCK, e.pending(40500)); // 20 s continuously far.
+    // Outside the 2-minute window the configured 2 s applies again.
+    ProximityEngine later = new ProximityEngine(-70, -80, 0, 2000, 10000);
+    feed(later, -65, 0, 4000);
+    assertTrue(later.claim(UNLOCK, 4000));
+    for (long t = 130000; t <= 133000; t += 500) later.sample(-86, t);
+    assertEquals(LOCK, later.pending(133000));
+  }
+
+  @Test
+  public void reUnlockRightAfterLockNeedsThreeSecondsNear() {
+    ProximityEngine e = new ProximityEngine(-70, -80, 0, 2000, 10000);
+    feed(e, -65, 0, 4000);
+    e.alreadySatisfied(UNLOCK, 4000);
+    feed(e, -90, 5000, 11000);
+    assertEquals(LOCK, e.pending(11000));
+    assertTrue(e.claim(LOCK, 11000));
+    for (long t = 20000; t <= 21500; t += 250) e.sample(-60, t);
+    assertEquals(NONE, e.pending(21500));
+    for (long t = 21750; t <= 23250; t += 250) e.sample(-60, t);
+    assertEquals(UNLOCK, e.pending(23250));
+  }
+
   private void feed(ProximityEngine e, int rssi, long from, long to) {
     for (long t = from; t <= to; t += 1000) e.sample(rssi, t);
   }
@@ -179,7 +234,10 @@ public class ProximityEngineTest {
     feed(e, -50, 0, 3000);
     assertTrue(e.claim(UNLOCK, 3000));
     feed(e, -95, 4000, 17000);
-    assertEquals(LOCK, e.pending(17000));
+    // Within 2 minutes of the unlock, 20 s continuously far is required (anti-flap).
+    assertEquals(NONE, e.pending(17000));
+    feed(e, -95, 18000, 28000); // Smoothed signal is FAR from 7 s, so 20 s far at 27 s.
+    assertEquals(LOCK, e.pending(28000));
   }
 
   @Test
@@ -187,8 +245,8 @@ public class ProximityEngineTest {
     ProximityEngine e = new ProximityEngine(-65, -80);
     feed(e, -50, 0, 3000);
     e.claim(UNLOCK, 3000);
-    feed(e, -110, 4000, 13000);
-    assertEquals(LOCK, e.pending(13000));
+    feed(e, -110, 4000, 25000);
+    assertEquals(LOCK, e.pending(25000));
   }
 
   @Test

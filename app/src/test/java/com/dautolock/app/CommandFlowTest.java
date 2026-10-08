@@ -473,6 +473,27 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void gettingOutRightAfterPowerOffNeverStartsClimateOrClaimsTrip() throws Exception {
+    // Real log 21:54: car ON, driver switches off (already unlocked), opens door to leave.
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    c.settings.edit().putBoolean("autoReady", true).commit();
+    c.refreshNow();
+    completeRead(c);
+    assertTrue(c.recentlyPowered());
+    p.power = 1;
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+    complete(c);
+    p.doorOpen = true; // Exit door opens.
+    assertFalse(c.pollEntry(() -> true));
+    complete(c);
+    assertTrue(p.commands.isEmpty()); // No OPENAIR: the car is not powered back on.
+    assertEquals("이 휴대폰이 연 운행이 아닙니다", c.ownershipBlock());
+  }
+
+  @Test
   public void sharedVehicleModeKeepsAutomaticLockButNeverStops() throws Exception {
     Protocol p = new Protocol();
     p.power = 3;

@@ -86,7 +86,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.3.3 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.3.4 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -534,10 +534,21 @@ final class Controller {
     cloud.ensureAuthenticated();
   }
 
+  static final long RECENT_POWER_MS = 5 * 60 * 1000;
+  private volatile long powerOnSeenAt;
+
+  /** Power ON was observed in the last 5 minutes: an opening door now is someone leaving. */
+  boolean recentlyPowered() {
+    long at = powerOnSeenAt;
+    return at > 0 && System.currentTimeMillis() - at < RECENT_POWER_MS;
+  }
+
   private void observeSnapshot(VehicleSnapshot next, boolean announce) {
     unlockPreflight.observed();
     VehicleSnapshot previous = snapshot;
     snapshot = next;
+    if (Integer.valueOf(3).equals(next.power) && next.fresh(System.currentTimeMillis()))
+      powerOnSeenAt = System.currentTimeMillis();
     if (announce
         && previous != null
         && next.fresh(System.currentTimeMillis())
@@ -808,13 +819,19 @@ final class Controller {
               // Arriving together: another phone opened first while this phone also qualified
               // (automatic unlock is only evaluated with power OFF). Still needs this phone's
               // Bridge to see the drive, live P and the delayed re-check before any Stop.
-              if (command == CloudClient.Command.UNLOCK
-                  && Integer.valueOf(1).equals(snapshot.power)
-                  && validSession(ticket, target))
-                startTrip(automatic ? "approach_already_unlocked" : "manual_already_unlocked");
-              if (automatic
-                  && command == CloudClient.Command.UNLOCK
-                  && validSession(ticket, target)) armEntry(ticket, snapshot);
+              // Already unlocked with power OFF right after the car was ON = the occupant just
+              // switched off and is getting out, not arriving (real log: the exit door opening
+              // was taken as boarding, climate start powered the car back on).
+              if (command == CloudClient.Command.UNLOCK) {
+                if (recentlyPowered()) {
+                  diagnostics.record("ENTRY_SKIP", "reason=recent_power_on alreadyUnlocked=true");
+                } else if (Integer.valueOf(1).equals(snapshot.power)
+                    && validSession(ticket, target))
+                  startTrip(automatic ? "approach_already_unlocked" : "manual_already_unlocked");
+                // The boarding watch follows only this phone's own unlock command.
+                if (automatic && settings.getBoolean("autoReady", false))
+                  climateStatus = "공조 연동 · 이미 열린 차량이라 탑승 감시 안 함";
+              }
               lastControl = "BYD 조회상 이미 " + command.label + " 상태 · 명령 생략";
               if (stop) stopStatus = "차량 종료 · BYD 조회상 이미 전원 OFF";
               diagnostics.record(
@@ -1339,6 +1356,12 @@ final class Controller {
   private void armEntry(int ticket, VehicleSnapshot s) {
     if (!settings.getBoolean("autoReady", false)) {
       climateStatus = "공조 연동 · 설정 꺼짐";
+      return;
+    }
+    if (recentlyPowered()) {
+      // The car was ON moments ago: a door opening now is most likely someone getting out.
+      climateStatus = "공조 연동 · 최근 전원 ON 기록이 있어 탑승 감시 안 함";
+      diagnostics.record("ENTRY_SKIP", "reason=recent_power_on");
       return;
     }
     entryTicket = ticket;

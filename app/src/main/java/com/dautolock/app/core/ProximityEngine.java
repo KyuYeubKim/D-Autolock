@@ -22,7 +22,16 @@ public final class ProximityEngine {
   private long lastSample = -1, since = -1, lastDispatch = -COOLDOWN_MS, received;
   private Zone candidate = Zone.UNKNOWN, stable = Zone.UNKNOWN, handled = Zone.UNKNOWN;
   private boolean seenNear;
+  /** A stable zone was established at least once; survives the reset after a reception gap. */
+  private boolean everStable;
+  private Action lastAction = Action.NONE;
   private long unlockCheckUntil = -1;
+  /**
+   * Anti-flap: right after an automatic unlock a phone standing by the car often dips far for a
+   * few seconds (body/pocket shadowing). Real logs showed unlock→lock→unlock within 90 s.
+   */
+  public static final long FLAP_WINDOW_MS = 120000, FLAP_FAR_DWELL_MS = 20000;
+  public static final long RELOCK_WINDOW_MS = 60000, RELOCK_NEAR_DWELL_MS = 3000;
 
   /** Qualify at the configured threshold, then tolerate a small dip during cloud preflight. */
   public synchronized void beginCheck(Action action, long now) {
@@ -76,18 +85,26 @@ public final class ProximityEngine {
       since = now;
       samples = 1;
     } else samples++;
-    if (next != Zone.UNKNOWN && samples >= 4 && now - since >= dwell()) {
+    if (next != Zone.UNKNOWN && samples >= 4 && now - since >= dwell(now)) {
       if (stable != next) {
         if (handled != next) handled = Zone.UNKNOWN;
         stable = next;
       }
+      everStable = true;
       if (next == Zone.NEAR) seenNear = true;
     }
     return pending(now);
   }
 
-  private long dwell() {
-    return candidate == Zone.FAR ? farDwellMs : nearDwellMs;
+  private long dwell(long now) {
+    boolean recent = lastDispatch >= 0 && now - lastDispatch >= 0;
+    if (candidate == Zone.FAR)
+      return recent && lastAction == Action.UNLOCK && now - lastDispatch < FLAP_WINDOW_MS
+          ? Math.max(farDwellMs, FLAP_FAR_DWELL_MS)
+          : farDwellMs;
+    return recent && lastAction == Action.LOCK && now - lastDispatch < RELOCK_WINDOW_MS
+        ? Math.max(nearDwellMs, RELOCK_NEAR_DWELL_MS)
+        : nearDwellMs;
   }
 
   public synchronized long age(long now) {
@@ -105,7 +122,7 @@ public final class ProximityEngine {
         && candidate == Zone.FAR
         && stable == Zone.FAR
         && samples >= 4
-        && now - since >= farDwellMs;
+        && now - since >= dwell(now);
   }
 
   public synchronized long cooldown(long now) {
@@ -127,7 +144,7 @@ public final class ProximityEngine {
         || candidate == Zone.UNKNOWN
         || stable != candidate
         || samples < 4
-        || now - since < dwell()
+        || now - since < dwell(now)
         || handled == candidate
         || cooldown(now) > 0) return Action.NONE;
     if (candidate == Zone.NEAR) return Action.UNLOCK;
@@ -138,7 +155,9 @@ public final class ProximityEngine {
     return lastSample >= 0
         && now >= lastSample
         && now - lastSample >= lossLockMs
-        && stable != Zone.UNKNOWN
+        // Stable reception at some point (not just now): a short gap resets `stable`, and a phone
+        // walking away often sends only a few far samples before it is lost (missed lock in logs).
+        && everStable
         && received >= 4
         && handled != Zone.FAR
         && cooldown(now) == 0;
@@ -159,6 +178,7 @@ public final class ProximityEngine {
     if (!stillValid(action, now)) return false;
     handled = action == Action.LOCK ? Zone.FAR : Zone.NEAR;
     lastDispatch = now;
+    lastAction = action;
     unlockCheckUntil = -1;
     return true;
   }
@@ -191,16 +211,16 @@ public final class ProximityEngine {
     if (!fresh(now)) {
       if (lastSample < 0) return "선택 기기의 BLE 광고 수신 대기 · 아직 자동 잠금하지 않음";
       if (handled == Zone.FAR) return "신호 끊김 · 잠금 요청 처리됨";
-      if (stable == Zone.UNKNOWN) return "신호 안정화 기록 부족 · 잠금 보류";
+      if (!everStable) return "신호 안정화 기록 부족 · 잠금 보류";
       if (lossLockReady(now)) return "신호 " + lossLockMs / 1000 + "초 끊김 · 도어 잠금 조건 충족";
       return "신호 끊김 잠금까지 " + ((Math.max(lossLockMs - age(now), cooldown(now)) + 999) / 1000) + "초";
     }
     if (candidate == Zone.UNKNOWN) return "접근·이탈 기준 사이 · 거리 변화 대기";
-    if (samples < 4 || now - since < dwell())
+    if (samples < 4 || now - since < dwell(now))
       return "신호 안정화 중 · "
           + samples
           + "회 / "
-          + Math.max(0, (dwell() - (now - since) + 999) / 1000)
+          + Math.max(0, (dwell(now) - (now - since) + 999) / 1000)
           + "초 남음";
     if (candidate == Zone.FAR && !seenNear) return "접근 기록 없음 · 처음부터 멀리 있을 때 잠그지 않음";
     if (handled == candidate) return "현재 거리의 요청 처리됨 · 반대 거리 구간 대기";

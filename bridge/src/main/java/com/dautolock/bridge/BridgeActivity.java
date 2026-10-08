@@ -15,6 +15,7 @@ import java.util.*;
 import org.json.JSONObject;
 
 public final class BridgeActivity extends Activity {
+  static final String VERSION = "0.2.8";
   private TextView status;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final Runnable tick =
@@ -43,7 +44,7 @@ public final class BridgeActivity extends Activity {
     box.setPadding(32, 24, 32, 24);
     scroll.addView(box);
     setContentView(scroll);
-    text(box, "D-Autolock Bridge · 0.2.7", 26);
+    text(box, "D-Autolock Bridge · " + VERSION, 26);
     text(box, "차량 상태를 읽어 휴대폰으로 전달합니다. 차량과 휴대폰을 시스템 Bluetooth 설정에서 먼저 페어링하세요.", 18);
     status = text(box, "차량 조회 준비", 19);
     button(box, "조회·연결 시작", v -> start());
@@ -51,18 +52,15 @@ public final class BridgeActivity extends Activity {
     button(
         box,
         "Bluetooth 설정",
-        v -> startActivity(new Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)));
+        v -> {
+          try {
+            startActivity(new Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS));
+          } catch (ActivityNotFoundException | SecurityException e) {
+            error("이 차량에서 Bluetooth 설정 화면을 열 수 없습니다. 차량 설정 메뉴에서 페어링하세요.");
+          }
+        });
     button(box, "조회·연결 중지", v -> stopService(new Intent(this, BridgeService.class)));
-    button(
-        box,
-        "차량 진단 파일 저장",
-        v ->
-            startActivityForResult(
-                new Intent(Intent.ACTION_CREATE_DOCUMENT)
-                    .addCategory(Intent.CATEGORY_OPENABLE)
-                    .setType("text/plain")
-                    .putExtra(Intent.EXTRA_TITLE, "D-Autolock-Bridge-diagnostics.txt"),
-                51));
+    button(box, "차량 진단 파일 저장", v -> saveDiagnostics());
     button(
         box,
         "연결 초기화 · 새 QR 만들기",
@@ -112,7 +110,95 @@ public final class BridgeActivity extends Activity {
   }
 
   private void error(String s) {
+    if (isFinishing() || isDestroyed()) return;
     new AlertDialog.Builder(this).setMessage(s).setPositiveButton("확인", null).show();
+  }
+
+  static final String DIAGNOSTIC_NAME = "D-Autolock-Bridge-diagnostics.txt";
+
+  String report() {
+    return "D-Autolock Bridge "
+        + VERSION
+        + "\nsdk="
+        + Build.VERSION.SDK_INT
+        + " model="
+        + Build.MODEL
+        + "\nstatus="
+        + BridgeService.status
+        + "\nmonotonicNow="
+        + SystemClock.elapsedRealtime()
+        + " sampledAt="
+        + BridgeService.sampledAt
+        + "\nlastGear="
+        + BridgeService.lastSample
+        + "\n"
+        + BridgeService.detail
+        + "\n";
+  }
+
+  /**
+   * DiLink may have no document picker (ACTION_CREATE_DOCUMENT crashed with no handler). Try it,
+   * then fall back to Downloads (Android 10+) or the app's own folder, and always show the text.
+   */
+  private void saveDiagnostics() {
+    Intent pick =
+        new Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("text/plain")
+            .putExtra(Intent.EXTRA_TITLE, DIAGNOSTIC_NAME);
+    try {
+      startActivityForResult(pick, 51);
+      return;
+    } catch (ActivityNotFoundException | SecurityException ignored) {
+      // No document picker on this head unit: use the fallback below.
+    }
+    String report = report(), where;
+    try {
+      where = saveFallback(report);
+    } catch (Exception e) {
+      where = "파일 저장 실패 (" + e.getClass().getSimpleName() + ") · 아래 내용을 촬영해 주세요";
+    }
+    showReport(where, report);
+  }
+
+  private String saveFallback(String report) throws Exception {
+    byte[] data = report.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    if (Build.VERSION.SDK_INT >= 29) {
+      android.content.ContentValues values = new android.content.ContentValues();
+      values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, DIAGNOSTIC_NAME);
+      values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+      android.net.Uri uri =
+          getContentResolver()
+              .insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+      if (uri != null)
+        try (java.io.OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
+          if (out == null) throw new java.io.IOException("output");
+          out.write(data);
+          return "다운로드 폴더에 저장: " + DIAGNOSTIC_NAME;
+        }
+    }
+    java.io.File dir = getExternalFilesDir(null);
+    if (dir == null) dir = getFilesDir();
+    java.io.File file = new java.io.File(dir, DIAGNOSTIC_NAME);
+    try (java.io.FileOutputStream out = new java.io.FileOutputStream(file)) {
+      out.write(data);
+    }
+    return "저장: " + file.getAbsolutePath();
+  }
+
+  private void showReport(String where, String report) {
+    if (isFinishing() || isDestroyed()) return;
+    TextView text = new TextView(this);
+    text.setText(where + "\n\n" + report);
+    text.setTextIsSelectable(true);
+    text.setPadding(32, 16, 32, 16);
+    ScrollView scroll = new ScrollView(this);
+    scroll.addView(text);
+    new AlertDialog.Builder(this)
+        .setTitle("차량 진단")
+        .setView(scroll)
+        .setPositiveButton("닫기", null)
+        .show();
   }
 
   private void start() {
@@ -168,7 +254,12 @@ public final class BridgeActivity extends Activity {
               .create();
       dialog.show();
       dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
-      handler.postDelayed(dialog::dismiss, 60000);
+      // Dismissing after the activity is gone would throw "not attached to window manager".
+      handler.postDelayed(
+          () -> {
+            if (!isFinishing() && !isDestroyed() && dialog.isShowing()) dialog.dismiss();
+          },
+          60000);
     } catch (Exception e) {
       error("먼저 조회·연결 시작을 누르세요");
     }
@@ -200,29 +291,22 @@ public final class BridgeActivity extends Activity {
   }
 
   @Override
+  protected void onDestroy() {
+    handler.removeCallbacksAndMessages(null);
+    super.onDestroy();
+  }
+
+  @Override
   protected void onActivityResult(int request, int result, Intent data) {
     super.onActivityResult(request, result, data);
     if (request == 51 && result == RESULT_OK && data != null && data.getData() != null) {
+      String report = report();
       try (java.io.OutputStream out = getContentResolver().openOutputStream(data.getData(), "wt")) {
         if (out == null) throw new java.io.IOException();
-        String report =
-            "D-Autolock Bridge 0.2.7\nsdk="
-                + Build.VERSION.SDK_INT
-                + " model="
-                + Build.MODEL
-                + "\nstatus="
-                + BridgeService.status
-                + "\nmonotonicNow="
-                + SystemClock.elapsedRealtime()
-                + " sampledAt="
-                + BridgeService.sampledAt
-                + "\n"
-                + BridgeService.detail
-                + "\n";
         out.write(report.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         Toast.makeText(this, "차량 진단 저장 완료", Toast.LENGTH_SHORT).show();
       } catch (Exception e) {
-        error("진단 파일 저장 실패");
+        showReport("진단 파일 저장 실패 · 아래 내용을 촬영해 주세요", report);
       }
     }
   }

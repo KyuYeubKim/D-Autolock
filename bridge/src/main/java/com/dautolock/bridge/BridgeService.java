@@ -31,21 +31,33 @@ public final class BridgeService extends Service {
             0,
             new Intent(this, BridgeActivity.class),
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-    startForeground(
-        20,
-        new Notification.Builder(this, "bridge")
-            .setSmallIcon(R.drawable.ic_bridge)
-            .setContentTitle("D-Autolock · 차량 상태 전달")
-            .setContentText("기어 조회 중 · 차량 제어는 휴대폰에서 실행")
-            .setContentIntent(open)
-            .setOngoing(true)
-            .build());
+    try {
+      startForeground(
+          20,
+          new Notification.Builder(this, "bridge")
+              .setSmallIcon(R.drawable.ic_bridge)
+              .setContentTitle("D-Autolock · 차량 상태 전달")
+              .setContentText("기어 조회 중 · 차량 제어는 휴대폰에서 실행")
+              .setContentIntent(open)
+              .setOngoing(true)
+              .build());
+    } catch (RuntimeException e) {
+      // Missing foreground-service permission on this firmware: report instead of crashing.
+      status = "백그라운드 실행 권한 확인 필요 (" + e.getClass().getSimpleName() + ")";
+      stopSelf();
+      return;
+    }
     local.scheduleWithFixedDelay(
         () -> {
-          LinkProtocol.Sample s = reader.read();
-          lastSample = s.gearLabel();
-          detail = reader.detail;
-          sampledAt = SystemClock.elapsedRealtime();
+          // An exception here would silently cancel all later reads; keep the loop alive.
+          try {
+            LinkProtocol.Sample s = reader.read();
+            lastSample = s.gearLabel();
+            detail = reader.detail;
+            sampledAt = SystemClock.elapsedRealtime();
+          } catch (RuntimeException e) {
+            detail = "기어 조회 오류 · " + e.getClass().getSimpleName();
+          }
         },
         0,
         500,
@@ -53,6 +65,7 @@ public final class BridgeService extends Service {
   }
 
   public int onStartCommand(Intent intent, int flags, int id) {
+    if (reader == null || local.isShutdown()) return START_NOT_STICKY;
     if (!running) {
       running = true;
       worker = new Thread(this::serve, "vehicle-state-server");

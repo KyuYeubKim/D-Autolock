@@ -350,6 +350,16 @@ public class MainActivityTest {
     }
   }
 
+  private Button button(View v, String text) {
+    if (v instanceof Button && text.contentEquals(((Button) v).getText())) return (Button) v;
+    if (v instanceof ViewGroup)
+      for (int i = 0; i < ((ViewGroup) v).getChildCount(); i++) {
+        Button b = button(((ViewGroup) v).getChildAt(i), text);
+        if (b != null) return b;
+      }
+    return null;
+  }
+
   private TextView find(View v, String text) {
     if (v instanceof TextView && text.contentEquals(((TextView) v).getText())) return (TextView) v;
     if (v instanceof ViewGroup) {
@@ -509,6 +519,37 @@ public class MainActivityTest {
       c.changed();
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
       assertEquals(View.GONE, card.getVisibility());
+    }
+  }
+
+  @Test
+  public void qrScanOpensOwnScannerAndScannerStartsWithoutAndroidX() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      c.vin = "test-car";
+      org.robolectric.Shadows.shadowOf(a.get().getApplication())
+          .grantPermissions(
+              android.Manifest.permission.BLUETOOTH_SCAN,
+              android.Manifest.permission.BLUETOOTH_CONNECT,
+              android.Manifest.permission.ACCESS_FINE_LOCATION,
+              android.Manifest.permission.ACCESS_COARSE_LOCATION);
+      button(a.get().getWindow().getDecorView(), "차량 보조 앱 연결 / QR").performClick();
+      AlertDialog dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+      find(dialog.getWindow().getDecorView(), "차량 화면의 QR 스캔").performClick();
+      // Older Android may first launch a system intent (e.g. Bluetooth enable); find the scanner.
+      android.content.Intent started;
+      do started = org.robolectric.Shadows.shadowOf(a.get()).getNextStartedActivity();
+      while (started != null && started.getComponent() == null);
+      assertNotNull(started);
+      assertEquals(BridgeQrActivity.class.getName(), started.getComponent().getClassName());
+      // Camera not yet allowed: the scanner asks for it instead of crashing.
+      try (org.robolectric.android.controller.ActivityController<BridgeQrActivity> scan =
+          Robolectric.buildActivity(BridgeQrActivity.class, started).setup()) {
+        assertFalse(scan.get().isFinishing());
+      }
+      c.vin = "";
     }
   }
 

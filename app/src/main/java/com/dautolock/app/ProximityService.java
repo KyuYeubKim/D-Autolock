@@ -21,6 +21,9 @@ public final class ProximityService extends Service {
   private boolean autoAttempt;
   private boolean notificationAutomatic;
   private long lastScanAttempt;
+  private long nextUnlockCheck;
+  private long watchdogIntervalMs = 120000;
+  private String lastDiagnosticReason = "";
   private long nextPreflight, lastDiagnostic = -15000, lastCount = -1, started, lastIgnored = -5000;
   private int deviceType;
   private String radioStatus = "BLE 검색 중";
@@ -111,11 +114,14 @@ public final class ProximityService extends Service {
           if (!scanning) return;
           long now = SystemClock.elapsedRealtime();
           if ((engine.age(now) >= 60000 || (engine.count() == 0 && now - started >= 60000))
-              && now - lastScanAttempt >= 120000) {
+              && now - lastScanAttempt >= watchdogIntervalMs) {
             lastScanAttempt = now;
             controller.diagnostics.record(
-                "SCAN_WATCHDOG", "noSamplesMs=" + engine.age(now) + " restart=true");
+                "SCAN_WATCHDOG",
+                "noSamplesMs=" + engine.age(now) + " restart=true nextMs=" + watchdogIntervalMs);
             restartScan.run();
+            // Out of range for long: restarting every 2 minutes only costs battery. Back off to 16 min.
+            watchdogIntervalMs = Math.min(960000, watchdogIntervalMs * 2);
           }
           if (notificationAutomatic != controller.autoEnabled) {
             notificationAutomatic = controller.autoEnabled;
@@ -165,8 +171,12 @@ public final class ProximityService extends Service {
                   "\n미전송 조건 재검토까지 " + ((nextPreflight - now + 999) / 1000) + "초";
             else if (controller.busy()) controller.autoDetail += "\n다른 요청 완료 대기 · 감지 조건 유지";
           }
+          // One line per second filled ~90% of the bounded log. Record state changes and a
+          // 15-second heartbeat instead (decisions are logged separately as PROXIMITY_READY etc.).
+          String diagnosticReason = engine.zone(now) + "|" + engine.reason(now) + "|" + controller.busy();
           if (now - lastDiagnostic >= 1000
-              && (engine.count() != lastCount || now - lastDiagnostic >= 15000)) {
+              && (!diagnosticReason.equals(lastDiagnosticReason) || now - lastDiagnostic >= 15000)) {
+            lastDiagnosticReason = diagnosticReason;
             controller.diagnostics.record(
                 "SCAN_STATUS",
                 engine.diagnostic(now)
@@ -218,6 +228,11 @@ public final class ProximityService extends Service {
     long cloudWait = controller.cloud.backoffMillis();
     ProximityEngine.Action pending = engine.pending(now);
     if (pending != readyAction) {
+      // A departure ends the in-use backoff (signal flicker inside the car must not reset it).
+      if (pending == ProximityEngine.Action.LOCK) {
+        controller.unlockInUseBlocks = 0;
+        nextUnlockCheck = 0;
+      }
       readyAction = pending;
       readyAt = now;
       if (pending != ProximityEngine.Action.NONE)
@@ -228,6 +243,7 @@ public final class ProximityService extends Service {
         && !autoAttempt
         && cloudWait == 0
         && now >= nextPreflight
+        && (action != ProximityEngine.Action.UNLOCK || now >= nextUnlockCheck)
         && action != ProximityEngine.Action.NONE) {
       CloudClient.Command command =
           action == ProximityEngine.Action.UNLOCK
@@ -254,6 +270,15 @@ public final class ProximityService extends Service {
                         autoAttempt = false;
                         checkedEngine.endCheck();
                         long completed = SystemClock.elapsedRealtime();
+                        long recheck =
+                            controller.automaticRecheckMs(action == ProximityEngine.Action.UNLOCK);
+                        if (recheck > 15000)
+                          controller.diagnostics.record(
+                              "AUTO_RECHECK_BACKOFF",
+                              action + " delayMs=" + recheck + " reason=vehicle_in_use");
+                        // In-use backoff gates only unlock re-checks; a departure lock is never
+                        // delayed by it.
+                        nextUnlockCheck = recheck > 15000 ? completed + recheck : 0;
                         nextPreflight =
                             engine == checkedEngine && engine.pending(completed) == action
                                 ? completed + 15000
@@ -281,6 +306,7 @@ public final class ProximityService extends Service {
         && pending == ProximityEngine.Action.NONE
         && cloudWait == 0
         && now >= nextPreflight
+        && now >= nextUnlockCheck
         && !controller.busy()
         && engine.approaching(now)) {
       ProximityEngine preparingEngine = engine;
@@ -299,6 +325,7 @@ public final class ProximityService extends Service {
       return;
     }
     if (!scanning || engine == null) return;
+    watchdogIntervalMs = 120000; // Advertisements arrive again: restore the normal watchdog.
     long now = SystemClock.elapsedRealtime(), sampleAt = result.getTimestampNanos() / 1000000;
     if (now - sampleAt > 3000 || sampleAt > now) {
       if (now - lastIgnored > 5000) {

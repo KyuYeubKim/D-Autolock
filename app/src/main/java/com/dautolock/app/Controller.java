@@ -60,6 +60,15 @@ final class Controller {
   private volatile boolean tripDriven;
   private final AtomicInteger stopTicket = new AtomicInteger();
   volatile long stopDueAt = -1;
+  /** Consecutive automatic unlock checks refused because the car was powered ON or moving. */
+  volatile int unlockInUseBlocks;
+
+  /** Re-check delay after an unretired automatic action: 15 s, or backoff up to 5 min in use. */
+  long automaticRecheckMs(boolean unlock) {
+    int blocks = unlock ? unlockInUseBlocks : 0;
+    if (blocks <= 0) return 15000;
+    return Math.min(300000, 30000L << Math.min(4, blocks - 1));
+  }
   private final List<Runnable> observers = new CopyOnWriteArrayList<>();
 
   Controller(Context context) {
@@ -77,7 +86,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.3.2 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.3.3 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -784,6 +793,14 @@ final class Controller {
                     automatic,
                     departureConfirmed.getAsBoolean(),
                     parkingConfirmationCurrent(parkingConfirmedAt));
+            // Automatic unlock blocked because the car is powered or moving: the service backs off.
+            if (automatic && command == CloudClient.Command.UNLOCK)
+              unlockInUseBlocks =
+                  block != null
+                          && (Integer.valueOf(3).equals(checked.power)
+                              || (checked.speed != null && checked.speed > 0))
+                      ? unlockInUseBlocks + 1
+                      : 0;
             if (block != null) throw new Exception("제어 보류: " + block);
             if ((stop && Integer.valueOf(1).equals(snapshot.power))
                 || (!stop && Boolean.valueOf(lock).equals(snapshot.locked))) {
@@ -810,7 +827,8 @@ final class Controller {
                     () ->
                         validSession(ticket, target) && (!automatic || (monitoring && autoEnabled)),
                     automatic,
-                    departureConfirmed);
+                    departureConfirmed,
+                    true);
               return;
             }
             if (!valid.getAsBoolean()) {
@@ -1055,6 +1073,14 @@ final class Controller {
 
   private void afterLock(
       BooleanSupplier valid, boolean automatic, BooleanSupplier departureConfirmed) {
+    afterLock(valid, automatic, departureConfirmed, false);
+  }
+
+  private void afterLock(
+      BooleanSupplier valid,
+      boolean automatic,
+      BooleanSupplier departureConfirmed,
+      boolean alreadyLocked) {
     cancelReadinessWatch("도어 잠금 처리");
     entryUntil = 0;
     String owner = ownershipBlock();
@@ -1073,7 +1099,12 @@ final class Controller {
     }
     endTrip("locked");
     // Windows no longer wait for Stop: the delay or a cancellation must not leave them open.
-    closeWindowsAfterLock(valid);
+    // A repeated automatic lock on an already locked car whose windows BYD reports closed does
+    // not resend: BYD rejected those redundant requests (6042/6048) in real logs.
+    if (automatic && alreadyLocked && snapshot != null && Boolean.TRUE.equals(snapshot.windowsClosed)) {
+      windowsStatus = "창문 닫기 생략 · 이미 잠김 상태에서 BYD 조회상 모두 닫힘";
+      diagnostics.record("WINDOWS_SKIP", "alreadyLocked=true cloudClosed=true");
+    } else closeWindowsAfterLock(valid);
     if (schedule) scheduleStop(() -> valid.getAsBoolean() && departureConfirmed.getAsBoolean());
   }
 

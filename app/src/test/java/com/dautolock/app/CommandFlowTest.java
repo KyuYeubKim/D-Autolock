@@ -439,6 +439,40 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void unlockRefusedWhileCarIsOnBacksOffAndSuccessResets() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3; // Phone sits inside the powered car.
+    p.locked = true;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    assertEquals(15000, c.automaticRecheckMs(true));
+    for (long expected : new long[] {30000, 60000, 120000, 240000, 300000, 300000}) {
+      c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+      complete(c);
+      assertEquals(expected, c.automaticRecheckMs(true));
+    }
+    assertEquals(15000, c.automaticRecheckMs(false)); // Locks are never delayed by it.
+    p.power = 1;
+    c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+    complete(c);
+    assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
+    assertEquals(15000, c.automaticRecheckMs(true));
+  }
+
+  @Test
+  public void repeatedAutomaticLockOnLockedCarWithClosedWindowsDoesNotResendWindows()
+      throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true; // Protocol reports all windows closed.
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, false);
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertTrue(c.windowsStatus.contains("생략"));
+  }
+
+  @Test
   public void sharedVehicleModeKeepsAutomaticLockButNeverStops() throws Exception {
     Protocol p = new Protocol();
     p.power = 3;

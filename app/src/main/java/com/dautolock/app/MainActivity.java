@@ -29,6 +29,7 @@ public final class MainActivity extends Activity {
       MINT = 0xff62dca7,
       TEXT = 0xffe9edf3,
       MUTED = 0xff919ba9;
+  private static final int QR_REQUEST = 52;
   private Controller controller;
   private LinearLayout body;
   private TextView signal, message, account, device, capabilities, checkedTime;
@@ -640,7 +641,7 @@ public final class MainActivity extends Activity {
     }
     button(settingsBody, "처음 설정 안내", v -> showSetup());
     button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    text(settingsBody, "D-Autolock 0.3.2 · 비공식 개인용 앱", 12, MUTED);
+    text(settingsBody, "D-Autolock 0.3.3 · 비공식 개인용 앱", 12, MUTED);
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
     button(setupBanner, "처음 설정 이어하기", v -> showSetup());
@@ -675,6 +676,27 @@ public final class MainActivity extends Activity {
               controller.note("자동 종료 대기 시간 " + seconds + "초");
             })
         .show();
+  }
+
+  /** System screens (settings, Bluetooth, installer) may be missing or blocked: never crash. */
+  @Override
+  public void startActivity(Intent intent, Bundle options) {
+    try {
+      super.startActivity(intent, options);
+    } catch (ActivityNotFoundException | SecurityException e) {
+      controller.diagnostics.record("ACTIVITY_START_ERROR", e.getClass().getSimpleName());
+      controller.note("이 휴대폰에서 해당 화면을 열 수 없습니다");
+    }
+  }
+
+  @Override
+  public void startActivityForResult(Intent intent, int request, Bundle options) {
+    try {
+      super.startActivityForResult(intent, request, options);
+    } catch (ActivityNotFoundException | SecurityException e) {
+      controller.diagnostics.record("ACTIVITY_START_ERROR", e.getClass().getSimpleName());
+      controller.note("이 휴대폰에서 해당 화면을 열 수 없습니다");
+    }
   }
 
   private void requestUpdate() {
@@ -1614,14 +1636,11 @@ public final class MainActivity extends Activity {
           }
           if (!permissions(false)) return;
           dialog.dismiss();
-          new com.google.zxing.integration.android.IntentIntegrator(this)
-              .setCaptureActivity(BridgeQrActivity.class)
-              .setDesiredBarcodeFormats(Collections.singletonList("QR_CODE"))
-              .setPrompt("차량 D-Autolock Bridge의 QR 코드를 스캔하세요")
-              .setBeepEnabled(false)
-              .setBarcodeImageEnabled(false)
-              .setOrientationLocked(false)
-              .initiateScan();
+          try {
+            startActivityForResult(new Intent(this, BridgeQrActivity.class), QR_REQUEST);
+          } catch (RuntimeException e) {
+            controller.note("QR 스캔 화면을 열지 못했습니다");
+          }
         });
     button(
         box,
@@ -1878,11 +1897,9 @@ public final class MainActivity extends Activity {
   @Override
   protected void onActivityResult(int request, int result, Intent data) {
     super.onActivityResult(request, result, data);
-    com.google.zxing.integration.android.IntentResult qr =
-        com.google.zxing.integration.android.IntentIntegrator.parseActivityResult(
-            request, result, data);
-    if (qr != null) {
-      if (qr.getContents() != null) selectBridgeDevice(qr.getContents());
+    if (request == QR_REQUEST) {
+      String qr = data == null ? null : data.getStringExtra(BridgeQrActivity.RESULT);
+      if (result == RESULT_OK && qr != null) selectBridgeDevice(qr);
       return;
     }
     if (request == 51 && result == RESULT_OK && data != null && data.getData() != null)

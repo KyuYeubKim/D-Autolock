@@ -41,6 +41,31 @@ public final class DashboardStatus {
     return (today ? CLOCK : DAY_CLOCK).format(at);
   }
 
+  private static final java.time.format.DateTimeFormatter SHORT =
+      java.time.format.DateTimeFormatter.ofPattern("M/d HH:mm", java.util.Locale.KOREA)
+          .withZone(java.time.ZoneId.of("Asia/Seoul"));
+
+  /** Header line under the door state, e.g. "업데이트 10/9 20:12" (KST). */
+  public static String updated(VehicleSnapshot s, long now) {
+    if (s == null || s.receivedAt <= 0) return "업데이트 대기";
+    return "업데이트 "
+        + SHORT.format(java.time.Instant.ofEpochMilli(s.receivedAt))
+        + (s.fresh(now) ? "" : " · 오래됨");
+  }
+
+  /** Big door title; stale/unknown never reads as locked. */
+  public static String doorTitle(VehicleSnapshot s, long now) {
+    String door = vehicle(s, now)[0];
+    return door.equals("도어 잠김") ? "잠겨 있음" : door.equals("도어 열림") ? "열려 있음" : "도어 미확인";
+  }
+
+  /** Battery shows the last reading up to 15 minutes old (it changes slowly). */
+  public static String battery(VehicleSnapshot s, long now) {
+    if (s == null || s.battery == null || s.receivedAt <= 0 || now - s.receivedAt > CHARGE_MAX_AGE_MS)
+      return "--%";
+    return Math.round(s.battery) + "%";
+  }
+
   static final long CHARGE_MAX_AGE_MS = 15 * 60 * 1000;
 
   /**

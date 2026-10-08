@@ -493,6 +493,48 @@ public class CommandFlowTest {
     assertEquals("이 휴대폰이 연 운행이 아닙니다", c.ownershipBlock());
   }
 
+  private void settle(Controller c) throws Exception {
+    for (int i = 0; i < 4; i++) {
+      complete(c);
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+    }
+    complete(c);
+  }
+
+  @Test
+  public void departurePrepareUnlocksThenStartsClimateOnlyAfterConfirmedUnlock() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.departurePrepare();
+    settle(c);
+    assertEquals(Arrays.asList("OPENDOOR", "OPENAIR"), p.commands);
+    c.stop();
+  }
+
+  @Test
+  public void departureFinishStopsThenLocksOnlyWhenPowerOffConfirmed() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    p.epb = 1;
+    Controller c = create(p);
+    c.departureFinish();
+    settle(c);
+    assertEquals(Arrays.asList("TURNOFFENGINE", "LOCKDOOR", "CLOSEWINDOW"), p.commands);
+  }
+
+  @Test
+  public void departureFinishWithReleasedBrakeNeitherStopsNorLocks() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    p.epb = 0;
+    Controller c = create(p);
+    c.departureFinish();
+    settle(c);
+    assertTrue(p.commands.isEmpty());
+    assertTrue(c.message.contains("하차 마무리 중단"));
+  }
+
   @Test
   public void sharedVehicleModeKeepsAutomaticLockButNeverStops() throws Exception {
     Protocol p = new Protocol();

@@ -40,7 +40,10 @@ public final class MainActivity extends Activity {
   private android.animation.ObjectAnimator refreshSpin;
   private LinearLayout activityRows;
   private String activityKey = "";
-  private Button armedCommand, cancelStop, stopDelay;
+  private View armedCommand;
+  private TextView armedText;
+  private CharSequence armedDescription;
+  private Button cancelStop, stopDelay;
   private Switch stopSwitch;
   private final Runnable stopCountdown = this::update;
   private CharSequence armedLabel;
@@ -70,7 +73,13 @@ public final class MainActivity extends Activity {
       };
   private Switch auto;
   private boolean updating;
-  private final List<Button> commands = new ArrayList<>();
+  private final List<View> commands = new ArrayList<>();
+  private final List<CloudClient.Command[]> commandNeeds = new ArrayList<>();
+  private View titleSpacer, signalDot;
+  private ImageView logo, lockIcon;
+  private FrameLayout lockTile;
+  private TextView doorTitle, batteryText, powerText, windowText, signalDbm, automationReason;
+  private Switch automation;
   private final Runnable observer = this::update;
   private Runnable thresholdPreview;
   private boolean foreground, resumePending;
@@ -182,9 +191,18 @@ public final class MainActivity extends Activity {
     back.setContentDescription("메인 화면으로");
     back.setLayoutParams(new LinearLayout.LayoutParams(dp(44), dp(44)));
     back.setVisibility(View.GONE);
-    title = text(bar, "D-Autolock", 23, TEXT);
+    titleSpacer = new View(this);
+    bar.addView(titleSpacer, new LinearLayout.LayoutParams(dp(48), dp(44)));
+    LinearLayout brand = new LinearLayout(this);
+    brand.setGravity(Gravity.CENTER);
+    bar.addView(brand, new LinearLayout.LayoutParams(0, -1, 1));
+    logo = new ImageView(this);
+    logo.setImageResource(R.drawable.ic_logo);
+    logo.setContentDescription(null);
+    brand.addView(logo, new LinearLayout.LayoutParams(dp(34), dp(34)));
+    title = text(brand, "D-Autolock", 23, TEXT);
     title.setTypeface(null, Typeface.BOLD);
-    title.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    title.setPadding(dp(8), 0, 0, 0);
     Button menu =
         button(
             bar,
@@ -230,83 +248,7 @@ public final class MainActivity extends Activity {
     pages.addView(setupScroll);
     setupScroll.setVisibility(View.GONE);
     setContentView(shell);
-    LinearLayout alerts = card("차량 상태");
-    alerts.setTag("alertsCard");
-    View alertsTitle = alerts.getChildAt(0);
-    alerts.removeView(alertsTitle);
-    LinearLayout alertsHeader = new LinearLayout(this);
-    alertsHeader.setGravity(Gravity.CENTER_VERTICAL);
-    alerts.addView(alertsHeader, 0);
-    alertsHeader.addView(alertsTitle, new LinearLayout.LayoutParams(0, -2, 1));
-    refreshIcon = new ImageView(this);
-    refreshIcon.setTag("statusRefresh");
-    refreshIcon.setImageResource(R.drawable.ic_refresh);
-    refreshIcon.setScaleType(ImageView.ScaleType.CENTER);
-    refreshIcon.setBackground(background(0xff222a35, 22));
-    refreshIcon.setContentDescription("차량 상태 새로고침");
-    refreshIcon.setOnClickListener(
-        v -> {
-          v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-          controller.refreshNow();
-          update();
-        });
-    alertsHeader.addView(refreshIcon, new LinearLayout.LayoutParams(dp(44), dp(44)));
-    checkedTime = text(alerts, "최종 확인 · 아직 없음", 12, MUTED);
-    checkedTime.setTag("statusCheckedTime");
-    checkedTime.setPadding(0, 0, 0, 0);
-    LinearLayout statusRow = new LinearLayout(this);
-    statusRow.setPadding(0, dp(6), 0, dp(4));
-    alerts.addView(statusRow);
-    for (int i = 0; i < 3; i++) {
-      vehicleStates[i] = text(statusRow, "미확인", 14, TEXT);
-      vehicleStates[i].setGravity(Gravity.CENTER);
-      vehicleStates[i].setTypeface(null, Typeface.BOLD);
-      vehicleStates[i].setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
-    }
-    message = text(alerts, "", 13, MUTED);
-    message.setMaxLines(2);
-    message.setEllipsize(android.text.TextUtils.TruncateAt.END);
-    message.setContentDescription("최근 알림. 누르면 자세한 결과를 표시합니다");
-    message.setOnClickListener(v -> showVehicleDetails());
-    alerts.setOnClickListener(v -> showVehicleDetails());
-    chargeCard = card("충전 상태");
-    chargeCard.setTag("chargeCard");
-    body.removeView(chargeCard);
-    body.addView(chargeCard, 0); // Above 차량 상태, only while charging.
-    chargeHeadline = text(chargeCard, "", 20, TEXT);
-    chargeHeadline.setTypeface(null, Typeface.BOLD);
-    chargeHeadline.setTag("chargeHeadline");
-    chargeBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-    chargeBar.setMax(100);
-    chargeBar.setProgressTintList(android.content.res.ColorStateList.valueOf(MINT));
-    chargeBar.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff2a3340));
-    chargeCard.addView(chargeBar, new LinearLayout.LayoutParams(-1, dp(14)));
-    chargeDetail = text(chargeCard, "", 14, TEXT);
-    chargeDetail.setTag("chargeDetail");
-    chargeCard.setVisibility(View.GONE);
-    LinearLayout dash = card("BLE 신호 상태");
-    dash.setTag("signalCard");
-    signal = text(dash, "신호 대기", 20, MINT);
-    signalGauge = new SignalGauge(this);
-    dash.addView(signalGauge, new LinearLayout.LayoutParams(-1, dp(32)));
-    LinearLayout signalRow = new LinearLayout(this);
-    signalRow.setGravity(Gravity.CENTER_VERTICAL);
-    dash.addView(signalRow);
-    autoDetails = text(signalRow, "자동 도어 OFF", 13, MINT);
-    autoDetails.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
-    signalMore = button(signalRow, "＋", v -> setSignalExpanded(!signalExpanded));
-    signalMore.setTag("signalMore");
-    signalMore.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(40)));
-    signalExtra = new LinearLayout(this);
-    signalExtra.setTag("signalExtra");
-    signalExtra.setOrientation(LinearLayout.VERTICAL);
-    dash.addView(signalExtra);
-    text(signalExtra, "주황: 잠금 기준 / 초록: 열기 기준\n신호 세기는 실제 거리와 다를 수 있습니다.", 12, MUTED);
-    signalDetails = text(signalExtra, "", 12, MUTED);
-    controlDetails = text(signalExtra, "", 12, MUTED);
-    readyDetails = text(signalExtra, "", 12, MUTED);
-    setSignalExpanded(false);
-    button(dash, "거리 감도 / 대기 시간", v -> thresholdDialog());
+    buildStatusAndSignal();
     LinearLayout bridgeCard = card("차량 보조 앱 연결 / QR");
     bridgeStatus = text(bridgeCard, "차량 보조 앱 미등록", 13, MUTED);
     button(bridgeCard, "차량 보조 앱 연결 / QR", v -> bridgeDialog());
@@ -356,96 +298,15 @@ public final class MainActivity extends Activity {
               .setTitle("자동 도어 제어 켜기")
               .setMessage(
                   "접근 신호가 안정되면 잠금 해제합니다. 이탈하거나 수신하던 BLE 신호가 "
-                      + controller.settings.getInt("lossLockSeconds", 10)
+                      + controller.settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS)
                       + "초 끊기면 잠금을 요청합니다. 다른 탑승자와 키의 위치를"
                       + " 확인하세요.")
               .setNegativeButton("취소", null)
               .setPositiveButton("자동 제어 켜기", (d, w) -> controller.auto(true))
               .show();
         });
-    LinearLayout controls = card("차량 제어");
-    controls.setTag("controlsCard");
-
-    LinearLayout doorRow = new LinearLayout(this);
-    doorRow.setOrientation(LinearLayout.HORIZONTAL);
-    doorRow.setBaselineAligned(false);
-    controls.addView(doorRow);
-    commands.add(
-        button(
-            doorRow,
-            "도어 열기",
-            doubleTap(() -> controller.command(CloudClient.Command.UNLOCK, false, () -> true))));
-    commands.add(
-        button(
-            doorRow,
-            "도어 잠금",
-            doubleTap(() -> controller.command(CloudClient.Command.LOCK, false, () -> true))));
-    for (int i = 0; i < doorRow.getChildCount(); i++) {
-      LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(56), 1);
-      p.setMargins(i == 0 ? 0 : dp(4), 0, i == 0 ? dp(4) : 0, 0);
-      doorRow.getChildAt(i).setLayoutParams(p);
-      Button b = (Button) doorRow.getChildAt(i);
-      GradientDrawable gradient =
-          new GradientDrawable(
-              GradientDrawable.Orientation.LEFT_RIGHT,
-              i == 0 ? new int[] {0xff487cf1, 0xff55bdce} : new int[] {0xff5874f3, 0xff7474f3});
-      gradient.setCornerRadius(dp(13));
-      b.setBackground(gradient);
-      b.setTypeface(null, Typeface.BOLD);
-    }
-    LinearLayout secondaryRow = new LinearLayout(this);
-    secondaryRow.setOrientation(LinearLayout.HORIZONTAL);
-    secondaryRow.setBaselineAligned(false);
-    controls.addView(secondaryRow);
-    commands.add(
-        button(
-            secondaryRow, "Stop · 차량 종료", doubleTap(() -> confirm(CloudClient.Command.STOP))));
     capabilities = text(bridgeCard, "차량 기능 확인 전", 12, MUTED);
-    button(
-        secondaryRow,
-        "공조 시작",
-        doubleTap(
-            () ->
-                new AlertDialog.Builder(this)
-                .setTitle("공조 시작")
-                .setMessage(
-                    "P단 주차를 확인하세요. 23°C 공조 시작을 한 번 요청하고 자동 OFF 없이 유지합니다. 차량의 원격 공조 시간 제한이 적용됩니다."
-                        + " 이후 약 2분 동안 공조·전원·OK 표시값을 진단합니다. 실제 READY는 계기판에서 확인하세요.")
-                .setNegativeButton("취소", null)
-                .setPositiveButton("주차 확인 · 시작", (d, w) -> controller.manualClimateStart())
-                .show()));
-    for (int i = 0; i < secondaryRow.getChildCount(); i++) {
-      LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(56), 1);
-      p.setMargins(i == 0 ? 0 : dp(4), dp(6), i == 0 ? dp(4) : 0, 0);
-      Button b = (Button) secondaryRow.getChildAt(i);
-      b.setLayoutParams(p);
-      b.setTextSize(13);
-      b.setTextColor(i == 0 ? 0xffddaa67 : 0xff66cce0);
-      b.setBackground(background(i == 0 ? 0xff3b3027 : 0xff203a43, 12));
-    }
-    cancelStop =
-        button(controls, "", v -> controller.cancelPendingStop("앱에서 사용자 취소"));
-    cancelStop.setTag("cancelStop");
-    cancelStop.setTextColor(0xffffc77d);
-    cancelStop.setBackground(background(0xff4a2f22, 12));
-    cancelStop.setVisibility(View.GONE);
-    text(controls, "실수 방지: 3초 안에 두 번 누르면 실행합니다.", 12, MUTED);
-    LinearLayout activityLog = card("활동 로그");
-    activityLog.setTag("logCard");
-    activityRows = new LinearLayout(this);
-    activityRows.setTag("activityRows");
-    activityRows.setOrientation(LinearLayout.VERTICAL);
-    activityLog.addView(activityRows);
-    LinearLayout logButtons = new LinearLayout(this);
-    activityLog.addView(logButtons);
-    button(logButtons, "활동 전체 보기", v -> showActivity());
-    button(logButtons, "상세 진단 로그", v -> showDiagnostics());
-    for (int i = 0; i < logButtons.getChildCount(); i++) {
-      LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(46), 1);
-      p.setMargins(i == 0 ? 0 : dp(4), dp(6), i == 0 ? dp(4) : 0, 0);
-      ((Button) logButtons.getChildAt(i)).setTextSize(13);
-      logButtons.getChildAt(i).setLayoutParams(p);
-    }
+    buildControlsAutomationLog();
     LinearLayout options = card("자동 동작 설정");
     Switch startSwitch = new Switch(this);
     startSwitch.setText("앱 실행·감도 저장 시 자동 제어 시작");
@@ -641,7 +502,7 @@ public final class MainActivity extends Activity {
     }
     button(settingsBody, "처음 설정 안내", v -> showSetup());
     button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    text(settingsBody, "D-Autolock 0.3.4 · 비공식 개인용 앱", 12, MUTED);
+    text(settingsBody, "D-Autolock 0.3.5 · 비공식 개인용 앱", 12, MUTED);
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
     button(setupBanner, "처음 설정 이어하기", v -> showSetup());
@@ -705,24 +566,25 @@ public final class MainActivity extends Activity {
   }
 
   /** Vehicle controls run only on a second tap within 3 seconds, so a stray touch does nothing. */
-  private View.OnClickListener doubleTap(Runnable action) {
+  private View.OnClickListener doubleTap(TextView label, String hint, Runnable action) {
     return v -> {
-      Button b = (Button) v;
-      if (armedCommand == b) {
+      if (armedCommand == v) {
         disarmCommand();
         action.run();
         return;
       }
       disarmCommand();
-      armedCommand = b;
-      armedLabel = b.getText();
-      b.setText(armedLabel + "\n한 번 더 누르세요");
-      b.setContentDescription(armedLabel + ". 3초 안에 한 번 더 누르면 실행합니다");
+      armedCommand = v;
+      armedText = label;
+      armedLabel = label.getText();
+      armedDescription = v.getContentDescription();
+      label.setText(hint);
+      v.setContentDescription(armedDescription + ". 3초 안에 한 번 더 누르면 실행합니다");
       GradientDrawable ring = new GradientDrawable();
-      ring.setCornerRadius(dp(12));
+      ring.setCornerRadius(dp(14));
       ring.setStroke(dp(2), 0xffffffff);
-      b.setForeground(ring);
-      b.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+      v.setForeground(ring);
+      v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
       handler.postDelayed(disarmCommand, 3000);
     };
   }
@@ -730,10 +592,337 @@ public final class MainActivity extends Activity {
   private void disarmCommand() {
     handler.removeCallbacks(disarmCommand);
     if (armedCommand == null) return;
-    armedCommand.setText(armedLabel);
-    armedCommand.setContentDescription(null);
+    armedText.setText(armedLabel);
+    armedCommand.setContentDescription(armedDescription);
     armedCommand.setForeground(null);
     armedCommand = null;
+  }
+
+  private void setTreeEnabled(View view, boolean enabled) {
+    view.setEnabled(enabled);
+    if (view instanceof ViewGroup)
+      for (int i = 0; i < ((ViewGroup) view).getChildCount(); i++)
+        setTreeEnabled(((ViewGroup) view).getChildAt(i), enabled);
+  }
+
+  private ImageView icon(LinearLayout parent, int drawable, int color, int size) {
+    ImageView image = new ImageView(this);
+    image.setImageResource(drawable);
+    image.setColorFilter(color);
+    image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+    parent.addView(image, new LinearLayout.LayoutParams(dp(size), dp(size)));
+    return image;
+  }
+
+  private ImageView iconButton(
+      LinearLayout parent, int drawable, String description, String tag, View.OnClickListener click) {
+    ImageView image = new ImageView(this);
+    image.setImageResource(drawable);
+    image.setColorFilter(MUTED);
+    image.setScaleType(ImageView.ScaleType.CENTER);
+    image.setPadding(dp(8), dp(8), dp(8), dp(8));
+    image.setContentDescription(description);
+    image.setTag(tag);
+    image.setOnClickListener(click);
+    image.setBackground(background(0x00000000, 18));
+    parent.addView(image, new LinearLayout.LayoutParams(dp(38), dp(38)));
+    return image;
+  }
+
+  /** Replaces a card's plain title with a row: title on the left, the returned row for extras. */
+  private LinearLayout cardHeader(LinearLayout card) {
+    View title = card.getChildAt(0);
+    card.removeView(title);
+    LinearLayout header = new LinearLayout(this);
+    header.setGravity(Gravity.CENTER_VERTICAL);
+    card.addView(header, 0);
+    header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+    return header;
+  }
+
+  private LinearLayout statusItem(LinearLayout row, int drawable, int color, String tag) {
+    LinearLayout item = new LinearLayout(this);
+    item.setOrientation(LinearLayout.VERTICAL);
+    item.setGravity(Gravity.CENTER);
+    item.setTag(tag);
+    icon(item, drawable, color, 20);
+    row.addView(item, new LinearLayout.LayoutParams(dp(50), -2));
+    return item;
+  }
+
+  private void buildStatusAndSignal() {
+    LinearLayout status = card("");
+    status.removeViewAt(0);
+    status.setTag("alertsCard");
+    status.setPadding(dp(12), dp(12), dp(8), dp(12));
+    LinearLayout row = new LinearLayout(this);
+    row.setGravity(Gravity.CENTER_VERTICAL);
+    status.addView(row);
+    lockTile = new FrameLayout(this);
+    lockTile.setTag("doorTile");
+    lockIcon = new ImageView(this);
+    lockTile.addView(lockIcon, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+    row.addView(lockTile, new LinearLayout.LayoutParams(dp(44), dp(44)));
+    LinearLayout titles = new LinearLayout(this);
+    titles.setOrientation(LinearLayout.VERTICAL);
+    titles.setPadding(dp(10), 0, dp(4), 0);
+    row.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
+    doorTitle = text(titles, "도어 미확인", 17, TEXT);
+    doorTitle.setTag("doorTitle");
+    doorTitle.setTypeface(null, Typeface.BOLD);
+    doorTitle.setPadding(0, 0, 0, 0);
+    doorTitle.setSingleLine(true);
+    checkedTime = text(titles, "업데이트 대기", 11, MUTED);
+    checkedTime.setTag("statusCheckedTime");
+    checkedTime.setPadding(0, dp(2), 0, 0);
+    checkedTime.setSingleLine(true);
+    checkedTime.setEllipsize(android.text.TextUtils.TruncateAt.END);
+    batteryText = text(statusItem(row, R.drawable.ic_battery, MINT, "batteryItem"), "--%", 12, TEXT);
+    powerText = text(statusItem(row, R.drawable.ic_power, 0xff66cce0, "powerItem"), "미확인", 12, TEXT);
+    windowText = text(statusItem(row, R.drawable.ic_window, 0xff8fb4ff, "windowItem"), "미확인", 12, TEXT);
+    for (TextView t : new TextView[] {batteryText, powerText, windowText}) {
+      t.setPadding(0, dp(2), 0, 0);
+      t.setSingleLine(true);
+    }
+    refreshIcon = new ImageView(this);
+    refreshIcon.setTag("statusRefresh");
+    refreshIcon.setImageResource(R.drawable.ic_refresh);
+    refreshIcon.setScaleType(ImageView.ScaleType.CENTER);
+    refreshIcon.setContentDescription("차량 상태 새로고침");
+    refreshIcon.setOnClickListener(
+        v -> {
+          v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+          controller.refreshNow();
+          update();
+        });
+    row.addView(refreshIcon, new LinearLayout.LayoutParams(dp(38), dp(44)));
+    message = text(status, "", 12, MUTED); // Recent alert text lives in the activity log now.
+    message.setVisibility(View.GONE);
+    status.setOnClickListener(v -> showVehicleDetails());
+    chargeCard = card("충전 상태");
+    chargeCard.setTag("chargeCard");
+    body.removeView(chargeCard);
+    body.addView(chargeCard, 0); // Above the status bar, only while charging.
+    chargeHeadline = text(chargeCard, "", 20, TEXT);
+    chargeHeadline.setTypeface(null, Typeface.BOLD);
+    chargeHeadline.setTag("chargeHeadline");
+    chargeBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+    chargeBar.setMax(100);
+    chargeBar.setProgressTintList(android.content.res.ColorStateList.valueOf(MINT));
+    chargeBar.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff2a3340));
+    chargeCard.addView(chargeBar, new LinearLayout.LayoutParams(-1, dp(14)));
+    chargeDetail = text(chargeCard, "", 14, TEXT);
+    chargeDetail.setTag("chargeDetail");
+    chargeCard.setVisibility(View.GONE);
+
+    LinearLayout dash = card("BLE 신호 상태");
+    dash.setTag("signalCard");
+    LinearLayout header = cardHeader(dash);
+    iconButton(header, R.drawable.ic_tune, "거리 감도 / 대기 시간", "thresholdEdit", v -> thresholdDialog());
+    signalDot = new View(this);
+    signalDot.setTag("signalDot");
+    LinearLayout.LayoutParams dot = new LinearLayout.LayoutParams(dp(9), dp(9));
+    dot.setMargins(dp(4), 0, dp(4), 0);
+    header.addView(signalDot, dot);
+    LinearLayout reading = new LinearLayout(this);
+    reading.setGravity(Gravity.CENTER_VERTICAL);
+    dash.addView(reading);
+    signal = text(reading, "신호 대기", 20, MINT);
+    signal.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    signalDbm = text(reading, "— dBm", 14, MUTED);
+    signalDbm.setTag("signalDbm");
+    signalGauge = new SignalGauge(this);
+    dash.addView(signalGauge, new LinearLayout.LayoutParams(-1, dp(46)));
+    LinearLayout signalRow = new LinearLayout(this);
+    signalRow.setGravity(Gravity.CENTER_VERTICAL);
+    dash.addView(signalRow);
+    autoDetails = text(signalRow, "자동 도어 OFF", 13, MINT);
+    autoDetails.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    signalMore = button(signalRow, "＋", v -> setSignalExpanded(!signalExpanded));
+    signalMore.setTag("signalMore");
+    signalMore.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(40)));
+    signalExtra = new LinearLayout(this);
+    signalExtra.setTag("signalExtra");
+    signalExtra.setOrientation(LinearLayout.VERTICAL);
+    dash.addView(signalExtra);
+    text(signalExtra, "주황: 잠금 기준 / 초록: 열기 기준\n신호 세기는 실제 거리와 다를 수 있습니다.", 12, MUTED);
+    signalDetails = text(signalExtra, "", 12, MUTED);
+    controlDetails = text(signalExtra, "", 12, MUTED);
+    readyDetails = text(signalExtra, "", 12, MUTED);
+    setSignalExpanded(false);
+  }
+
+  private LinearLayout bigTile(
+      LinearLayout row, int drawable, String title, String sub, int[] colors, String tag,
+      CloudClient.Command[] needs, Runnable action) {
+    LinearLayout tile = new LinearLayout(this);
+    tile.setTag(tag);
+    tile.setGravity(Gravity.CENTER_VERTICAL);
+    tile.setPadding(dp(12), dp(8), dp(8), dp(8));
+    GradientDrawable gradient = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, colors);
+    gradient.setCornerRadius(dp(14));
+    tile.setBackground(gradient);
+    tile.setClickable(true);
+    tile.setContentDescription(title + " · " + sub);
+    icon(tile, drawable, 0xffffffff, 28);
+    LinearLayout texts = new LinearLayout(this);
+    texts.setOrientation(LinearLayout.VERTICAL);
+    texts.setPadding(dp(10), 0, 0, 0);
+    tile.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
+    TextView name = text(texts, title, 16, 0xffffffff);
+    name.setTypeface(null, Typeface.BOLD);
+    name.setPadding(0, 0, 0, 0);
+    TextView detail = text(texts, sub, 12, 0xddffffff);
+    detail.setPadding(0, dp(1), 0, 0);
+    tile.setOnClickListener(doubleTap(detail, "한 번 더 누르세요", action));
+    LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(66), 1);
+    p.setMargins(row.getChildCount() == 0 ? 0 : dp(4), 0, row.getChildCount() == 0 ? dp(4) : 0, 0);
+    row.addView(tile, p);
+    commands.add(tile);
+    commandNeeds.add(needs);
+    return tile;
+  }
+
+  private LinearLayout smallTile(
+      LinearLayout row, int drawable, String label, int color, int fill, String tag,
+      CloudClient.Command[] needs, Runnable action) {
+    LinearLayout tile = new LinearLayout(this);
+    tile.setTag(tag);
+    tile.setOrientation(LinearLayout.VERTICAL);
+    tile.setGravity(Gravity.CENTER);
+    GradientDrawable shape = background(fill, 12);
+    shape.setStroke(dp(1), (color & 0x00ffffff) | 0x55000000);
+    tile.setBackground(shape);
+    tile.setClickable(true);
+    tile.setContentDescription(label);
+    icon(tile, drawable, color, 22);
+    TextView name = text(tile, label, 12, color);
+    name.setPadding(0, dp(4), 0, 0);
+    name.setMaxLines(1); // setSingleLine + centered gravity scrolls the text out of view.
+    name.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
+    tile.setOnClickListener(doubleTap(name, "한 번 더", action));
+    LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(62), 1);
+    p.setMargins(row.getChildCount() == 0 ? 0 : dp(3), dp(8), 0, 0);
+    row.addView(tile, p);
+    commands.add(tile);
+    commandNeeds.add(needs);
+    return tile;
+  }
+
+  private void climateConfirm(String title, String action, Runnable run) {
+    new AlertDialog.Builder(this)
+        .setTitle(title)
+        .setMessage(
+            action
+                + "P단 주차를 확인하세요. 23°C 원격 공조를 한 번 요청해 차량 전원을 켭니다(자동 OFF 없음, 차량의 원격 공조 시간 제한 적용)."
+                + " 원격 공조는 주행 READY가 아니므로 출발 전 계기판을 확인하세요.")
+        .setNegativeButton("취소", null)
+        .setPositiveButton("주차 확인 · 실행", (d, w) -> run.run())
+        .show();
+  }
+
+  private void buildControlsAutomationLog() {
+    LinearLayout controls = card("차량 제어");
+    controls.setTag("controlsCard");
+    LinearLayout bigRow = new LinearLayout(this);
+    bigRow.setBaselineAligned(false);
+    controls.addView(bigRow);
+    bigTile(
+        bigRow, R.drawable.ic_car, "출차 준비", "해제+시동", new int[] {0xff3f7be8, 0xff55bdce},
+        "control_prepare",
+        new CloudClient.Command[] {CloudClient.Command.UNLOCK, CloudClient.Command.CLIMATE_ON},
+        () -> climateConfirm("출차 준비", "도어를 연 뒤 열림이 확인되면 시동(원격 공조)을 켭니다. ", controller::departurePrepare));
+    bigTile(
+        bigRow, R.drawable.ic_walk, "하차 마무리", "시동끔+잠금", new int[] {0xff5874f3, 0xff7d6cf0},
+        "control_finish",
+        new CloudClient.Command[] {CloudClient.Command.STOP, CloudClient.Command.LOCK},
+        () ->
+            new AlertDialog.Builder(this)
+                .setTitle("하차 마무리")
+                .setMessage(
+                    "차량이 P단이며 주차브레이크가 체결됐고 주변과 탑승자가 안전한지 직접 확인하세요. 최신 정차 상태를 조회해 시동을 한 번 끄고(Stop),"
+                        + " 전원 OFF가 확인되면 도어를 잠급니다. 확인은 이번 요청에만 30초간 유효하며, 시동 꺼짐이 확인되지 않으면 잠그지 않습니다.")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("P단·주차브레이크 확인 · 실행", (d, w) -> controller.departureFinish())
+                .show());
+    LinearLayout smallRow = new LinearLayout(this);
+    smallRow.setBaselineAligned(false);
+    controls.addView(smallRow);
+    smallTile(
+        smallRow, R.drawable.ic_lock_open, "도어 열기", 0xff62dca7, 0xff1b3029, "control_unlock",
+        new CloudClient.Command[] {CloudClient.Command.UNLOCK},
+        () -> controller.command(CloudClient.Command.UNLOCK, false, () -> true));
+    smallTile(
+        smallRow, R.drawable.ic_lock, "도어 잠금", 0xff8fa8ff, 0xff1e2747, "control_lock",
+        new CloudClient.Command[] {CloudClient.Command.LOCK},
+        () -> controller.command(CloudClient.Command.LOCK, false, () -> true));
+    smallTile(
+        smallRow, R.drawable.ic_power, "시동 켜기", 0xff66cce0, 0xff1b343b, "control_power_on",
+        new CloudClient.Command[] {CloudClient.Command.CLIMATE_ON},
+        () -> climateConfirm("시동 켜기 · 원격 공조", "", controller::manualClimateStart));
+    smallTile(
+        smallRow, R.drawable.ic_power_off, "시동 끄기", 0xffddaa67, 0xff35281f, "control_power_off",
+        new CloudClient.Command[] {CloudClient.Command.STOP},
+        () -> confirm(CloudClient.Command.STOP));
+    cancelStop = button(controls, "", v -> controller.cancelPendingStop("앱에서 사용자 취소"));
+    cancelStop.setTag("cancelStop");
+    cancelStop.setTextColor(0xffffc77d);
+    cancelStop.setBackground(background(0xff4a2f22, 12));
+    cancelStop.setVisibility(View.GONE);
+    text(controls, "실수 방지: 3초 안에 두 번 누르면 실행합니다.", 12, MUTED);
+
+    LinearLayout automationCard = card("자동화");
+    automationCard.setTag("automationCard");
+    LinearLayout row = new LinearLayout(this);
+    row.setGravity(Gravity.CENTER_VERTICAL);
+    automationCard.addView(row);
+    LinearLayout texts = new LinearLayout(this);
+    texts.setOrientation(LinearLayout.VERTICAL);
+    row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
+    TextView name = text(texts, "자동화 켜기", 17, TEXT);
+    name.setTypeface(null, Typeface.BOLD);
+    name.setPadding(0, 0, 0, 0);
+    text(texts, "가까우면 해제 · 멀어지면 잠금", 12, MUTED).setPadding(0, dp(2), 0, 0);
+    automation = new Switch(this);
+    automation.setTag("automationSwitch");
+    automation.setContentDescription("자동화 켜기");
+    automation.setMinHeight(dp(48));
+    row.addView(automation);
+    automationReason = text(automationCard, "", 12, MUTED);
+    automationReason.setTag("automationReason");
+    automation.setOnCheckedChangeListener(
+        (b, on) -> {
+          if (updating) return;
+          if (!on) {
+            controller.automationOff();
+            update();
+            return;
+          }
+          if (!controller.setupReady()) {
+            controller.note("계정·차량·제어 PIN·BYD BLE 기기를 먼저 설정하세요");
+            update();
+            return;
+          }
+          if (!permissions(true)) {
+            update();
+            return;
+          }
+          controller.settings.edit().putBoolean("autoStart", true).apply();
+          stopPicker();
+          if (controller.monitoring) controller.auto(true);
+          else controller.startMonitoring(true, false);
+          controller.note("자동화 켜짐 · 가까우면 해제 · 멀어지면 잠금");
+        });
+
+    LinearLayout activityLog = card("활동 로그");
+    activityLog.setTag("logCard");
+    LinearLayout logHeader = cardHeader(activityLog);
+    iconButton(logHeader, R.drawable.ic_open_full, "활동 전체 보기", "activityAll", v -> showActivity());
+    iconButton(logHeader, R.drawable.ic_document, "상세 진단 로그", "diagnosticsOpen", v -> showDiagnostics());
+    activityRows = new LinearLayout(this);
+    activityRows.setTag("activityRows");
+    activityRows.setOrientation(LinearLayout.VERTICAL);
+    activityLog.addView(activityRows);
   }
 
   /** Spins while a status read runs; on finish completes the current turn instead of snapping. */
@@ -873,6 +1062,8 @@ public final class MainActivity extends Activity {
     settingsScroll.setVisibility(page.equals("settings") ? View.VISIBLE : View.GONE);
     setupScroll.setVisibility(page.equals("setup") ? View.VISIBLE : View.GONE);
     back.setVisibility(page.equals("home") ? View.GONE : View.VISIBLE);
+    titleSpacer.setVisibility(page.equals("home") ? View.VISIBLE : View.GONE);
+    logo.setVisibility(page.equals("home") ? View.VISIBLE : View.GONE);
     title.setText(page.equals("home") ? "D-Autolock" : page.equals("settings") ? "설정" : "처음 설정");
   }
 
@@ -1103,13 +1294,27 @@ public final class MainActivity extends Activity {
           || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
               == PackageManager.PERMISSION_GRANTED) controller.startVehicleLink();
     }
-    String[] labels = DashboardStatus.vehicle(controller.snapshot, System.currentTimeMillis());
-    for (int i = 0; i < labels.length; i++) vehicleStates[i].setText(labels[i]);
+    com.dautolock.app.core.VehicleSnapshot shown = controller.snapshot;
+    long shownAt = System.currentTimeMillis();
+    String[] labels = DashboardStatus.vehicle(shown, shownAt);
+    String door = DashboardStatus.doorTitle(shown, shownAt);
+    doorTitle.setText(door);
+    boolean open = door.equals("열려 있음"), closed = door.equals("잠겨 있음");
+    lockIcon.setImageResource(open ? R.drawable.ic_lock_open : R.drawable.ic_lock);
+    lockTile.setBackground(
+        background(open ? 0xff4a3220 : closed ? 0xff1f3350 : 0xff2a313b, 14));
+    lockIcon.setColorFilter(open ? 0xffffa94d : closed ? 0xff8fb4ff : MUTED);
+    lockTile.setContentDescription(labels[0]);
+    batteryText.setText(DashboardStatus.battery(shown, shownAt));
+    powerText.setText(labels[1].replace("시동 ", ""));
+    powerText.setContentDescription(labels[1]);
+    windowText.setText(labels[2].replace("창문 ", ""));
+    windowText.setContentDescription(labels[2]);
     signal.setText(controller.signal);
     signalGauge.reading(
         controller.averageRssi,
-        controller.settings.getInt("near", -65),
-        controller.settings.getInt("far", -80));
+        controller.settings.getInt("near", Controller.DEFAULT_NEAR),
+        controller.settings.getInt("far", Controller.DEFAULT_FAR));
     signalDetails.setText(controller.signalDetail);
     bridgeStatus.setText(controller.vehicleLink.describe());
     if (thresholdPreview != null) thresholdPreview.run();
@@ -1126,8 +1331,20 @@ public final class MainActivity extends Activity {
     message.setText(DashboardStatus.brief(controller.message));
     readyDetails.setText(controller.readyStatus);
     long now = System.currentTimeMillis();
-    String checked = DashboardStatus.checked(controller.snapshot, now);
-    checkedTime.setText(controller.statusReading ? "차량 상태 확인 중… · " + checked : checked);
+    String checked = DashboardStatus.updated(controller.snapshot, now);
+    checkedTime.setText(controller.statusReading ? "확인 중… · " + checked : checked);
+    boolean receiving = !Double.isNaN(controller.averageRssi);
+    signalDbm.setText(receiving ? Math.round(controller.averageRssi) + " dBm" : "— dBm");
+    signalDot.setBackground(background(receiving ? MINT : 0xff4a5361, 5));
+    updating = true;
+    automation.setChecked(controller.monitoring && controller.autoEnabled);
+    updating = false;
+    automationReason.setText(
+        controller.monitoring && controller.autoEnabled
+            ? "켜짐 · BLE 신호로 자동 열기·잠금을 판단합니다"
+            : controller.setupReady()
+                ? "꺼짐 · 자동 열기·잠금·종료·탑승 공조가 모두 중단됩니다"
+                : "꺼짐 · 계정·차량·BLE 기기를 설정하면 켤 수 있습니다");
     spin(controller.statusReading);
     com.dautolock.app.core.VehicleSnapshot state = controller.snapshot;
     String[] charge = DashboardStatus.charging(state, now);
@@ -1164,15 +1381,15 @@ public final class MainActivity extends Activity {
             + "\n"
             + controller.settings.getString("address", "")
             + "\n접근 "
-            + controller.settings.getInt("near", -65)
+            + controller.settings.getInt("near", Controller.DEFAULT_NEAR)
             + " / 이탈 "
-            + controller.settings.getInt("far", -80)
+            + controller.settings.getInt("far", Controller.DEFAULT_FAR)
             + " dBm\n접근 "
-            + controller.settings.getInt("nearWaitSeconds", 3)
+            + controller.settings.getInt("nearWaitSeconds", Controller.DEFAULT_NEAR_WAIT)
             + "초 / 이탈 "
-            + controller.settings.getInt("farWaitSeconds", 8)
+            + controller.settings.getInt("farWaitSeconds", Controller.DEFAULT_FAR_WAIT)
             + "초 / 신호 끊김 "
-            + controller.settings.getInt("lossLockSeconds", 10)
+            + controller.settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS)
             + "초");
     capabilities.setText(
         "차량 기능 · 잠금 "
@@ -1186,14 +1403,16 @@ public final class MainActivity extends Activity {
     chooseVehicle.setEnabled(!controller.busy() && controller.vehicles.length() > 0);
     logout.setEnabled(!controller.busy() && !controller.initializing);
     login.setEnabled(!controller.busy() && !controller.initializing);
-    for (int i = 0; i < commands.size(); i++)
-      commands
-          .get(i)
-          .setEnabled(
-              ready
-                  && CloudClient.hasFeature(
-                      controller.capabilities, CloudClient.Command.values()[i].feature));
-    for (Button command : commands) command.setAlpha(command.isEnabled() ? 1f : .45f);
+    for (int i = 0; i < commands.size(); i++) {
+      boolean enabled = ready;
+      for (CloudClient.Command need : commandNeeds.get(i))
+        enabled &=
+            need == CloudClient.Command.CLIMATE_ON
+                ? CloudClient.hasClimate(controller.capabilities)
+                : CloudClient.hasFeature(controller.capabilities, need.feature);
+      setTreeEnabled(commands.get(i), enabled);
+      commands.get(i).setAlpha(enabled ? 1f : .45f);
+    }
     if (armedCommand != null && !armedCommand.isEnabled()) disarmCommand();
     long due = controller.stopDueAt;
     handler.removeCallbacks(stopCountdown);
@@ -1401,7 +1620,7 @@ public final class MainActivity extends Activity {
             "near",
             -92,
             -30,
-            controller.settings.getInt("near", -65),
+            controller.settings.getInt("near", Controller.DEFAULT_NEAR),
             " dBm 이상",
             "멀리서도 해제 ← → 가까워야 해제",
             value -> {
@@ -1416,7 +1635,7 @@ public final class MainActivity extends Activity {
             "far",
             -100,
             -38,
-            controller.settings.getInt("far", -80),
+            controller.settings.getInt("far", Controller.DEFAULT_FAR),
             " dBm 이하",
             "더 멀어져야 잠금 ← → 가까운 곳부터 잠금",
             value -> {
@@ -1431,7 +1650,7 @@ public final class MainActivity extends Activity {
             "nearWait",
             0,
             15,
-            controller.settings.getInt("nearWaitSeconds", 3),
+            controller.settings.getInt("nearWaitSeconds", Controller.DEFAULT_NEAR_WAIT),
             "초",
             "0초 ← → 15초",
             value -> {});
@@ -1442,7 +1661,7 @@ public final class MainActivity extends Activity {
             "farWait",
             0,
             30,
-            controller.settings.getInt("farWaitSeconds", 8),
+            controller.settings.getInt("farWaitSeconds", Controller.DEFAULT_FAR_WAIT),
             "초",
             "0초 ← → 30초",
             value -> {});
@@ -1453,28 +1672,28 @@ public final class MainActivity extends Activity {
             "lossWait",
             5,
             60,
-            controller.settings.getInt("lossLockSeconds", 10),
+            controller.settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS),
             "초",
             "5초 ← → 60초",
             value -> {});
-    button(
-        f,
-        "시작값 적용 · −60 / −75 dBm",
-        v -> {
-          sensitivity[0].setProgress(-60 + 92);
-          sensitivity[1].setProgress(-75 + 100);
-          nearWait.setProgress(1);
-          farWait.setProgress(4);
-          lossWait.setProgress(10 - 5);
-        });
+    Runnable recommended =
+        () -> {
+          sensitivity[0].setProgress(Controller.DEFAULT_NEAR + 92);
+          sensitivity[1].setProgress(Controller.DEFAULT_FAR + 100);
+          nearWait.setProgress(Controller.DEFAULT_NEAR_WAIT);
+          farWait.setProgress(Controller.DEFAULT_FAR_WAIT);
+          lossWait.setProgress(Controller.DEFAULT_LOSS - 5);
+        };
+    button(f, "추천값 적용 · −70 / −85 dBm", v -> recommended.run());
     text(
         f,
-        "시작값: 접근 −60 / 이탈 −75 dBm, 접근 1초 / 이탈 4초 / 신호 끊김 10초. 실제 휴대폰 위치와 주변 환경에 맞춰 조정하세요.",
+        "추천값: 접근 −70 / 이탈 −85 dBm, 접근 1초 / 이탈 5초 / 신호 끊김 10초. 차 옆에 서 있어도 신호가 −85 dBm 근처까지 흔들리는"
+            + " 실제 기록을 반영했습니다. 휴대폰 위치와 주변 환경에 맞춰 조정하세요.",
         13,
         MUTED);
     text(
         f,
-        "기본값: 접근 −65 / 이탈 −80 dBm, 접근 3초 / 이탈 8초 / 신호 끊김 10초.\n"
+        "자동 해제 후 2분 동안은 20초 연속 멀어져야 잠그는 반복 방지가 함께 적용됩니다.\n"
             + "0초도 유효 신호 4회와 차량 상태 조회가 필요합니다. 조회 중 작은 신호 흔들림은 최대 10초·4 dBm 범위에서 허용합니다. 저장하면 자동 시작"
             + " 설정에 따라 새 기준으로 관찰·자동 제어를 다시 시작합니다.",
         13,
@@ -1486,20 +1705,12 @@ public final class MainActivity extends Activity {
             .setTitle("감도 · 대기 시간")
             .setView(scroll)
             .setNegativeButton("취소", null)
-            .setNeutralButton("기본값", null)
+            .setNeutralButton("추천값", null)
             .setPositiveButton("저장", null)
             .create();
     d.setOnShowListener(
         x -> {
-          d.getButton(-3)
-              .setOnClickListener(
-                  v -> {
-                    sensitivity[0].setProgress(-65 + 92);
-                    sensitivity[1].setProgress(-80 + 100);
-                    nearWait.setProgress(3);
-                    farWait.setProgress(8);
-                    lossWait.setProgress(10 - 5);
-                  });
+          d.getButton(-3).setOnClickListener(v -> recommended.run());
           d.getButton(-1)
               .setOnClickListener(
                   v -> {

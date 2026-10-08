@@ -175,7 +175,7 @@ public class MainActivityTest {
       assertSame(parent, logs.getParent());
       assertTrue(parent.indexOfChild(controls) < parent.indexOfChild(logs));
       assertEquals(View.GONE, root.findViewWithTag("settingsPage").getVisibility());
-      assertNotNull(find(signal, "거리 감도 / 대기 시간"));
+      assertNotNull(signal.findViewWithTag("thresholdEdit"));
       assertNotNull(find(controls, "도어 열기"));
     }
   }
@@ -220,7 +220,7 @@ public class MainActivityTest {
       AccountPersistenceTest.await(c);
       c.monitoring = true;
       c.averageRssi = -59.6;
-      find(a.get().getWindow().getDecorView(), "거리 감도 / 대기 시간").performClick();
+      a.get().getWindow().getDecorView().findViewWithTag("thresholdEdit").performClick();
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
       AlertDialog d = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
       View decor = d.getWindow().getDecorView();
@@ -228,11 +228,11 @@ public class MainActivityTest {
       SeekBar near = decor.findViewWithTag("near");
       near.setProgress(-40 + 92);
       assertTrue(preview.getText().toString().contains("기준 미충족"));
-      find(decor, "시작값 적용 · −60 / −75 dBm").performClick();
+      find(decor, "추천값 적용 · −70 / −85 dBm").performClick();
       assertTrue(preview.getText().toString().contains("해제 신호 기준 충족"));
       assertTrue(preview.getText().toString().contains("-59.6 dBm"));
       assertFalse(c.settings.contains("near"));
-      c.averageRssi = -78;
+      c.averageRssi = -88;
       c.changed();
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
       assertTrue(preview.getText().toString().contains("잠금 신호 기준 충족"));
@@ -241,10 +241,10 @@ public class MainActivityTest {
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
       assertTrue(preview.getText().toString().contains("현재 평균 —"));
       d.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
-      assertEquals(-60, c.settings.getInt("near", 0));
-      assertEquals(-75, c.settings.getInt("far", 0));
+      assertEquals(-70, c.settings.getInt("near", 0));
+      assertEquals(-85, c.settings.getInt("far", 0));
       assertEquals(1, c.settings.getInt("nearWaitSeconds", 0));
-      assertEquals(4, c.settings.getInt("farWaitSeconds", 0));
+      assertEquals(5, c.settings.getInt("farWaitSeconds", 0));
       assertEquals(10, c.settings.getInt("lossLockSeconds", 0));
       assertFalse(c.monitoring);
       assertFalse(c.autoEnabled);
@@ -257,7 +257,7 @@ public class MainActivityTest {
         Robolectric.buildActivity(MainActivity.class).setup()) {
       Controller c = ((DApplication) a.get().getApplication()).controller();
       AccountPersistenceTest.await(c);
-      find(a.get().getWindow().getDecorView(), "거리 감도 / 대기 시간").performClick();
+      a.get().getWindow().getDecorView().findViewWithTag("thresholdEdit").performClick();
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
       AlertDialog dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
       View decor = dialog.getWindow().getDecorView();
@@ -274,8 +274,8 @@ public class MainActivityTest {
       ((SeekBar) decor.findViewWithTag("farWait")).setProgress(4);
       ((SeekBar) decor.findViewWithTag("lossWait")).setProgress(15); // 20 seconds.
       dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
-      assertEquals(-65, c.settings.getInt("near", 0));
-      assertEquals(-80, c.settings.getInt("far", 0));
+      assertEquals(-70, c.settings.getInt("near", 0));
+      assertEquals(-85, c.settings.getInt("far", 0));
       assertEquals(1, c.settings.getInt("nearWaitSeconds", 0));
       assertEquals(4, c.settings.getInt("farWaitSeconds", 0));
       assertEquals(20, c.settings.getInt("lossLockSeconds", 0));
@@ -295,7 +295,7 @@ public class MainActivityTest {
         Robolectric.buildActivity(MainActivity.class).setup()) {
       Controller c = ((DApplication) a.get().getApplication()).controller();
       AccountPersistenceTest.await(c);
-      find(a.get().getWindow().getDecorView(), "거리 감도 / 대기 시간").performClick();
+      a.get().getWindow().getDecorView().findViewWithTag("thresholdEdit").performClick();
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
       AlertDialog dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
       ((SeekBar) dialog.getWindow().getDecorView().findViewWithTag("nearWait")).setProgress(0);
@@ -381,12 +381,15 @@ public class MainActivityTest {
       assertNotNull(find(decor, "블루투스 기기 검색 / 선택"));
       assertNotNull(find(decor, "Sub 계정 로그인 / 변경"));
       assertFalse(find(decor, "도어 열기").isEnabled());
-      assertFalse(find(decor, "Stop · 차량 종료").isEnabled());
+      assertFalse(decor.findViewWithTag("control_power_off").isEnabled());
+      assertFalse(decor.findViewWithTag("control_prepare").isEnabled());
       assertFalse(((Switch) find(decor, "실제 자동 도어 제어")).isChecked());
       assertNotNull(find(decor, "탑승 공조 · READY 상태 진단"));
       assertNotNull(find(decor, "진단 로그 파일 저장"));
       assertNotNull(find(decor, "탑승 시 공조 시작"));
-      assertNotNull(find(decor, "공조 시작"));
+      assertNotNull(find(decor, "시동 켜기"));
+      assertNotNull(find(decor, "출차 준비"));
+      assertNotNull(find(decor, "하차 마무리"));
     }
   }
 
@@ -422,25 +425,61 @@ public class MainActivityTest {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {
       View root = a.get().getWindow().getDecorView();
-      Button stop = (Button) find(root, "Stop · 차량 종료");
+      View stop = root.findViewWithTag("control_power_off");
       stop.setEnabled(true);
       stop.performClick();
       assertNull(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog());
-      assertEquals("Stop · 차량 종료\n한 번 더 누르세요", stop.getText().toString());
+      assertNotNull(find(stop, "한 번 더"));
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper())
           .idleFor(java.time.Duration.ofMillis(3100));
-      assertEquals("Stop · 차량 종료", stop.getText().toString());
+      assertNotNull(find(stop, "시동 끄기"));
       stop.performClick(); // Re-armed after timeout, still no action.
       assertNull(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog());
-      Button climate = (Button) find(root, "공조 시작");
-      climate.performClick(); // Arming another control disarms the first.
-      assertEquals("Stop · 차량 종료", stop.getText().toString());
+      View on = root.findViewWithTag("control_power_on");
+      on.setEnabled(true);
+      on.performClick(); // Arming another control disarms the first.
+      assertNotNull(find(stop, "시동 끄기"));
       stop.performClick();
       stop.performClick();
       AlertDialog confirm = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
       assertNotNull(confirm);
-      assertEquals("Stop · 차량 종료", stop.getText().toString());
+      assertNotNull(find(stop, "시동 끄기"));
       confirm.dismiss();
+      View prepare = root.findViewWithTag("control_prepare");
+      prepare.setEnabled(true);
+      prepare.performClick();
+      assertNotNull(find(prepare, "한 번 더 누르세요"));
+      prepare.performClick(); // 출차 준비 asks for parking confirmation before powering on.
+      assertNotSame(confirm, org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog());
+    }
+  }
+
+  @Test
+  public void automationSwitchOffStopsEverythingAndRemembersIt() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      View root = a.get().getWindow().getDecorView();
+      Switch automation = root.findViewWithTag("automationSwitch");
+      c.monitoring = c.autoEnabled = true;
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertTrue(automation.isChecked());
+      automation.setChecked(false);
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertFalse(c.monitoring);
+      assertFalse(c.autoEnabled);
+      assertFalse(c.settings.getBoolean("autoStart", true));
+      assertTrue(
+          ((TextView) root.findViewWithTag("automationReason")).getText().toString().startsWith("꺼짐"));
+      assertTrue(c.message.contains("모두 중단"));
+      for (String tag :
+          new String[] {
+            "control_prepare", "control_finish", "control_unlock", "control_lock",
+            "control_power_on", "control_power_off", "doorTile", "batteryItem", "powerItem",
+            "windowItem", "statusRefresh", "thresholdEdit", "activityAll", "diagnosticsOpen"
+          }) assertNotNull(tag, root.findViewWithTag(tag));
     }
   }
 
@@ -453,13 +492,13 @@ public class MainActivityTest {
       View root = a.get().getWindow().getDecorView();
       TextView checked = root.findViewWithTag("statusCheckedTime");
       View icon = root.findViewWithTag("statusRefresh");
-      assertEquals("최종 확인 · 아직 없음", checked.getText().toString());
+      assertEquals("업데이트 대기", checked.getText().toString());
       icon.performClick(); // No vehicle: explains instead of reading.
       assertEquals("설정에서 BYD 계정과 차량을 먼저 연결하세요", c.message);
       c.statusReading = true;
       c.changed();
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
-      assertTrue(checked.getText().toString().startsWith("차량 상태 확인 중…"));
+      assertTrue(checked.getText().toString().startsWith("확인 중…"));
       assertEquals("차량 상태 새로고침 중", icon.getContentDescription());
       c.statusReading = false;
       c.changed();
@@ -557,7 +596,7 @@ public class MainActivityTest {
   public void manualDoorTapDoesNotShowConfirmation() {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {
-      Button unlock = (Button) find(a.get().getWindow().getDecorView(), "도어 열기");
+      View unlock = a.get().getWindow().getDecorView().findViewWithTag("control_unlock");
       unlock.setEnabled(true);
       unlock.performClick();
       unlock.performClick();

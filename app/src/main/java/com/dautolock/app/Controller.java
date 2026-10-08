@@ -54,6 +54,12 @@ final class Controller {
   private boolean entrySawClosed, entryOpened;
   private final LinkedList<ActivityFeed.Entry> events = new LinkedList<>();
   volatile boolean statusReading;
+  /**
+   * Recommended starting sensitivity (from real logs: standing by the car dips to about -85 dBm).
+   * Only used when nothing was saved; existing users keep their own values.
+   */
+  static final int DEFAULT_NEAR = -70, DEFAULT_FAR = -85;
+  static final int DEFAULT_NEAR_WAIT = 1, DEFAULT_FAR_WAIT = 5, DEFAULT_LOSS = 10;
   // Trip ownership is in memory only: an app restart mid-trip means no automatic Stop (safe side).
   static final long TRIP_MAX_MS = 12L * 60 * 60 * 1000;
   private volatile long tripUnlockedAt = -1, vehicleActivityAt = -1;
@@ -86,7 +92,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.3.4 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.3.5 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -962,9 +968,9 @@ final class Controller {
             + " vehicleSelected="
             + !vin.isEmpty()
             + " near="
-            + settings.getInt("near", -65)
+            + settings.getInt("near", Controller.DEFAULT_NEAR)
             + " far="
-            + settings.getInt("far", -80));
+            + settings.getInt("far", Controller.DEFAULT_FAR));
     if ((!cloud.protocol.isLoggedIn() && !hasSavedLogin()) || vin.isEmpty()) {
       note("계정 로그인과 차량 선택 후 자동 제어를 켤 수 있습니다");
       return;
@@ -1018,7 +1024,7 @@ final class Controller {
     entryUntil = 0;
     note(
         enabled
-            ? "자동 도어 켜짐 · 접근 시 해제 / 이탈·신호 " + settings.getInt("lossLockSeconds", 10) + "초 끊김 시 잠금"
+            ? "자동 도어 켜짐 · 접근 시 해제 / 이탈·신호 " + settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS) + "초 끊김 시 잠금"
             : "관찰 모드 · 차량 명령을 보내지 않습니다");
   }
 
@@ -1030,11 +1036,11 @@ final class Controller {
 
   ProximityEngine proximityEngine() {
     return new ProximityEngine(
-        settings.getInt("near", -65),
-        settings.getInt("far", -80),
-        settings.getInt("nearWaitSeconds", 3) * 1000L,
-        settings.getInt("farWaitSeconds", 8) * 1000L,
-        settings.getInt("lossLockSeconds", 10) * 1000L);
+        settings.getInt("near", Controller.DEFAULT_NEAR),
+        settings.getInt("far", Controller.DEFAULT_FAR),
+        settings.getInt("nearWaitSeconds", Controller.DEFAULT_NEAR_WAIT) * 1000L,
+        settings.getInt("farWaitSeconds", Controller.DEFAULT_FAR_WAIT) * 1000L,
+        settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS) * 1000L);
   }
 
   void thresholds(int near, int far, int nearSeconds, int farSeconds, int lossSeconds) {
@@ -1414,6 +1420,63 @@ final class Controller {
         },
         () -> {},
         true);
+  }
+
+  /**
+   * 출차 준비: door unlock, then one parked remote climate start (which powers the car; this is not
+   * driving READY). The climate step runs only after the unlock is confirmed by a fresh readback.
+   */
+  void departurePrepare() {
+    executeCommand(
+        CloudClient.Command.UNLOCK,
+        false,
+        () -> true,
+        () -> true,
+        () -> {},
+        () ->
+            main.post(
+                () -> {
+                  VehicleSnapshot s = snapshot;
+                  if (s != null
+                      && s.fresh(System.currentTimeMillis())
+                      && Boolean.FALSE.equals(s.locked)) manualClimateStart();
+                  else note("출차 준비 중단 · 도어 열림을 확인하지 못해 시동을 켜지 않았습니다");
+                }),
+        () -> false,
+        -1);
+  }
+
+  /**
+   * 하차 마무리: Stop with this tap's one-use parking confirmation, then lock only when power OFF is
+   * confirmed. An unconfirmed Stop never leads to another command on its own.
+   */
+  void departureFinish() {
+    diagnostics.record("MANUAL_PARKING_CONFIRM", "oneUse=true expiresSeconds=30 sequence=stop_lock");
+    executeCommand(
+        CloudClient.Command.STOP,
+        false,
+        () -> true,
+        () -> true,
+        () -> {},
+        () ->
+            main.post(
+                () -> {
+                  VehicleSnapshot s = snapshot;
+                  if (s != null
+                      && s.fresh(System.currentTimeMillis())
+                      && Integer.valueOf(1).equals(s.power))
+                    command(CloudClient.Command.LOCK, false, () -> true);
+                  else note("하차 마무리 중단 · 시동 꺼짐을 확인하지 못해 잠그지 않았습니다. 차량을 확인하세요");
+                }),
+        () -> false,
+        SystemClock.elapsedRealtime());
+  }
+
+  /** 자동화 끄기: every automatic function stops (door, Stop, boarding climate) until turned on. */
+  void automationOff() {
+    settings.edit().putBoolean("autoStart", false).apply();
+    stop();
+    note("자동화 꺼짐 · 자동 열기·잠금·종료·공조를 모두 중단했습니다");
   }
 
   void manualClimateStart() {

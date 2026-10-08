@@ -142,15 +142,15 @@ public final class ProximityService extends Service {
                   + "회 · "
                   + (engine.age(now) < 0 ? "없음" : engine.age(now) / 1000 + "초 전")
                   + "\n접근 ≥ "
-                  + controller.settings.getInt("near", -65)
+                  + controller.settings.getInt("near", Controller.DEFAULT_NEAR)
                   + " / 이탈 ≤ "
-                  + controller.settings.getInt("far", -80)
+                  + controller.settings.getInt("far", Controller.DEFAULT_FAR)
                   + " dBm\n대기 "
-                  + controller.settings.getInt("nearWaitSeconds", 3)
+                  + controller.settings.getInt("nearWaitSeconds", Controller.DEFAULT_NEAR_WAIT)
                   + "초 / "
-                  + controller.settings.getInt("farWaitSeconds", 8)
+                  + controller.settings.getInt("farWaitSeconds", Controller.DEFAULT_FAR_WAIT)
                   + "초 · 신호 끊김 "
-                  + controller.settings.getInt("lossLockSeconds", 10)
+                  + controller.settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS)
                   + "초";
           controller.signalDetail += "\n" + radioStatus;
           if (engine.count() == 0 && now - started >= 10000)
@@ -197,7 +197,7 @@ public final class ProximityService extends Service {
                 () ->
                     scanning
                         && engine.fresh(SystemClock.elapsedRealtime())
-                        && engine.rssi() > controller.settings.getInt("far", -80));
+                        && engine.rssi() > controller.settings.getInt("far", Controller.DEFAULT_FAR));
           controller.changed();
           handler.postDelayed(this, 1000);
         }
@@ -415,11 +415,11 @@ public final class ProximityService extends Service {
               + " batteryUnrestricted="
               + (pm != null && pm.isIgnoringBatteryOptimizations(getPackageName()))
               + " scanPermission=true lossLockSeconds="
-              + controller.settings.getInt("lossLockSeconds", 10)
+              + controller.settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS)
               + " nearWaitSeconds="
-              + controller.settings.getInt("nearWaitSeconds", 3)
+              + controller.settings.getInt("nearWaitSeconds", Controller.DEFAULT_NEAR_WAIT)
               + " farWaitSeconds="
-              + controller.settings.getInt("farWaitSeconds", 8));
+              + controller.settings.getInt("farWaitSeconds", Controller.DEFAULT_FAR_WAIT));
       controller.diagnostics.record(
           "AUTO_OPTIONS",
           "automatic="

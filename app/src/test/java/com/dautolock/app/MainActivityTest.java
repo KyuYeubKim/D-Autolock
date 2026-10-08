@@ -462,6 +462,22 @@ public class MainActivityTest {
   }
 
   @Test
+  public void sharedModeDisablesAutomaticStopSwitchAndDelayDefaultsToFifteenSeconds() {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      View root = a.get().getWindow().getDecorView();
+      Switch stop = (Switch) find(root, "자동 잠금 후 차량 전원 종료");
+      assertTrue(stop.isEnabled());
+      assertNotNull(find(root, "자동 종료 대기 시간 · 15초"));
+      ((Switch) root.findViewWithTag("sharedVehicle")).setChecked(true);
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertFalse(stop.isEnabled());
+      assertEquals(View.GONE, root.findViewWithTag("cancelStop").getVisibility());
+      ((Switch) root.findViewWithTag("sharedVehicle")).setChecked(false);
+    }
+  }
+
+  @Test
   public void manualDoorTapDoesNotShowConfirmation() {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {

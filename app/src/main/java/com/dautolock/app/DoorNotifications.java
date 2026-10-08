@@ -63,6 +63,41 @@ final class DoorNotifications {
         .build();
   }
 
+  static final String CANCEL_STOP = "com.dautolock.app.CANCEL_STOP";
+  static final int STOP_PENDING_ID = 5;
+
+  /** Cancelling is always safe, so the action works without unlocking the phone. */
+  static void stopPending(Context context, int seconds) {
+    channels(context);
+    if (!enabled(context)) return;
+    PendingIntent cancel =
+        PendingIntent.getBroadcast(
+            context,
+            6,
+            new Intent(context, DoorActionReceiver.class).setAction(CANCEL_STOP),
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+    try {
+      context
+          .getSystemService(NotificationManager.class)
+          .notify(
+              STOP_PENDING_ID,
+              new Notification.Builder(context, "door_events")
+                  .setSmallIcon(R.drawable.ic_notification)
+                  .setContentTitle(seconds + "초 후 차량 전원 종료")
+                  .setContentText("차 안에 사람이 있으면 취소하세요. 종료 직전 P단·정차·잠금을 다시 확인합니다")
+                  .setContentIntent(open(context))
+                  .setTimeoutAfter((seconds + 30) * 1000L)
+                  .setVisibility(Notification.VISIBILITY_PUBLIC)
+                  .addAction(new Notification.Action.Builder(null, "종료 취소", cancel).build())
+                  .build());
+    } catch (SecurityException ignored) {
+    }
+  }
+
+  static void cancelStopPending(Context context) {
+    context.getSystemService(NotificationManager.class).cancel(STOP_PENDING_ID);
+  }
+
   static boolean enabled(Context context) {
     return (Build.VERSION.SDK_INT < 33
             || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)

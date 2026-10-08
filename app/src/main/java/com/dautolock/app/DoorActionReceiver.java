@@ -8,8 +8,13 @@ public final class DoorActionReceiver extends BroadcastReceiver {
   @Override
   public void onReceive(Context context, Intent intent) {
     String action = intent.getAction();
-    if (!DoorNotifications.UNLOCK.equals(action) && !DoorNotifications.LOCK.equals(action)) return;
     Controller controller = ((DApplication) context.getApplicationContext()).controller();
+    if (DoorNotifications.CANCEL_STOP.equals(action)) {
+      controller.diagnostics.record("NOTIFICATION_ACTION", "CANCEL_STOP");
+      controller.cancelPendingStop("알림에서 사용자 취소");
+      return;
+    }
+    if (!DoorNotifications.UNLOCK.equals(action) && !DoorNotifications.LOCK.equals(action)) return;
     KeyguardManager keyguard = context.getSystemService(KeyguardManager.class);
     if (controller.initializing
         || !controller.monitoring

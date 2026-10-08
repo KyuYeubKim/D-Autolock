@@ -54,6 +54,12 @@ final class Controller {
   private boolean entrySawClosed, entryOpened;
   private final LinkedList<ActivityFeed.Entry> events = new LinkedList<>();
   volatile boolean statusReading;
+  // Trip ownership is in memory only: an app restart mid-trip means no automatic Stop (safe side).
+  static final long TRIP_MAX_MS = 12L * 60 * 60 * 1000;
+  private volatile long tripUnlockedAt = -1, vehicleActivityAt = -1;
+  private volatile boolean tripDriven;
+  private final AtomicInteger stopTicket = new AtomicInteger();
+  volatile long stopDueAt = -1;
   private final List<Runnable> observers = new CopyOnWriteArrayList<>();
 
   Controller(Context context) {
@@ -71,7 +77,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.3.0 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.3.1 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -531,6 +537,8 @@ final class Controller {
         && next.locked != null
         && !previous.locked.equals(next.locked)) {
       diagnostics.record("DOOR_STATE_CHANGE", "locked=" + next.locked + " source=cloud");
+      // Unlocked by someone else (key, another phone/app): this phone no longer owns the trip.
+      if (!next.locked) endTrip("unlocked_elsewhere");
       DoorNotifications.result(
           context, next.locked ? "도어 잠김 확인" : "도어 잠금 해제 확인", "BYD Cloud 조회에서 상태 변경을 확인했습니다");
     }
@@ -722,6 +730,8 @@ final class Controller {
       long readyAt) {
     int ticket = generation.get();
     String target = vin;
+    // Any new door/Stop request from this phone supersedes a pending automatic Stop.
+    if (!(automatic && command == CloudClient.Command.LOCK)) cancelPendingStop("새 차량 명령 요청");
     BooleanSupplier valid =
         () ->
             ticket == generation.get()
@@ -778,6 +788,13 @@ final class Controller {
             if ((stop && Integer.valueOf(1).equals(snapshot.power))
                 || (!stop && Boolean.valueOf(lock).equals(snapshot.locked))) {
               if (automatic && valid.getAsBoolean()) alreadyDone.run();
+              // Arriving together: another phone opened first while this phone also qualified
+              // (automatic unlock is only evaluated with power OFF). Still needs this phone's
+              // Bridge to see the drive, live P and the delayed re-check before any Stop.
+              if (command == CloudClient.Command.UNLOCK
+                  && Integer.valueOf(1).equals(snapshot.power)
+                  && validSession(ticket, target))
+                startTrip(automatic ? "approach_already_unlocked" : "manual_already_unlocked");
               if (automatic
                   && command == CloudClient.Command.UNLOCK
                   && validSession(ticket, target)) armEntry(ticket, snapshot);
@@ -878,6 +895,8 @@ final class Controller {
                   departureConfirmed);
             if (stop && verified && Boolean.TRUE.equals(after.locked))
               closeWindowsAfterLock(() -> validSession(ticket, target));
+            if (command == CloudClient.Command.UNLOCK && verified && validSession(ticket, target))
+              startTrip(automatic ? "auto_unlock" : "manual_unlock");
             if (automatic
                 && command == CloudClient.Command.UNLOCK
                 && verified
@@ -937,6 +956,7 @@ final class Controller {
   }
 
   void stop() {
+    cancelPendingStop("거리 관찰 종료");
     cancelReadinessWatch("거리 관찰 종료");
     statusRefreshRequested = false;
     main.removeCallbacks(statusRefreshTask);
@@ -956,6 +976,7 @@ final class Controller {
       note(autoUnavailable());
       return;
     }
+    if (!enabled) cancelPendingStop("자동 제어 꺼짐");
     generation.incrementAndGet();
     discardApproachPreflight();
     autoEnabled = enabled;
@@ -1036,17 +1057,135 @@ final class Controller {
       BooleanSupplier valid, boolean automatic, BooleanSupplier departureConfirmed) {
     cancelReadinessWatch("도어 잠금 처리");
     entryUntil = 0;
+    String owner = ownershipBlock();
+    boolean schedule = false;
     if (automatic && settings.getBoolean("autoStop", true)) {
-      if (departureConfirmed.getAsBoolean())
-        stopAfterLock(() -> valid.getAsBoolean() && departureConfirmed.getAsBoolean());
-      else {
+      if (!departureConfirmed.getAsBoolean()) {
         stopStatus = "자동 종료 보류 · BLE 끊김 또는 이탈 신호 미확인";
         diagnostics.record(
             "AUTO_STOP_SKIP", "reason=departure_not_confirmed departureConfirmed=false");
         note(stopStatus);
-      }
+      } else if (owner != null) {
+        stopStatus = "자동 종료 안 함 · " + owner;
+        diagnostics.record("AUTO_STOP_SKIP", "reason=ownership " + owner);
+        note(stopStatus);
+      } else schedule = true;
     }
+    endTrip("locked");
+    // Windows no longer wait for Stop: the delay or a cancellation must not leave them open.
     closeWindowsAfterLock(valid);
+    if (schedule) scheduleStop(() -> valid.getAsBoolean() && departureConfirmed.getAsBoolean());
+  }
+
+  // ---- Automatic Stop safety: P only, this phone's own trip, delayed re-check ----
+
+  int stopDelaySeconds() {
+    return Math.max(5, Math.min(120, settings.getInt("stopDelaySeconds", 15)));
+  }
+
+  boolean sharedVehicle() {
+    return settings.getBoolean("sharedVehicle", false);
+  }
+
+  /** Called after this phone's own verified unlock. */
+  void startTrip(String reason) {
+    tripUnlockedAt = SystemClock.elapsedRealtime();
+    tripDriven = false;
+    diagnostics.record("TRIP_START", "reason=" + reason);
+  }
+
+  private void endTrip(String reason) {
+    if (tripUnlockedAt < 0) return;
+    tripUnlockedAt = -1;
+    tripDriven = false;
+    diagnostics.record("TRIP_END", "reason=" + reason);
+  }
+
+  /** Null only when this phone opened the car and its own Bridge then saw the car leave P. */
+  String ownershipBlock() {
+    if (sharedVehicle()) return "공유 차량 모드";
+    long at = tripUnlockedAt;
+    if (at < 0) return "이 휴대폰이 연 운행이 아닙니다";
+    if (SystemClock.elapsedRealtime() - at > TRIP_MAX_MS) return "운행 시작 후 12시간 초과";
+    if (!tripDriven) return "이 휴대폰의 차량 보조 앱에서 주행(P 해제)을 확인하지 못했습니다";
+    return null;
+  }
+
+  /** Every authenticated Bridge sample. Gear out of P or a released brake is vehicle activity. */
+  void vehicleSample(com.dautolock.link.LinkProtocol.Sample s) {
+    boolean moving =
+        s.quality == 0
+            && s.gear != com.dautolock.link.LinkProtocol.UNKNOWN
+            && s.gear != com.dautolock.link.LinkProtocol.P;
+    if (!moving && s.brake != 0) return;
+    vehicleActivityAt = SystemClock.elapsedRealtime();
+    if (moving && tripUnlockedAt >= 0 && !tripDriven) {
+      tripDriven = true;
+      diagnostics.record("TRIP_DRIVEN", "gear=" + s.gearLabel());
+    }
+    if (stopDueAt >= 0)
+      main.post(
+          () ->
+              cancelPendingStop(
+                  "대기 중 차량 조작 감지 (" + (moving ? "기어 " + s.gearLabel() : "주차브레이크 해제") + ")"));
+  }
+
+  private void scheduleStop(BooleanSupplier valid) {
+    int ticket = stopTicket.incrementAndGet();
+    long delay = stopDelaySeconds() * 1000L, scheduledAt = SystemClock.elapsedRealtime();
+    stopDueAt = scheduledAt + delay;
+    stopStatus = "자동 종료 대기 · " + delay / 1000 + "초 후 P단·정차·잠금을 다시 확인합니다";
+    diagnostics.record("AUTO_STOP_SCHEDULED", "delayMs=" + delay);
+    note(stopStatus);
+    DoorNotifications.stopPending(context, (int) (delay / 1000));
+    main.postDelayed(() -> runScheduledStop(ticket, scheduledAt, valid, 0), delay);
+  }
+
+  private void runScheduledStop(int ticket, long scheduledAt, BooleanSupplier valid, int attempt) {
+    if (ticket != stopTicket.get()) return;
+    BooleanSupplier current =
+        () ->
+            ticket == stopTicket.get()
+                && vehicleActivityAt < scheduledAt
+                && valid.getAsBoolean();
+    if (vehicleActivityAt >= scheduledAt) {
+      cancelPendingStop("대기 중 차량 조작 감지");
+      return;
+    }
+    if (!valid.getAsBoolean()) {
+      cancelPendingStop("이탈 신호 또는 자동 제어 상태 변경");
+      return;
+    }
+    boolean started =
+        run(
+            () -> {
+              if (ticket != stopTicket.get()) return;
+              stopDueAt = -1;
+              DoorNotifications.cancelStopPending(context);
+              if (!current.getAsBoolean()) {
+                stopStatus = "자동 종료 취소 · 대기 중 조건 변경";
+                diagnostics.record("AUTO_STOP_CANCEL", "condition_changed_before_check");
+                note(stopStatus);
+                return;
+              }
+              stopAfterLock(current);
+            },
+            () -> {},
+            true);
+    if (started) return;
+    if (attempt < 20) main.postDelayed(() -> runScheduledStop(ticket, scheduledAt, valid, attempt + 1), 1000);
+    else cancelPendingStop("다른 차량 요청 처리 중");
+  }
+
+  /** Safe to call from any thread; only cancels a Stop that has not started its final check. */
+  void cancelPendingStop(String reason) {
+    if (stopDueAt < 0) return;
+    stopTicket.incrementAndGet();
+    stopDueAt = -1;
+    stopStatus = "자동 종료 취소 · " + reason;
+    diagnostics.record("AUTO_STOP_CANCEL", reason);
+    DoorNotifications.cancelStopPending(context);
+    note(stopStatus);
   }
 
   private void stopAfterLock(BooleanSupplier valid) {
@@ -1079,8 +1218,7 @@ final class Controller {
               return false;
             }
             diagnostics.record(
-                "AUTO_STOP_SEND",
-                "afterLock=true source=" + (vehicleLink.required() ? "live_P" : "cloud_EPB"));
+                "AUTO_STOP_SEND", "afterLock=true source=live_P ownTrip=true delayed=true");
             return true;
           });
       observeSnapshot(cloud.snapshot(vin), true);
@@ -1100,9 +1238,11 @@ final class Controller {
     }
   }
 
+  /** Automatic Stop only with a live, stable P from the paired Bridge. No Cloud-brake fallback. */
   private String automaticStopBlock() {
-    if (vehicleLink.required()) return vehicleLink.automaticStopBlock(snapshot);
-    return snapshot.automaticStopBlock(System.currentTimeMillis());
+    if (!vehicleLink.required() || !vehicleLink.configured())
+      return "실제 P단 확인 불가 · 차량 보조 앱(QR) 연결이 필요합니다";
+    return vehicleLink.automaticStopBlock(snapshot);
   }
 
   void startVehicleLink() {

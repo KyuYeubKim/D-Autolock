@@ -36,7 +36,9 @@ public final class MainActivity extends Activity {
   private android.animation.ObjectAnimator refreshSpin;
   private LinearLayout activityRows;
   private String activityKey = "";
-  private Button armedCommand;
+  private Button armedCommand, cancelStop, stopDelay;
+  private Switch stopSwitch;
+  private final Runnable stopCountdown = this::update;
   private CharSequence armedLabel;
   private final Runnable disarmCommand = this::disarmCommand;
   private final TextView[] vehicleStates = new TextView[3];
@@ -102,6 +104,7 @@ public final class MainActivity extends Activity {
   protected void onStop() {
     foreground = false;
     refreshHandler.removeCallbacksAndMessages(null);
+    handler.removeCallbacks(stopCountdown);
     disarmCommand();
     if (refreshSpin != null) refreshSpin.cancel();
     refreshIcon.animate().cancel();
@@ -401,6 +404,12 @@ public final class MainActivity extends Activity {
       b.setTextColor(i == 0 ? 0xffddaa67 : 0xff66cce0);
       b.setBackground(background(i == 0 ? 0xff3b3027 : 0xff203a43, 12));
     }
+    cancelStop =
+        button(controls, "", v -> controller.cancelPendingStop("앱에서 사용자 취소"));
+    cancelStop.setTag("cancelStop");
+    cancelStop.setTextColor(0xffffc77d);
+    cancelStop.setBackground(background(0xff4a2f22, 12));
+    cancelStop.setVisibility(View.GONE);
     text(controls, "실수 방지: 3초 안에 두 번 누르면 실행합니다.", 12, MUTED);
     LinearLayout activityLog = card("활동 로그");
     activityLog.setTag("logCard");
@@ -461,10 +470,29 @@ public final class MainActivity extends Activity {
     options.addView(stopSwitch);
     stopSwitch.setOnCheckedChangeListener(
         (b, on) -> controller.settings.edit().putBoolean("autoStop", on).apply());
+    this.stopSwitch = stopSwitch;
+    Switch sharedSwitch = new Switch(this);
+    sharedSwitch.setTag("sharedVehicle");
+    sharedSwitch.setText("공유 차량 모드 · 여러 운전자 사용");
+    sharedSwitch.setTextColor(TEXT);
+    sharedSwitch.setMinHeight(dp(56));
+    sharedSwitch.setChecked(controller.sharedVehicle());
+    options.addView(sharedSwitch);
+    sharedSwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          controller.settings.edit().putBoolean("sharedVehicle", on).apply();
+          if (on) controller.cancelPendingStop("공유 차량 모드 켜짐");
+          controller.note(
+              on ? "공유 차량 모드 켜짐 · 자동 잠금은 유지, 자동 종료는 하지 않습니다" : "공유 차량 모드 꺼짐");
+        });
+    stopDelay = button(options, "", v -> stopDelayDialog());
+    stopDelay.setTag("stopDelay");
     text(
         options,
-        "자동 잠금 후 최신 정차·모든 문 닫힘을 확인해 Stop을 요청합니다. 차량 보조 앱을 등록하면 2초 연속 P단 확인도 필요합니다."
-            + " P단으로 미제공 주차브레이크 정보를 보완하며, 브레이크 해제·연결 끊김·오래된 정보는 종료를 보류합니다.",
+        "자동 종료 조건: 차량 보조 앱의 실제 P단 2초 연속 확인(필수), 이 휴대폰이 연 운행이며 차량 보조 앱에서 주행(P 해제)을 확인한 경우,"
+            + " 신호 세기로 이탈 확인, 최신 정차·잠금·모든 문 닫힘. 잠금 후 대기 시간 동안 기어·브레이크 변화나 취소가 있으면 종료하지 않고,"
+            + " 대기 후 다시 확인합니다. 다른 사람이 열었거나 앱이 운행 중 재시작되면 종료하지 않습니다.\n"
+            + "공유 차량 모드에서는 자동 잠금·창문 닫기만 하고 자동 종료는 하지 않습니다.",
         13,
         MUTED);
     text(options, "탑승 공조 · READY 상태 진단", 16, 0xffffc77d);
@@ -594,7 +622,7 @@ public final class MainActivity extends Activity {
     }
     button(settingsBody, "처음 설정 안내", v -> showSetup());
     button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    text(settingsBody, "D-Autolock 0.3.0 · 비공식 개인용 앱", 12, MUTED);
+    text(settingsBody, "D-Autolock 0.3.1 · 비공식 개인용 앱", 12, MUTED);
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
     button(setupBanner, "처음 설정 이어하기", v -> showSetup());
@@ -602,6 +630,33 @@ public final class MainActivity extends Activity {
     setupBanner.setVisibility(View.GONE);
     buildSetup();
     styleSwitches(shell);
+  }
+
+  private void stopDelayDialog() {
+    LinearLayout f = form();
+    text(f, "잠금 후 이 시간 동안 기어·브레이크 변화와 취소를 기다린 뒤 P단·정차·잠금을 다시 확인하고 종료합니다.", 13, MUTED);
+    SeekBar delay =
+        settingSlider(
+            f, "자동 종료 대기", "stopDelaySeconds", 5, 120, controller.stopDelaySeconds(), "초",
+            "5초 ← → 120초", value -> {});
+    new AlertDialog.Builder(this)
+        .setTitle("자동 종료 대기 시간")
+        .setView(f)
+        .setNegativeButton("취소", null)
+        .setNeutralButton(
+            "기본값 15초",
+            (d, w) -> {
+              controller.settings.edit().putInt("stopDelaySeconds", 15).apply();
+              controller.note("자동 종료 대기 시간 15초");
+            })
+        .setPositiveButton(
+            "저장",
+            (d, w) -> {
+              int seconds = delay.getProgress() + 5;
+              controller.settings.edit().putInt("stopDelaySeconds", seconds).apply();
+              controller.note("자동 종료 대기 시간 " + seconds + "초");
+            })
+        .show();
   }
 
   private void requestUpdate() {
@@ -1092,6 +1147,18 @@ public final class MainActivity extends Activity {
                       controller.capabilities, CloudClient.Command.values()[i].feature));
     for (Button command : commands) command.setAlpha(command.isEnabled() ? 1f : .45f);
     if (armedCommand != null && !armedCommand.isEnabled()) disarmCommand();
+    long due = controller.stopDueAt;
+    handler.removeCallbacks(stopCountdown);
+    if (due >= 0) {
+      long left = Math.max(0, (due - SystemClock.elapsedRealtime() + 999) / 1000);
+      cancelStop.setText("자동 종료 취소 · " + left + "초 후 종료 확인");
+      cancelStop.setVisibility(View.VISIBLE);
+      if (foreground) handler.postDelayed(stopCountdown, 1000);
+    } else cancelStop.setVisibility(View.GONE);
+    boolean shared = controller.sharedVehicle();
+    stopSwitch.setEnabled(!shared);
+    stopSwitch.setAlpha(shared ? .45f : 1f);
+    stopDelay.setText("자동 종료 대기 시간 · " + controller.stopDelaySeconds() + "초");
     updateSetup();
     if (foreground
         && !controller.initializing

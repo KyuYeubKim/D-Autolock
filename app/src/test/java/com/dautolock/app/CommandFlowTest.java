@@ -203,6 +203,33 @@ public class CommandFlowTest {
     assertFalse(c.busy());
   }
 
+  private static final com.dautolock.link.LinkProtocol.Sample PARK =
+      new com.dautolock.link.LinkProtocol.Sample(0, -1, 1, 3, -1, 0);
+  private static final com.dautolock.link.LinkProtocol.Sample DRIVE =
+      new com.dautolock.link.LinkProtocol.Sample(3, -1, 4, 2, -1, 0);
+
+  /** This phone opened the car and its own Bridge then saw the car leave P. */
+  private void ownTrip(Controller c) {
+    c.startTrip("test");
+    c.vehicleSample(DRIVE);
+  }
+
+  private void feedPark(Controller c) {
+    long now = android.os.SystemClock.elapsedRealtime();
+    for (long offset : new long[] {2000, 1000, 0})
+      c.vehicleLink.state.accept(PARK, now - offset, now - offset);
+  }
+
+  /** Wait out the 15 s default delay; optionally keep the Bridge reporting P meanwhile. */
+  private void runDelayedStop(Controller c, boolean parked) throws Exception {
+    org.robolectric.shadows.ShadowLooper main =
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper());
+    main.idleFor(java.time.Duration.ofSeconds(14));
+    if (parked) feedPark(c);
+    main.idleFor(java.time.Duration.ofSeconds(2));
+    complete(c);
+  }
+
   private void bridgeParked(Controller c) throws Exception {
     c.settings.edit().putBoolean("vehicleLinkRequired", true).commit();
     java.lang.reflect.Field pair = VehicleLink.class.getDeclaredField("pairing");
@@ -337,12 +364,153 @@ public class CommandFlowTest {
     Protocol p = new Protocol();
     p.power = 3;
     Controller c = create(p);
+    ownTrip(c);
     bridgeParked(c);
     c.monitoring = c.autoEnabled = true;
     c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
     complete(c);
-    assertEquals(Arrays.asList("LOCKDOOR", "TURNOFFENGINE", "CLOSEWINDOW"), p.commands);
+    assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
+    assertTrue(c.stopDueAt >= 0);
+    assertTrue(c.stopStatus.contains("15초 후"));
+    runDelayedStop(c, true);
+    assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW", "TURNOFFENGINE"), p.commands);
     assertTrue(c.stopStatus.contains("전원 OFF 확인"));
+    assertEquals(-1, c.stopDueAt);
+  }
+
+  @Test
+  public void notThisPhonesTripLocksButNeverStops() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    bridgeParked(c); // Live P is present, but someone else opened the car.
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    runDelayedStop(c, true);
+    assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
+    assertTrue(c.stopStatus.contains("이 휴대폰이 연 운행이 아닙니다"));
+  }
+
+  @Test
+  public void ownUnlockWithoutObservedDriveNeverStops() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.command(CloudClient.Command.UNLOCK, false, () -> true); // Manual unlock starts the trip.
+    complete(c);
+    assertTrue(c.ownershipBlock().contains("주행"));
+    p.power = 3;
+    bridgeParked(c);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    runDelayedStop(c, true);
+    assertFalse(p.commands.contains("TURNOFFENGINE"));
+    assertTrue(c.stopStatus.contains("주행(P 해제)"));
+  }
+
+  @Test
+  public void arrivingTogetherWhenAnotherPhoneUnlockedFirstStillOwnsTrip() throws Exception {
+    Protocol p = new Protocol(); // Already unlocked by the passenger's phone, power OFF.
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertTrue(c.ownershipBlock().contains("주행")); // Trip started; drive not yet seen.
+    c.vehicleSample(DRIVE);
+    p.power = 3;
+    bridgeParked(c);
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    runDelayedStop(c, true);
+    assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW", "TURNOFFENGINE"), p.commands);
+  }
+
+  @Test
+  public void manualUnlockOfAlreadyOpenPoweredCarDoesNotClaimTrip() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3; // Someone else is already sitting in the powered car.
+    Controller c = create(p);
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    complete(c);
+    assertEquals("이 휴대폰이 연 운행이 아닙니다", c.ownershipBlock());
+  }
+
+  @Test
+  public void sharedVehicleModeKeepsAutomaticLockButNeverStops() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    c.settings.edit().putBoolean("sharedVehicle", true).commit();
+    ownTrip(c);
+    bridgeParked(c);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    runDelayedStop(c, true);
+    assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
+    assertTrue(c.stopStatus.contains("공유 차량 모드"));
+  }
+
+  @Test
+  public void userCancelDuringDelayPreventsStop() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    ownTrip(c);
+    bridgeParked(c);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    new DoorActionReceiver()
+        .onReceive(
+            RuntimeEnvironment.getApplication(),
+            new android.content.Intent(DoorNotifications.CANCEL_STOP));
+    // The receiver uses the application controller; cancel this one the same way.
+    c.cancelPendingStop("알림에서 사용자 취소");
+    runDelayedStop(c, true);
+    assertFalse(p.commands.contains("TURNOFFENGINE"));
+    assertTrue(c.stopStatus.contains("사용자 취소"));
+  }
+
+  @Test
+  public void configuredDelayIsHonoured() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    c.settings.edit().putInt("stopDelaySeconds", 30).commit();
+    ownTrip(c);
+    bridgeParked(c);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    runDelayedStop(c, true); // 16 s: still waiting.
+    assertFalse(p.commands.contains("TURNOFFENGINE"));
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofSeconds(12));
+    feedPark(c);
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofSeconds(3));
+    complete(c);
+    assertTrue(p.commands.contains("TURNOFFENGINE"));
+  }
+
+  @Test
+  public void unlockSeenFromAnotherSourceEndsThisPhonesTrip() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    ownTrip(c);
+    assertNull(c.ownershipBlock());
+    c.refreshNow();
+    complete(c);
+    p.locked = false; // Someone else unlocked with a key or another phone.
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(6));
+    c.refreshNow();
+    complete(c);
+    assertEquals("이 휴대폰이 연 운행이 아닙니다", c.ownershipBlock());
   }
 
   @Test
@@ -351,14 +519,13 @@ public class CommandFlowTest {
     p.power = 3;
     p.epb = 1;
     Controller c = create(p);
+    ownTrip(c);
     bridgeParked(c);
-    p.beforeStatus =
-        () -> {
-          if (p.statusRequests >= 3) c.vehicleLink.state.clear();
-        };
     c.monitoring = c.autoEnabled = true;
     c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
     complete(c);
+    c.vehicleLink.state.clear();
+    runDelayedStop(c, false);
     assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
     assertTrue(c.stopStatus.contains("연결 끊김"));
   }
@@ -368,20 +535,18 @@ public class CommandFlowTest {
     Protocol p = new Protocol();
     p.power = 3;
     Controller c = create(p);
+    ownTrip(c);
     bridgeParked(c);
-    p.beforeStatus =
-        () -> {
-          if (p.statusRequests >= 3) {
-            long n = android.os.SystemClock.elapsedRealtime();
-            c.vehicleLink.state.accept(
-                new com.dautolock.link.LinkProtocol.Sample(3, -1, 4, 2, -1, 0), n, n);
-          }
-        };
     c.monitoring = c.autoEnabled = true;
     c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
     complete(c);
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofSeconds(3));
+    c.vehicleSample(DRIVE); // Someone inside shifts out of P during the delay.
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+    runDelayedStop(c, true);
     assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
-    assertTrue(c.stopStatus.contains("P단 미확인"));
+    assertTrue(c.stopStatus.contains("차량 조작 감지"));
   }
 
   @Test
@@ -390,11 +555,13 @@ public class CommandFlowTest {
     p.power = 3;
     p.epb = 1;
     Controller c = create(p);
+    ownTrip(c);
     bridgeParked(c);
     c.vin = "another-car";
     c.monitoring = c.autoEnabled = true;
     c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
     complete(c);
+    runDelayedStop(c, true);
     assertFalse(p.commands.contains("TURNOFFENGINE"));
     assertTrue(c.stopStatus.contains("QR"));
   }
@@ -405,11 +572,12 @@ public class CommandFlowTest {
     p.power = 3;
     p.epb = 1;
     Controller c = create(p);
+    ownTrip(c);
     bridgeParked(c);
-    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(4));
     c.monitoring = c.autoEnabled = true;
     c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
     complete(c);
+    runDelayedStop(c, false); // Bridge stops reporting: last P is far older than 3 s.
     assertFalse(p.commands.contains("TURNOFFENGINE"));
   }
 
@@ -438,17 +606,20 @@ public class CommandFlowTest {
   }
 
   @Test
-  public void automaticLockStopsThenClosesWindowsOnlyWithKnownBrake() throws Exception {
+  public void cloudBrakeWithoutLivePNoLongerAuthorizesAutomaticStop() throws Exception {
     Protocol p = new Protocol();
     p.power = 3;
     p.epb = 1;
     Controller c = create(p);
+    ownTrip(c);
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(1));
     c.monitoring = true;
     c.autoEnabled = true;
     c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {});
     complete(c);
-    assertEquals(Arrays.asList("LOCKDOOR", "TURNOFFENGINE", "CLOSEWINDOW"), p.commands);
-    assertTrue(c.stopStatus.contains("전원 OFF 확인"));
+    runDelayedStop(c, false);
+    assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
+    assertTrue(c.stopStatus.contains("실제 P단 확인 불가"));
   }
 
   @Test
@@ -462,8 +633,9 @@ public class CommandFlowTest {
     c.autoEnabled = true;
     c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {});
     complete(c);
+    runDelayedStop(c, false);
     assertTrue(p.commands.isEmpty());
-    assertTrue(c.stopStatus.contains("주차브레이크"));
+    assertTrue(c.stopStatus.contains("자동 종료 안 함"));
   }
 
   @Test
@@ -575,7 +747,7 @@ public class CommandFlowTest {
     c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
     complete(c);
     assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
-    assertTrue(c.stopStatus.contains("자동 종료 불가"));
+    assertTrue(c.stopStatus.contains("자동 종료 안 함"));
   }
 
   @Test

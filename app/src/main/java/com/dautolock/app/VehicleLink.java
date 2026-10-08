@@ -178,6 +178,7 @@ final class VehicleLink {
               throw new IOException("Vehicle read too slow");
             status = "차량 보조 앱 인증 연결됨";
           }
+          controller.vehicleSample(sample);
           String diagnostic = sample.diagnostic();
           if (!diagnostic.equals(last) || now - lastLog >= 15000) {
             controller.diagnostics.record(

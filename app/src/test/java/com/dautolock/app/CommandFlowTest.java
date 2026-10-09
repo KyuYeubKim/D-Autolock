@@ -474,6 +474,62 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void boardingClimateTurnsOffAfterDelayOnlyWhenEnabled() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    p.openOnUnlock = true;
+    Controller c = create(p);
+    c.settings.edit().putBoolean("autoReady", true).putBoolean("climateAutoOff", true).commit();
+    assertEquals(10, c.climateOffSeconds());
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+    complete(c);
+    assertTrue(c.pollEntry(() -> true));
+    complete(c);
+    assertEquals(Arrays.asList("OPENDOOR", "OPENAIR"), p.commands); // Not off yet.
+    for (int i = 0; i < 6 && !p.commands.contains("CLOSEAIR"); i++) {
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+          .idleFor(java.time.Duration.ofSeconds(3));
+      complete(c);
+    }
+    assertEquals(Arrays.asList("OPENDOOR", "OPENAIR", "CLOSEAIR"), p.commands);
+    c.stop();
+  }
+
+  @Test
+  public void boardingClimateStaysOnWhenAutoOffDisabled() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    p.openOnUnlock = true;
+    Controller c = create(p);
+    c.settings.edit().putBoolean("autoReady", true).commit(); // climateAutoOff default false.
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+    complete(c);
+    assertTrue(c.pollEntry(() -> true));
+    complete(c);
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofSeconds(15));
+    complete(c);
+    assertFalse(p.commands.contains("CLOSEAIR"));
+    c.stop();
+  }
+
+  @Test
+  public void manualClimateStartNeverAutoOffsEvenWhenBoardingAutoOffEnabled() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    c.settings.edit().putBoolean("climateAutoOff", true).commit();
+    c.manualClimateStart();
+    complete(c);
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofSeconds(15));
+    complete(c);
+    assertEquals(Collections.singletonList("OPENAIR"), p.commands); // 시동 켜기 keeps A/C on.
+    c.stop();
+  }
+
+  @Test
   public void gettingOutRightAfterPowerOffNeverStartsClimateOrClaimsTrip() throws Exception {
     // Real log 21:54: car ON, driver switches off (already unlocked), opens door to leave.
     Protocol p = new Protocol();

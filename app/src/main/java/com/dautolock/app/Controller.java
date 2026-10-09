@@ -136,7 +136,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.3.10 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.3.11 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -1509,7 +1509,8 @@ final class Controller {
                         && monitoring
                         && settings.getBoolean("autoReady", false)
                         && nearby.getAsBoolean(),
-                s);
+                s,
+                true);
           } catch (Exception e) {
             climateStatus = "공조 연동 보류 · " + e.getMessage();
             diagnostics.record("CLIMATE_START_BLOCK_OR_ERROR", e.getMessage());
@@ -1583,7 +1584,7 @@ final class Controller {
     run(
         () -> {
           try {
-            startClimate(() -> validSession(ticket, target), null);
+            startClimate(() -> validSession(ticket, target), null, false);
           } catch (Exception e) {
             climateStatus = "공조 동작 보류 · " + e.getMessage();
             diagnostics.record("CLIMATE_START_BLOCK_OR_ERROR", e.getMessage());
@@ -1592,7 +1593,8 @@ final class Controller {
         });
   }
 
-  private void startClimate(BooleanSupplier valid, VehicleSnapshot entrySnapshot) throws Exception {
+  private void startClimate(BooleanSupplier valid, VehicleSnapshot entrySnapshot, boolean boarding)
+      throws Exception {
     requireVehicle();
     if (pinHash.isEmpty()) throw new Exception("제어 PIN이 필요합니다");
     if (!CloudClient.hasClimate(capabilities)) capabilities = cloud.capabilities(vin);
@@ -1637,6 +1639,8 @@ final class Controller {
       note(climateStatus);
       throw e;
     } finally {
+      if (sent.get() && validSession(ticket, target) && boarding && climateAutoOff())
+        scheduleClimateOff(ticket, target);
       if (sent.get() && validSession(ticket, target)) {
         cancelReadinessWatch("새 공조 시작");
         ReadinessWatch watch = new ReadinessWatch(ticket, target, sentAt[0]);
@@ -1647,6 +1651,48 @@ final class Controller {
         main.post(watch);
       }
     }
+  }
+
+  boolean climateAutoOff() {
+    return settings.getBoolean("climateAutoOff", false);
+  }
+
+  int climateOffSeconds() {
+    return Math.max(5, Math.min(120, settings.getInt("climateOffSeconds", 10)));
+  }
+
+  /**
+   * Boarding climate exists only to power the car on; the user does not want the A/C to keep
+   * running. Turn it off once, after a delay long enough that it does not power the car down (the
+   * 2 s version did; ~5 s+ was observed safe). Off-only: never re-powers or re-sends.
+   */
+  private void scheduleClimateOff(int ticket, String target) {
+    long delay = climateOffSeconds() * 1000L;
+    climateStatus = "공조 시작됨 · " + climateOffSeconds() + "초 뒤 자동 OFF 예정";
+    diagnostics.record("CLIMATE_AUTO_OFF_SCHEDULED", "delayMs=" + delay);
+    main.postDelayed(() -> runClimateOff(ticket, target, 0), delay);
+  }
+
+  /** The cloud worker may be busy (readiness reads); retry for a while instead of dropping it. */
+  private void runClimateOff(int ticket, String target, int attempt) {
+    if (!validSession(ticket, target)) return;
+    boolean started =
+        run(
+            () -> {
+              if (!validSession(ticket, target)) return;
+              try {
+                cloud.command(target, pinHash, CloudClient.Command.CLIMATE_OFF, () -> true);
+                climateStatus = "탑승 공조 자동 OFF 요청 완료 · 차량 전원은 유지(실차 확인)";
+                diagnostics.record("CLIMATE_AUTO_OFF_SENT", "boarding=true");
+              } catch (Exception e) {
+                climateStatus = "탑승 공조 자동 OFF 미완료 · " + e.getMessage();
+                diagnostics.record("CLIMATE_AUTO_OFF_ERROR", e.getMessage());
+              }
+            },
+            () -> {},
+            true);
+    if (!started && attempt < 30)
+      main.postDelayed(() -> runClimateOff(ticket, target, attempt + 1), 1000);
   }
 
   private void cancelReadinessWatch(String reason) {

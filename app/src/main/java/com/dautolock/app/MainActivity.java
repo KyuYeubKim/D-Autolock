@@ -332,6 +332,44 @@ public final class MainActivity extends Activity {
     readySwitch.setChecked(controller.settings.getBoolean("autoReady", false));
     options.addView(readySwitch);
     readySwitch.setOnCheckedChangeListener((b, on) -> controller.readyOption(on));
+    Switch climateOffSwitch = new Switch(this);
+    climateOffSwitch.setTag("climateAutoOff");
+    climateOffSwitch.setText("탑승 공조 시작 후 자동 끄기");
+    climateOffSwitch.setTextColor(TEXT);
+    climateOffSwitch.setPadding(0, dp(12), 0, dp(12));
+    climateOffSwitch.setMinHeight(dp(56));
+    climateOffSwitch.setChecked(controller.settings.getBoolean("climateAutoOff", false));
+    options.addView(climateOffSwitch);
+    climateOffSwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          if (updating) return;
+          if (!on) {
+            controller.settings.edit().putBoolean("climateAutoOff", false).apply();
+            controller.note("탑승 공조 자동 끄기 꺼짐");
+            return;
+          }
+          updating = true;
+          climateOffSwitch.setChecked(false);
+          updating = false;
+          new AlertDialog.Builder(this)
+              .setTitle("탑승 공조 자동 끄기")
+              .setMessage(
+                  "탑승 시 공조 시작은 차량 전원을 켜는 용도입니다. 시작 후 "
+                      + controller.climateOffSeconds()
+                      + "초 뒤 공조를 한 번 끕니다(수동 '시동 켜기'·'출차 준비'에는 적용되지 않음).\n\n"
+                      + "주의: 너무 빨리 끄면 차량 전원도 함께 꺼질 수 있습니다(과거 2초에서 관찰). 5초 이상에서는 전원이"
+                      + " 유지된 기록이 있으나 실차에서 직접 확인하세요.")
+              .setNegativeButton("취소", null)
+              .setPositiveButton(
+                  "켜기",
+                  (d, w) -> {
+                    controller.settings.edit().putBoolean("climateAutoOff", true).apply();
+                    controller.note("탑승 공조 자동 끄기 켜짐 · " + controller.climateOffSeconds() + "초 뒤 OFF");
+                    update();
+                  })
+              .show();
+        });
+    button(options, "탑승 공조 자동 끄기 시간", v -> climateOffDelayDialog());
     Switch windowsSwitch = new Switch(this);
     windowsSwitch.setText("도어 잠금 시 전체 창문 닫기");
     windowsSwitch.setTextColor(TEXT);
@@ -504,7 +542,7 @@ public final class MainActivity extends Activity {
     }
     button(settingsBody, "처음 설정 안내", v -> showSetup());
     button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    text(settingsBody, "D-Autolock 0.3.10 · 비공식 개인용 앱", 12, MUTED);
+    text(settingsBody, "D-Autolock 0.3.11 · 비공식 개인용 앱", 12, MUTED);
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
     button(setupBanner, "처음 설정 이어하기", v -> showSetup());
@@ -512,6 +550,33 @@ public final class MainActivity extends Activity {
     setupBanner.setVisibility(View.GONE);
     buildSetup();
     styleSwitches(shell);
+  }
+
+  private void climateOffDelayDialog() {
+    LinearLayout f = form();
+    text(f, "탑승 시 공조 시작 후 공조를 끄기까지의 시간입니다. 너무 짧으면 차량 전원이 함께 꺼질 수 있어 5초 이상을 권장합니다.", 13, MUTED);
+    SeekBar delay =
+        settingSlider(
+            f, "자동 끄기 시간", "climateOffSeconds", 5, 120, controller.climateOffSeconds(), "초",
+            "5초 ← → 120초", value -> {});
+    new AlertDialog.Builder(this)
+        .setTitle("탑승 공조 자동 끄기 시간")
+        .setView(f)
+        .setNegativeButton("취소", null)
+        .setNeutralButton(
+            "기본값 10초",
+            (d, w) -> {
+              controller.settings.edit().putInt("climateOffSeconds", 10).apply();
+              controller.note("탑승 공조 자동 끄기 10초");
+            })
+        .setPositiveButton(
+            "저장",
+            (d, w) -> {
+              int seconds = delay.getProgress() + 5;
+              controller.settings.edit().putInt("climateOffSeconds", seconds).apply();
+              controller.note("탑승 공조 자동 끄기 " + seconds + "초");
+            })
+        .show();
   }
 
   private void stopDelayDialog() {

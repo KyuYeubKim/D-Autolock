@@ -48,8 +48,9 @@ public final class DashboardStatus {
   /** Header line under the door state, e.g. "업데이트 10/9 20:12" (KST). */
   public static String updated(VehicleSnapshot s, long now) {
     if (s == null || s.receivedAt <= 0) return "업데이트 대기";
+    // Non-breaking space keeps "10/9 16:02" together when a narrow phone wraps the line.
     return "업데이트 "
-        + SHORT.format(java.time.Instant.ofEpochMilli(s.receivedAt))
+        + SHORT.format(java.time.Instant.ofEpochMilli(s.receivedAt)).replace(' ', ' ')
         + (s.fresh(now) ? "" : " · 오래됨");
   }
 

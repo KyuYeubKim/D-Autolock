@@ -194,8 +194,9 @@ public final class MainActivity extends Activity {
     back.setVisibility(View.GONE);
     titleSpacer = new View(this);
     bar.addView(titleSpacer, new LinearLayout.LayoutParams(dp(48), dp(44)));
+    titleSpacer.setVisibility(View.GONE);
     LinearLayout brand = new LinearLayout(this);
-    brand.setGravity(Gravity.CENTER);
+    brand.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
     bar.addView(brand, new LinearLayout.LayoutParams(0, -1, 1));
     logo = new ImageView(this);
     logo.setImageResource(R.drawable.ic_logo);
@@ -503,7 +504,7 @@ public final class MainActivity extends Activity {
     }
     button(settingsBody, "처음 설정 안내", v -> showSetup());
     button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    text(settingsBody, "D-Autolock 0.3.8 · 비공식 개인용 앱", 12, MUTED);
+    text(settingsBody, "D-Autolock 0.3.9 · 비공식 개인용 앱", 12, MUTED);
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
     button(setupBanner, "처음 설정 이어하기", v -> showSetup());
@@ -647,7 +648,7 @@ public final class MainActivity extends Activity {
     item.setGravity(Gravity.CENTER);
     item.setTag(tag);
     icon(item, drawable, color, 20);
-    row.addView(item, new LinearLayout.LayoutParams(dp(50), -2));
+    row.addView(item, new LinearLayout.LayoutParams(dp(44), -2));
     return item;
   }
 
@@ -676,14 +677,15 @@ public final class MainActivity extends Activity {
     checkedTime = text(titles, "업데이트 대기", 11, MUTED);
     checkedTime.setTag("statusCheckedTime");
     checkedTime.setPadding(0, dp(2), 0, 0);
-    checkedTime.setSingleLine(true);
-    checkedTime.setEllipsize(android.text.TextUtils.TruncateAt.END);
+    checkedTime.setMaxLines(2); // Never cut the time off; wrap on narrow phones.
     batteryText = text(statusItem(row, R.drawable.ic_battery, MINT, "batteryItem"), "--%", 12, TEXT);
     powerText = text(statusItem(row, R.drawable.ic_power, 0xff66cce0, "powerItem"), "미확인", 12, TEXT);
     windowText = text(statusItem(row, R.drawable.ic_window, 0xff8fb4ff, "windowItem"), "미확인", 12, TEXT);
     for (TextView t : new TextView[] {batteryText, powerText, windowText}) {
       t.setPadding(0, dp(2), 0, 0);
-      t.setSingleLine(true);
+      t.setMaxLines(1);
+      t.setGravity(Gravity.CENTER);
+      t.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
     }
     refreshIcon = new ImageView(this);
     refreshIcon.setTag("statusRefresh");
@@ -696,7 +698,7 @@ public final class MainActivity extends Activity {
           controller.refreshNow();
           update();
         });
-    row.addView(refreshIcon, new LinearLayout.LayoutParams(dp(38), dp(44)));
+    row.addView(refreshIcon, new LinearLayout.LayoutParams(dp(34), dp(44)));
     message = text(status, "", 12, MUTED); // Recent alert text lives in the activity log now.
     message.setVisibility(View.GONE);
     status.setOnClickListener(v -> showVehicleDetails());
@@ -747,7 +749,7 @@ public final class MainActivity extends Activity {
     LinearLayout reading = new LinearLayout(this);
     reading.setGravity(Gravity.CENTER_VERTICAL);
     dash.addView(reading);
-    signal = text(reading, "신호 대기", 20, MINT);
+    signal = text(reading, "신호 대기", 16, MINT);
     signal.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
     signalDbm = text(reading, "— dBm", 14, MUTED);
     signalDbm.setTag("signalDbm");
@@ -1085,7 +1087,7 @@ public final class MainActivity extends Activity {
     settingsScroll.setVisibility(page.equals("settings") ? View.VISIBLE : View.GONE);
     setupScroll.setVisibility(page.equals("setup") ? View.VISIBLE : View.GONE);
     back.setVisibility(page.equals("home") ? View.GONE : View.VISIBLE);
-    titleSpacer.setVisibility(page.equals("home") ? View.VISIBLE : View.GONE);
+    titleSpacer.setVisibility(View.GONE);
     logo.setVisibility(page.equals("home") ? View.VISIBLE : View.GONE);
     title.setText(page.equals("home") ? "D-Autolock" : page.equals("settings") ? "설정" : "처음 설정");
   }

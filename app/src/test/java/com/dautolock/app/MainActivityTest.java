@@ -593,6 +593,22 @@ public class MainActivityTest {
   }
 
   @Test
+  public void mainScreenAllowsScreenCaptureButLoginDialogStaysProtected() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      assertEquals(
+          0, a.get().getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE);
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      find(a.get().getWindow().getDecorView(), "Sub 계정 로그인 / 변경").performClick();
+      AlertDialog login = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+      assertNotEquals(
+          0, login.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE);
+      login.dismiss();
+    }
+  }
+
+  @Test
   public void manualDoorTapDoesNotShowConfirmation() {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {

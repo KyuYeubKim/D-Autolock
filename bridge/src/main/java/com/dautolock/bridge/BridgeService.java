@@ -41,9 +41,11 @@ public final class BridgeService extends Service {
               .setContentIntent(open)
               .setOngoing(true)
               .build());
+      BootLog.add(this, "서비스 startForeground 성공 · 상태 전달 시작");
     } catch (RuntimeException e) {
       // Missing foreground-service permission on this firmware: report instead of crashing.
       status = "백그라운드 실행 권한 확인 필요 (" + e.getClass().getSimpleName() + ")";
+      BootLog.add(this, "서비스 startForeground 실패: " + e.getClass().getSimpleName());
       stopSelf();
       return;
     }

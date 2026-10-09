@@ -15,7 +15,7 @@ import java.util.*;
 import org.json.JSONObject;
 
 public final class BridgeActivity extends Activity {
-  static final String VERSION = "0.3.0";
+  static final String VERSION = "0.3.1";
   private TextView status;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final Runnable tick =
@@ -133,6 +133,8 @@ public final class BridgeActivity extends Activity {
         + BridgeService.lastSample
         + "\n"
         + BridgeService.detail
+        + "\n\n[부팅/자동시작 기록]\n"
+        + BootLog.read(this)
         + "\n";
   }
 

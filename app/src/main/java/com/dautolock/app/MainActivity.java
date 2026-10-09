@@ -80,6 +80,8 @@ public final class MainActivity extends Activity {
   private FrameLayout lockTile;
   private TextView doorTitle, batteryText, powerText, windowText, signalDbm, automationReason;
   private Switch automation;
+  private LinearLayout securityBanner;
+  private TextView securityText;
   private final Runnable observer = this::update;
   private Runnable thresholdPreview;
   private boolean foreground, resumePending;
@@ -501,7 +503,7 @@ public final class MainActivity extends Activity {
     }
     button(settingsBody, "처음 설정 안내", v -> showSetup());
     button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    text(settingsBody, "D-Autolock 0.3.7 · 비공식 개인용 앱", 12, MUTED);
+    text(settingsBody, "D-Autolock 0.3.8 · 비공식 개인용 앱", 12, MUTED);
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
     button(setupBanner, "처음 설정 이어하기", v -> showSetup());
@@ -713,6 +715,25 @@ public final class MainActivity extends Activity {
     chargeDetail = text(chargeCard, "", 14, TEXT);
     chargeDetail.setTag("chargeDetail");
     chargeCard.setVisibility(View.GONE);
+    securityBanner = new LinearLayout(this);
+    securityBanner.setTag("securityAlert");
+    securityBanner.setGravity(Gravity.CENTER_VERTICAL);
+    securityBanner.setPadding(dp(12), dp(10), dp(12), dp(10));
+    GradientDrawable alarm = background(0xff3a1416, 16);
+    alarm.setStroke(dp(1), DoorNotifications.ALERT_RED);
+    securityBanner.setBackground(alarm);
+    icon(securityBanner, R.drawable.ic_warning, DoorNotifications.ALERT_RED, 26);
+    securityText = new TextView(this);
+    securityText.setTextColor(0xffff6b6b);
+    securityText.setTextSize(14);
+    securityText.setTypeface(null, Typeface.BOLD);
+    securityText.setPadding(dp(10), 0, 0, 0);
+    securityBanner.addView(securityText, new LinearLayout.LayoutParams(0, -2, 1));
+    securityBanner.setOnClickListener(v -> finishConfirm());
+    LinearLayout.LayoutParams bannerParams = new LinearLayout.LayoutParams(-1, -2);
+    bannerParams.setMargins(0, dp(10), 0, 0);
+    body.addView(securityBanner, 0, bannerParams);
+    securityBanner.setVisibility(View.GONE);
 
     LinearLayout dash = card("BLE 신호 상태");
     dash.setTag("signalCard");
@@ -820,6 +841,17 @@ public final class MainActivity extends Activity {
         .show();
   }
 
+  private void finishConfirm() {
+    new AlertDialog.Builder(this)
+        .setTitle("하차 마무리")
+        .setMessage(
+            "차량이 P단이며 주차브레이크가 체결됐고 주변과 탑승자가 안전한지 직접 확인하세요. 최신 정차 상태를 조회해 시동을 한 번 끄고(Stop),"
+                + " 전원 OFF가 확인되면 도어를 잠급니다. 확인은 이번 요청에만 30초간 유효하며, 시동 꺼짐이 확인되지 않으면 잠그지 않습니다.")
+        .setNegativeButton("취소", null)
+        .setPositiveButton("P단·주차브레이크 확인 · 실행", (d, w) -> controller.departureFinish())
+        .show();
+  }
+
   private void buildControlsAutomationLog() {
     LinearLayout controls = card("차량 제어");
     controls.setTag("controlsCard");
@@ -835,15 +867,7 @@ public final class MainActivity extends Activity {
         bigRow, R.drawable.ic_walk, "하차 마무리", "시동끔+잠금", new int[] {0xff5874f3, 0xff7d6cf0},
         "control_finish",
         new CloudClient.Command[] {CloudClient.Command.STOP, CloudClient.Command.LOCK},
-        () ->
-            new AlertDialog.Builder(this)
-                .setTitle("하차 마무리")
-                .setMessage(
-                    "차량이 P단이며 주차브레이크가 체결됐고 주변과 탑승자가 안전한지 직접 확인하세요. 최신 정차 상태를 조회해 시동을 한 번 끄고(Stop),"
-                        + " 전원 OFF가 확인되면 도어를 잠급니다. 확인은 이번 요청에만 30초간 유효하며, 시동 꺼짐이 확인되지 않으면 잠그지 않습니다.")
-                .setNegativeButton("취소", null)
-                .setPositiveButton("P단·주차브레이크 확인 · 실행", (d, w) -> controller.departureFinish())
-                .show());
+        this::finishConfirm);
     LinearLayout smallRow = new LinearLayout(this);
     smallRow.setBaselineAligned(false);
     controls.addView(smallRow);
@@ -1340,11 +1364,20 @@ public final class MainActivity extends Activity {
     updating = false;
     automationReason.setText(
         controller.monitoring && controller.autoEnabled
-            ? "켜짐 · BLE 신호로 자동 열기·잠금을 판단합니다"
+            ? controller.settings.getBoolean("autoStop", true)
+                    && !controller.sharedVehicle()
+                    && controller.vehicleLink.configured()
+                    && !controller.vehicleLink.connected()
+                ? "켜짐 · 차량 보조 앱 미연결: 자동 시동 끄기를 하려면 차량에서 D-Autolock Bridge를 실행하세요"
+                : "켜짐 · BLE 신호로 자동 열기·잠금을 판단합니다"
             : controller.setupReady()
                 ? "꺼짐 · 자동 열기·잠금·종료·탑승 공조가 모두 중단됩니다"
                 : "꺼짐 · 계정·차량·BLE 기기를 설정하면 켤 수 있습니다");
     spin(controller.statusReading);
+    String alert = controller.securityAlert;
+    securityBanner.setVisibility(alert == null ? View.GONE : View.VISIBLE);
+    if (alert != null)
+      securityText.setText("수동으로 잠그고 시동을 끄세요\n" + alert + "\n(눌러서 하차 마무리 실행)");
     com.dautolock.app.core.VehicleSnapshot state = controller.snapshot;
     String[] charge = DashboardStatus.charging(state, now);
     chargeCard.setVisibility(charge == null ? View.GONE : View.VISIBLE);
@@ -1683,10 +1716,10 @@ public final class MainActivity extends Activity {
           farWait.setProgress(Controller.DEFAULT_FAR_WAIT);
           lossWait.setProgress(Controller.DEFAULT_LOSS - 5);
         };
-    button(f, "추천값 적용 · −70 / −85 dBm", v -> recommended.run());
+    button(f, "추천값 적용 · −75 / −85 dBm", v -> recommended.run());
     text(
         f,
-        "추천값: 접근 −70 / 이탈 −85 dBm, 접근 1초 / 이탈 5초 / 신호 끊김 10초. 차 옆에 서 있어도 신호가 −85 dBm 근처까지 흔들리는"
+        "추천값: 접근 −75 / 이탈 −85 dBm, 접근 1초 / 이탈 5초 / 신호 끊김 10초. 차에 1~2 m 다가가기 전에 열리도록 접근 기준을 앞당겼고, 차 옆에서도 신호가 −85 dBm 근처까지 흔들리는"
             + " 실제 기록을 반영했습니다. 휴대폰 위치와 주변 환경에 맞춰 조정하세요.",
         13,
         MUTED);

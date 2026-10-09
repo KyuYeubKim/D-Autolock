@@ -71,7 +71,7 @@ public final class BridgeService extends Service {
       worker = new Thread(this::serve, "vehicle-state-server");
       worker.start();
     }
-    return START_NOT_STICKY;
+    return START_STICKY; // Restarted by the system if the head unit kills it.
   }
 
   private void serve() {

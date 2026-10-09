@@ -58,7 +58,7 @@ final class Controller {
    * Recommended starting sensitivity (from real logs: standing by the car dips to about -85 dBm).
    * Only used when nothing was saved; existing users keep their own values.
    */
-  static final int DEFAULT_NEAR = -70, DEFAULT_FAR = -85;
+  static final int DEFAULT_NEAR = -75, DEFAULT_FAR = -85;
   static final int DEFAULT_NEAR_WAIT = 1, DEFAULT_FAR_WAIT = 5, DEFAULT_LOSS = 10;
   // Trip ownership is in memory only: an app restart mid-trip means no automatic Stop (safe side).
   static final long TRIP_MAX_MS = 12L * 60 * 60 * 1000;
@@ -66,6 +66,50 @@ final class Controller {
   private volatile boolean tripDriven;
   private final AtomicInteger stopTicket = new AtomicInteger();
   volatile long stopDueAt = -1;
+  /** Red "secure the car manually" alert text while the car was left unlocked or powered ON. */
+  volatile String securityAlert;
+  private volatile long securityAlertAt;
+  private volatile String securityAlertLast = "";
+  static final long SECURITY_RENOTIFY_MS = 5 * 60 * 1000;
+
+  void raiseSecurityAlert(String kind, String text) {
+    securityAlert = text;
+    long now = System.currentTimeMillis();
+    diagnostics.record("SECURITY_ALERT", "kind=" + kind);
+    if (!text.equals(securityAlertLast) || now - securityAlertAt >= SECURITY_RENOTIFY_MS) {
+      securityAlertAt = now;
+      securityAlertLast = text;
+      DoorNotifications.securityAlert(context, text);
+    }
+    changed();
+  }
+
+  void clearSecurityAlert(String reason) {
+    if (securityAlert == null) return;
+    securityAlert = null;
+    securityAlertLast = "";
+    diagnostics.record("SECURITY_ALERT_CLEAR", "reason=" + reason);
+    DoorNotifications.cancelSecurityAlert(context);
+    changed();
+  }
+
+  /** Automatic lock refused while the car stands still: tell the user to secure it manually. */
+  private void lockFailedAlert(String reason) {
+    VehicleSnapshot s = snapshot;
+    if (s == null
+        || !s.fresh(System.currentTimeMillis())
+        || s.speed == null
+        || s.speed != 0d) return; // Moving or unknown: the phone is most likely inside.
+    boolean on = Integer.valueOf(3).equals(s.power);
+    if (Boolean.TRUE.equals(s.locked) && !on) return;
+    raiseSecurityAlert(
+        "lock_failed",
+        (Boolean.TRUE.equals(s.locked) ? "도어는 잠겨 있지만 " : "도어가 자동으로 잠기지 않았습니다. ")
+            + (on ? "시동이 켜져 있습니다. " : "")
+            + "직접 잠그고 시동을 끄거나 아래 버튼을 누르세요. 사유: "
+            + reason);
+  }
+
   /** Consecutive automatic unlock checks refused because the car was powered ON or moving. */
   volatile int unlockInUseBlocks;
 
@@ -92,7 +136,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.3.7 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.3.8 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -556,6 +600,10 @@ final class Controller {
     snapshot = next;
     if (Integer.valueOf(3).equals(next.power) && next.fresh(System.currentTimeMillis()))
       powerOnSeenAt = System.currentTimeMillis();
+    if (securityAlert != null
+        && next.fresh(System.currentTimeMillis())
+        && Boolean.TRUE.equals(next.locked)
+        && Integer.valueOf(1).equals(next.power)) clearSecurityAlert("locked_and_off");
     if (announce
         && previous != null
         && next.fresh(System.currentTimeMillis())
@@ -657,14 +705,14 @@ final class Controller {
         || !valid.getAsBoolean()
         || cloud.backoffMillis() > 0
         || now < nextApproachRead
-        || unlockPreflight.available(ticket, target, now, System.currentTimeMillis())) return false;
+        || unlockPreflight.young(ticket, target, now, System.currentTimeMillis())) return false;
     long revision = unlockPreflight.revision();
     return run(
         () -> {
           if (!valid.getAsBoolean()) return;
-          nextApproachRead = SystemClock.elapsedRealtime() + 15000;
+          nextApproachRead = SystemClock.elapsedRealtime() + UnlockPreflightCache.REFRESH_AFTER_MS;
           long started = SystemClock.elapsedRealtime();
-          diagnostics.record("APPROACH_PREFETCH_START", "readOnly=true minIntervalMs=15000");
+          diagnostics.record("APPROACH_PREFETCH_START", "readOnly=true minIntervalMs=" + UnlockPreflightCache.REFRESH_AFTER_MS);
           try {
             requireVehicle();
             if (!valid.getAsBoolean()) return;
@@ -939,8 +987,10 @@ final class Controller {
                   departureConfirmed);
             if (stop && verified && Boolean.TRUE.equals(after.locked))
               closeWindowsAfterLock(() -> validSession(ticket, target));
-            if (command == CloudClient.Command.UNLOCK && verified && validSession(ticket, target))
+            if (command == CloudClient.Command.UNLOCK && verified && validSession(ticket, target)) {
               startTrip(automatic ? "auto_unlock" : "manual_unlock");
+              clearSecurityAlert("unlocked_by_this_phone");
+            }
             if (automatic
                 && command == CloudClient.Command.UNLOCK
                 && verified
@@ -954,6 +1004,8 @@ final class Controller {
             if (command == CloudClient.Command.STOP) stopStatus = "차량 종료 미완료 · " + e.getMessage();
             diagnostics.record(
                 "CONTROL_BLOCK_OR_ERROR", (automatic ? "AUTO " : "MANUAL ") + lastControl);
+            if (automatic && command == CloudClient.Command.LOCK)
+              lockFailedAlert(e.getMessage() == null ? "알 수 없음" : e.getMessage());
             if (!automatic || dispatched.get())
               DoorNotifications.result(context, command.label + " 미완료", lastControl);
             throw e;
@@ -1139,6 +1191,10 @@ final class Controller {
           "WINDOWS_SKIP", "alreadyLocked=" + alreadyLocked + " power=" + s.power + " cloudClosed=true");
     } else closeWindowsAfterLock(valid);
     if (schedule) scheduleStop(() -> valid.getAsBoolean() && departureConfirmed.getAsBoolean());
+    else if (automatic && s != null && Integer.valueOf(3).equals(s.power))
+      raiseSecurityAlert(
+          "locked_power_on",
+          "도어는 잠겼지만 시동이 켜져 있습니다. 직접 시동을 끄거나 ‘시동 끄고 잠금’을 누르세요. 사유: " + stopStatus);
   }
 
   // ---- Automatic Stop safety: P only, this phone's own trip, delayed re-check ----
@@ -1317,10 +1373,18 @@ final class Controller {
               && Integer.valueOf(1).equals(snapshot.power);
       stopStatus = verified ? "자동 종료 · 전원 OFF 확인" : "자동 종료 응답 수신 · 실제 전원 미확인";
       note(stopStatus);
+      if (!verified)
+        raiseSecurityAlert("stop_unverified", "시동 꺼짐을 확인하지 못했습니다. 차량을 확인하세요.");
       DoorNotifications.result(context, "도어 잠김 · " + stopStatus, "BYD에서 조회한 결과입니다");
     } catch (Exception e) {
       stopStatus = "자동 종료 보류 · " + e.getMessage();
       note(stopStatus);
+      VehicleSnapshot left = snapshot;
+      if (left != null && Integer.valueOf(3).equals(left.power))
+        raiseSecurityAlert(
+            "stop_blocked",
+            "도어는 잠겼지만 시동이 켜져 있습니다. 직접 시동을 끄거나 ‘시동 끄고 잠금’을 누르세요. 사유: "
+                + e.getMessage());
       diagnostics.record("AUTO_STOP_BLOCK_OR_ERROR", e.getMessage());
       DoorNotifications.result(context, "도어 잠김 · 자동 종료 미완료", e.getMessage());
     }

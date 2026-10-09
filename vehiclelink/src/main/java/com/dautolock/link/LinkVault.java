@@ -66,6 +66,11 @@ public final class LinkVault {
             StandardCharsets.UTF_8));
   }
 
+  /** Whether an encrypted pairing is stored, without decrypting it (cheap, safe at boot). */
+  public synchronized boolean exists() {
+    return !context.getSharedPreferences("vehicle_link_vault", 0).getString("data", "").isEmpty();
+  }
+
   public synchronized void clear() throws Exception {
     if (!context.getSharedPreferences("vehicle_link_vault", 0).edit().clear().commit())
       throw new Exception("연결키 삭제 실패");

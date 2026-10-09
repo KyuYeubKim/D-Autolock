@@ -274,7 +274,7 @@ public class CommandFlowTest {
     c.monitoring = c.autoEnabled = true;
     c.prefetchUnlock(() -> true, () -> {});
     complete(c);
-    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(6));
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(21));
     p.power = 3;
     c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
     complete(c);
@@ -348,7 +348,7 @@ public class CommandFlowTest {
         CloudClient.Command.UNLOCK,
         () -> {
           if (checks.incrementAndGet() == 3)
-            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(6));
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(21));
           return true;
         },
         () -> true,
@@ -595,6 +595,68 @@ public class CommandFlowTest {
     c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
     complete(c);
     assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
+  }
+
+  @Test
+  public void approachReadSixSecondsOldIsReusedSoUnlockIsSentImmediately() throws Exception {
+    // Real log 12:16: the approach read was 6 s old at the threshold and a 3 s fresh query ran.
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    assertTrue(c.prefetchUnlock(() -> true, () -> {}));
+    complete(c);
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(6));
+    assertFalse(c.prefetchUnlock(() -> true, () -> {})); // Still young: no extra read.
+    c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
+    complete(c);
+    assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
+    assertEquals(2, p.statusRequests); // Approach read + readback only.
+  }
+
+  @Test
+  public void approachReadIsRefreshedBeforeItExpires() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    assertTrue(c.prefetchUnlock(() -> true, () -> {}));
+    complete(c);
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(13));
+    assertTrue(c.prefetchUnlock(() -> true, () -> {}));
+    complete(c);
+    assertEquals(2, p.statusRequests);
+    assertTrue(p.commands.isEmpty());
+  }
+
+  @Test
+  public void lockRefusedWhileParkedRaisesRedAlertUntilLockedAndOff() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3; // Left ON, BLE silent, no departure evidence.
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, false);
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertNotNull(c.securityAlert);
+    assertTrue(c.securityAlert.contains("시동이 켜져"));
+    p.power = 1;
+    p.locked = true; // Secured manually.
+    c.refreshNow();
+    completeRead(c);
+    assertNull(c.securityAlert);
+  }
+
+  @Test
+  public void lockedButStillPoweredOnWithoutStopRaisesAlert() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    assertEquals(Collections.singletonList("LOCKDOOR"), p.commands);
+    assertTrue(c.securityAlert.startsWith("도어는 잠겼지만 시동이 켜져"));
   }
 
   @Test

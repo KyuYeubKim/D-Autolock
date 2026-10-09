@@ -228,7 +228,7 @@ public class MainActivityTest {
       SeekBar near = decor.findViewWithTag("near");
       near.setProgress(-40 + 92);
       assertTrue(preview.getText().toString().contains("기준 미충족"));
-      find(decor, "추천값 적용 · −70 / −85 dBm").performClick();
+      find(decor, "추천값 적용 · −75 / −85 dBm").performClick();
       assertTrue(preview.getText().toString().contains("해제 신호 기준 충족"));
       assertTrue(preview.getText().toString().contains("-59.6 dBm"));
       assertFalse(c.settings.contains("near"));
@@ -241,7 +241,7 @@ public class MainActivityTest {
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
       assertTrue(preview.getText().toString().contains("현재 평균 —"));
       d.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
-      assertEquals(-70, c.settings.getInt("near", 0));
+      assertEquals(-75, c.settings.getInt("near", 0));
       assertEquals(-85, c.settings.getInt("far", 0));
       assertEquals(1, c.settings.getInt("nearWaitSeconds", 0));
       assertEquals(5, c.settings.getInt("farWaitSeconds", 0));
@@ -274,7 +274,7 @@ public class MainActivityTest {
       ((SeekBar) decor.findViewWithTag("farWait")).setProgress(4);
       ((SeekBar) decor.findViewWithTag("lossWait")).setProgress(15); // 20 seconds.
       dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
-      assertEquals(-70, c.settings.getInt("near", 0));
+      assertEquals(-75, c.settings.getInt("near", 0));
       assertEquals(-85, c.settings.getInt("far", 0));
       assertEquals(1, c.settings.getInt("nearWaitSeconds", 0));
       assertEquals(4, c.settings.getInt("farWaitSeconds", 0));
@@ -605,6 +605,32 @@ public class MainActivityTest {
       assertNotEquals(
           0, login.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE);
       login.dismiss();
+    }
+  }
+
+  @Test
+  public void redSecurityBannerShowsWhileAlertIsActiveAndOffersFinish() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      View root = a.get().getWindow().getDecorView();
+      View banner = root.findViewWithTag("securityAlert");
+      assertEquals(View.GONE, banner.getVisibility());
+      c.securityAlert = "도어가 자동으로 잠기지 않았습니다.";
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertEquals(View.VISIBLE, banner.getVisibility());
+      ViewGroup parent = (ViewGroup) banner.getParent();
+      assertEquals(0, parent.indexOfChild(banner));
+      banner.performClick();
+      AlertDialog finish = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+      assertNotNull(finish);
+      finish.dismiss();
+      c.securityAlert = null;
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertEquals(View.GONE, banner.getVisibility());
     }
   }
 

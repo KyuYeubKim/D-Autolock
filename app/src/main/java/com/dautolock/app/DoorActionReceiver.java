@@ -14,6 +14,17 @@ public final class DoorActionReceiver extends BroadcastReceiver {
       controller.cancelPendingStop("알림에서 사용자 취소");
       return;
     }
+    if (DoorNotifications.FINISH.equals(action)) {
+      KeyguardManager guard = context.getSystemService(KeyguardManager.class);
+      if (controller.initializing || (guard != null && guard.isDeviceLocked())) {
+        DoorNotifications.result(context, "차량 제어 보류", "휴대폰 잠금을 해제한 뒤 다시 누르세요");
+        return;
+      }
+      // The tap is this request's explicit P/parking confirmation (one use, 30 s).
+      controller.diagnostics.record("NOTIFICATION_ACTION", "FINISH");
+      controller.departureFinish();
+      return;
+    }
     if (!DoorNotifications.UNLOCK.equals(action) && !DoorNotifications.LOCK.equals(action)) return;
     KeyguardManager keyguard = context.getSystemService(KeyguardManager.class);
     if (controller.initializing

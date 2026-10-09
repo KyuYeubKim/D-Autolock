@@ -107,6 +107,11 @@ final class VehicleLink {
   /** Which P evidence the last automatic Stop check used (diagnostics only). */
   volatile String lastStopBasis = "none";
 
+  /** Registered and currently receiving authenticated samples. */
+  synchronized boolean connected() {
+    return configured() && state.fresh(SystemClock.elapsedRealtime()) != null;
+  }
+
   synchronized String describe() {
     return status + "\n" + state.describe(SystemClock.elapsedRealtime());
   }

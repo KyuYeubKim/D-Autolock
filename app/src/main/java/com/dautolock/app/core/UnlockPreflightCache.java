@@ -1,8 +1,17 @@
 package com.dautolock.app.core;
 
-/** A short-lived, single-use observation for automatic unlock only. Never persisted. */
+/**
+ * A short-lived, single-use observation for automatic unlock only. Never persisted.
+ *
+ * <p>Real logs: the approach read often finished 6 s before the unlock threshold, so a 5 s limit
+ * forced a fresh 3 s query while the user stood at the door. A parked, locked, powered-OFF car does
+ * not change within ~20 s in a way that makes unlocking unsafe, and every other unlock check
+ * (signal, dwell, single-use, re-check at dispatch) still applies.
+ */
 public final class UnlockPreflightCache {
-  public static final long RECEIVED_MAX_MS = 5000, MEASURED_MAX_MS = 8000;
+  public static final long RECEIVED_MAX_MS = 20000, MEASURED_MAX_MS = 25000;
+  /** Start a new approach read once the stored one is this old, so it never quite expires. */
+  public static final long REFRESH_AFTER_MS = 12000;
 
   public static final class Entry {
     public final VehicleSnapshot state;
@@ -82,6 +91,12 @@ public final class UnlockPreflightCache {
         && this.session == session
         && this.vehicle.equals(vehicle)
         && entry.usable(elapsed, wall);
+  }
+
+  /** Available and still young enough that no refresh read is needed yet. */
+  public synchronized boolean young(int session, String vehicle, long elapsed, long wall) {
+    return available(session, vehicle, elapsed, wall)
+        && elapsed - entry.receivedElapsed < REFRESH_AFTER_MS;
   }
 
   public synchronized Entry take(int session, String vehicle, long elapsed, long wall) {

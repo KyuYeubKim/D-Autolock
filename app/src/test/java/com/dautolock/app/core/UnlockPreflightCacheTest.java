@@ -28,7 +28,7 @@ public class UnlockPreflightCacheTest {
   @Test
   public void oldMeasurementsCannotBeMadeFreshByReceivingThemNow() throws Exception {
     UnlockPreflightCache c = new UnlockPreflightCache();
-    for (long timestamp : new long[] {wall - 8001, wall + 1, 0})
+    for (long timestamp : new long[] {wall - 25001, wall + 1, 0})
       assertFalse(
           c.offer(
               c.revision(),
@@ -44,15 +44,15 @@ public class UnlockPreflightCacheTest {
     UnlockPreflightCache c = new UnlockPreflightCache();
     c.offer(c.revision(), 3, "car", new VehicleSnapshot(parked(), wall), 100, wall);
     UnlockPreflightCache.Entry e = c.take(3, "car", 100, wall);
-    assertTrue(e.usable(5100, wall + 5000));
-    assertFalse(e.usable(5101, wall + 5000)); // Wall clock stalled/backwards, elapsed time wins.
+    assertTrue(e.usable(20100, wall + 18000));
+    assertFalse(e.usable(20101, wall + 18000)); // Wall clock stalled/backwards, elapsed time wins.
     assertFalse(e.usable(99, wall));
     assertFalse(e.usable(100, wall - 1));
     c.offer(
         c.revision(),
         3,
         "car",
-        new VehicleSnapshot(parked().put("time", wall - 7000), wall),
+        new VehicleSnapshot(parked().put("time", wall - 24000), wall),
         100,
         wall);
     assertNull(c.take(3, "car", 1200, wall + 1100));

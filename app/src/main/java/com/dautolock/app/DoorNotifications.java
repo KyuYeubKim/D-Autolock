@@ -94,6 +94,48 @@ final class DoorNotifications {
     }
   }
 
+  static final String FINISH = "com.dautolock.app.FINISH";
+  static final int SECURITY_ID = 7;
+  static final int ALERT_RED = 0xFFE53935;
+
+  /**
+   * Red, high-priority alert when the car was left unlocked or powered ON. Its actions are explicit
+   * user commands (phone must be unlocked); nothing is sent automatically from here.
+   */
+  static void securityAlert(Context context, String detail) {
+    channels(context);
+    if (!enabled(context)) return;
+    NotificationManager manager = context.getSystemService(NotificationManager.class);
+    NotificationChannel channel =
+        new NotificationChannel("security_alerts", "차량 잠금·시동 경고", NotificationManager.IMPORTANCE_HIGH);
+    channel.enableVibration(true);
+    manager.createNotificationChannel(channel);
+    android.text.SpannableString title = new android.text.SpannableString("차량 확인 필요 · 수동으로 잠그고 시동을 끄세요");
+    title.setSpan(
+        new android.text.style.ForegroundColorSpan(ALERT_RED), 0, title.length(), 0);
+    try {
+      manager.notify(
+          SECURITY_ID,
+          new Notification.Builder(context, "security_alerts")
+              .setSmallIcon(R.drawable.ic_warning)
+              .setColor(ALERT_RED)
+              .setContentTitle(title)
+              .setContentText(detail)
+              .setStyle(new Notification.BigTextStyle().bigText(detail))
+              .setContentIntent(open(context))
+              .setCategory(Notification.CATEGORY_STATUS)
+              .setVisibility(Notification.VISIBILITY_PRIVATE)
+              .addAction(action(context, FINISH, "시동 끄고 잠금", 8))
+              .addAction(action(context, LOCK, "도어 잠금", 9))
+              .build());
+    } catch (SecurityException ignored) {
+    }
+  }
+
+  static void cancelSecurityAlert(Context context) {
+    context.getSystemService(NotificationManager.class).cancel(SECURITY_ID);
+  }
+
   static void cancelStopPending(Context context) {
     context.getSystemService(NotificationManager.class).cancel(STOP_PENDING_ID);
   }

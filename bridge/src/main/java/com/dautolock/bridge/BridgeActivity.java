@@ -15,7 +15,7 @@ import java.util.*;
 import org.json.JSONObject;
 
 public final class BridgeActivity extends Activity {
-  static final String VERSION = "0.2.8";
+  static final String VERSION = "0.2.9";
   private TextView status;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final Runnable tick =

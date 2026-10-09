@@ -92,7 +92,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.3.6 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.3.7 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -114,6 +114,7 @@ final class Controller {
           } catch (Exception e) {
             note("저장된 계정을 복원하지 못했습니다. 다시 로그인하세요");
           } finally {
+            restoreTrip();
             vehicleLink.restore();
             if (!settings.contains("setupRequired")) {
               boolean existing =
@@ -563,8 +564,10 @@ final class Controller {
         && next.locked != null
         && !previous.locked.equals(next.locked)) {
       diagnostics.record("DOOR_STATE_CHANGE", "locked=" + next.locked + " source=cloud");
-      // Unlocked by someone else (key, another phone/app): this phone no longer owns the trip.
-      if (!next.locked) endTrip("unlocked_elsewhere");
+      // A parked, powered-OFF car unlocked by someone else (key, another phone/app) is not this
+      // phone's trip any more. Unlocking from inside a powered car is just getting out (real log:
+      // that wrongly ended the trip right before the Stop).
+      if (!next.locked && Integer.valueOf(1).equals(next.power)) endTrip("unlocked_elsewhere");
       DoorNotifications.result(
           context, next.locked ? "도어 잠김 확인" : "도어 잠금 해제 확인", "BYD Cloud 조회에서 상태 변경을 확인했습니다");
     }
@@ -1124,9 +1127,16 @@ final class Controller {
     // Windows no longer wait for Stop: the delay or a cancellation must not leave them open.
     // A repeated automatic lock on an already locked car whose windows BYD reports closed does
     // not resend: BYD rejected those redundant requests (6042/6048) in real logs.
-    if (automatic && alreadyLocked && snapshot != null && Boolean.TRUE.equals(snapshot.windowsClosed)) {
-      windowsStatus = "창문 닫기 생략 · 이미 잠김 상태에서 BYD 조회상 모두 닫힘";
-      diagnostics.record("WINDOWS_SKIP", "alreadyLocked=true cloudClosed=true");
+    // Also skipped while the car is still ON with all windows reported closed: BYD rejected
+    // exactly that request with 6048 right after parking (real logs, 5 times).
+    VehicleSnapshot s = snapshot;
+    if (automatic
+        && s != null
+        && Boolean.TRUE.equals(s.windowsClosed)
+        && (alreadyLocked || Integer.valueOf(3).equals(s.power))) {
+      windowsStatus = "창문 닫기 생략 · BYD 조회상 모두 닫힘";
+      diagnostics.record(
+          "WINDOWS_SKIP", "alreadyLocked=" + alreadyLocked + " power=" + s.power + " cloudClosed=true");
     } else closeWindowsAfterLock(valid);
     if (schedule) scheduleStop(() -> valid.getAsBoolean() && departureConfirmed.getAsBoolean());
   }
@@ -1145,6 +1155,7 @@ final class Controller {
   void startTrip(String reason) {
     tripUnlockedAt = SystemClock.elapsedRealtime();
     tripDriven = false;
+    saveTrip();
     diagnostics.record("TRIP_START", "reason=" + reason);
   }
 
@@ -1152,7 +1163,28 @@ final class Controller {
     if (tripUnlockedAt < 0) return;
     tripUnlockedAt = -1;
     tripDriven = false;
+    saveTrip();
     diagnostics.record("TRIP_END", "reason=" + reason);
+  }
+
+  /** Survives app updates/restarts (real log: an update mid-trip lost ownership). Wall clock. */
+  private void saveTrip() {
+    long at = tripUnlockedAt;
+    settings
+        .edit()
+        .putLong(
+            "tripStartedWall",
+            at < 0 ? 0 : System.currentTimeMillis() - (SystemClock.elapsedRealtime() - at))
+        .putBoolean("tripDriven", at >= 0 && tripDriven)
+        .apply();
+  }
+
+  private void restoreTrip() {
+    long wall = settings.getLong("tripStartedWall", 0), age = System.currentTimeMillis() - wall;
+    if (wall <= 0 || age < 0 || age > TRIP_MAX_MS) return;
+    tripUnlockedAt = Math.max(0, SystemClock.elapsedRealtime() - age);
+    tripDriven = settings.getBoolean("tripDriven", false);
+    diagnostics.record("TRIP_RESTORE", "ageMs=" + age + " driven=" + tripDriven);
   }
 
   /** Null only when this phone opened the car and its own Bridge then saw the car leave P. */
@@ -1175,6 +1207,7 @@ final class Controller {
     vehicleActivityAt = SystemClock.elapsedRealtime();
     if (moving && tripUnlockedAt >= 0 && !tripDriven) {
       tripDriven = true;
+      saveTrip();
       diagnostics.record("TRIP_DRIVEN", "gear=" + s.gearLabel());
     }
     if (stopDueAt >= 0)
@@ -1272,7 +1305,8 @@ final class Controller {
               return false;
             }
             diagnostics.record(
-                "AUTO_STOP_SEND", "afterLock=true source=live_P ownTrip=true delayed=true");
+                "AUTO_STOP_SEND",
+                "afterLock=true source=" + vehicleLink.lastStopBasis + " ownTrip=true delayed=true");
             return true;
           });
       observeSnapshot(cloud.snapshot(vin), true);

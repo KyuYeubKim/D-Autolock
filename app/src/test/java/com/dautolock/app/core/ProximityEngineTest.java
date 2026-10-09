@@ -47,9 +47,21 @@ public class ProximityEngineTest {
     assertTrue(e.departureConfirmed(9000));
     assertTrue(e.claim(LOCK, 9000));
     assertTrue(e.departureConfirmed(9000));
-    assertFalse(e.departureConfirmed(15000));
+    // Leaving range right after a confirmed departure keeps it (phone walked away).
+    assertTrue(e.departureConfirmed(15000));
     feed(e, -50, 15000, 19000);
-    assertFalse(e.departureConfirmed(19000));
+    assertFalse(e.departureConfirmed(19000)); // The phone came back.
+  }
+
+  @Test
+  public void departureLatchExpiresAndSignalLossAloneNeverSetsIt() {
+    ProximityEngine e = new ProximityEngine(-60, -80, 0, 1000, 10000);
+    feed(e, -50, 0, 3000);
+    assertFalse(e.departureConfirmed(30000)); // Lost while near: not a departure.
+    feed(e, -100, 31000, 36000);
+    assertTrue(e.departureConfirmed(36000));
+    assertTrue(e.departureConfirmed(33000 + ProximityEngine.DEPARTURE_LATCH_MS)); // Set at 34 s.
+    assertFalse(e.departureConfirmed(36000 + ProximityEngine.DEPARTURE_LATCH_MS + 5000));
   }
 
   @Test

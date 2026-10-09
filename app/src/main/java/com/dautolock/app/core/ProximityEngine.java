@@ -25,6 +25,13 @@ public final class ProximityEngine {
   /** A stable zone was established at least once; survives the reset after a reception gap. */
   private boolean everStable;
   private Action lastAction = Action.NONE;
+  /**
+   * When a FAR departure was confirmed. It stays valid if the signal is then lost (a phone walking
+   * away goes out of range within seconds) and clears as soon as the phone is clearly back.
+   * Signal loss alone never sets it.
+   */
+  private long departedAt = -1;
+  public static final long DEPARTURE_LATCH_MS = 5 * 60 * 1000;
   private long unlockCheckUntil = -1;
   /**
    * Anti-flap: right after an automatic unlock a phone standing by the car often dips far for a
@@ -93,6 +100,13 @@ public final class ProximityEngine {
       everStable = true;
       if (next == Zone.NEAR) seenNear = true;
     }
+    if (seenNear
+        && candidate == Zone.FAR
+        && stable == Zone.FAR
+        && samples >= 4
+        && now - since >= dwell(now)) {
+      if (departedAt < 0) departedAt = now;
+    } else if (next == Zone.NEAR || smoothed > far + 4) departedAt = -1; // Clearly back.
     return pending(now);
   }
 
@@ -115,14 +129,22 @@ public final class ProximityEngine {
     return lastSample >= 0 && now >= lastSample && now - lastSample <= STALE_MS;
   }
 
-  /** Still valid after claiming a lock; loss alone and a returning phone do not qualify. */
+  /**
+   * Still valid after claiming a lock. Loss alone never qualifies; loss right after a confirmed FAR
+   * departure does (real log: the phone left range during the 6 s lock command and the departure
+   * evidence expired before the Stop check). A returning phone clears it.
+   */
   public synchronized boolean departureConfirmed(long now) {
-    return fresh(now)
+    if (fresh(now)
         && seenNear
         && candidate == Zone.FAR
         && stable == Zone.FAR
         && samples >= 4
-        && now - since >= dwell(now);
+        && now - since >= dwell(now)) return true;
+    return departedAt >= 0
+        && now >= departedAt
+        && now - departedAt <= DEPARTURE_LATCH_MS
+        && (!fresh(now) || candidate == Zone.FAR);
   }
 
   public synchronized long cooldown(long now) {

@@ -3,8 +3,13 @@ package com.dautolock.link;
 /** Only authenticated, prompt responses enter this cache. All clocks are phone monotonic time. */
 public final class LinkState {
   public static final long MAX_AGE_MS = 3000, MAX_ROUND_TRIP_MS = 2000, STABLE_P_MS = 2000;
-  private LinkProtocol.Sample sample;
-  private long sampled = -1, pSince = -1;
+  /**
+   * The Bluetooth link always drops once the phone walks away, so an automatic Stop after leaving
+   * can only rely on P confirmed up to that moment. Kept briefly, cleared by any new sample.
+   */
+  public static final long PARKED_AT_LOSS_MS = 60000;
+  private LinkProtocol.Sample sample, lastParked;
+  private long sampled = -1, pSince = -1, lostParkedAt = -1;
   private int pCount;
 
   public synchronized void clear() {
@@ -12,6 +17,33 @@ public final class LinkState {
     sampled = -1;
     pSince = -1;
     pCount = 0;
+    lostParkedAt = -1;
+    lastParked = null;
+  }
+
+  /** Link lost (not a user stop): remember whether a stable, fresh P was in force at that moment. */
+  public synchronized void lost(long now) {
+    if (sample == null) return; // Already handled: keep the recorded at-loss P.
+    // Judge stability as of the last sample: loss is only detected after the read deadline.
+    long at = sampled;
+    boolean parked = at >= 0 && now >= at && now - at <= 2 * MAX_AGE_MS && block(at) == null;
+    LinkProtocol.Sample last = sample;
+    clear();
+    if (parked) {
+      lostParkedAt = at;
+      lastParked = last;
+    }
+  }
+
+  /** Stable P was confirmed when the link dropped, within the last 60 s, and nothing came since. */
+  public synchronized LinkProtocol.Sample parkedAtLoss(long now) {
+    return lastParked != null
+            && sample == null
+            && lostParkedAt >= 0
+            && now >= lostParkedAt
+            && now - lostParkedAt <= PARKED_AT_LOSS_MS
+        ? lastParked
+        : null;
   }
 
   public synchronized boolean accept(LinkProtocol.Sample next, long requested, long now) {
@@ -21,6 +53,8 @@ public final class LinkState {
     }
     boolean uninterrupted =
         sampled >= 0 && requested >= sampled && requested - sampled <= MAX_AGE_MS;
+    lostParkedAt = -1; // Live data again: the at-loss P no longer applies.
+    lastParked = null;
     sample = next;
     sampled = requested; // Age includes transit and getter time, never just receive time.
     if (next.gear == LinkProtocol.P && next.quality == 0 && next.brake != 0) {

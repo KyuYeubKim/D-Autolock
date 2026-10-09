@@ -69,6 +69,36 @@ public class LinkStateTest {
   }
 
   @Test
+  public void stablePAtLinkLossIsKeptBrieflyAndOnlyWithoutNewerData() {
+    LinkState s = parked();
+    s.lost(4800); // Loss detected after the read deadline; P was stable at the last sample.
+    assertNull(s.fresh(4800));
+    assertNotNull(s.block(4800));
+    assertNotNull(s.parkedAtLoss(4800));
+    s.lost(9000); // Repeated reconnect failures keep the recorded evidence.
+    assertNotNull(s.parkedAtLoss(2000 + LinkState.PARKED_AT_LOSS_MS));
+    assertNull(s.parkedAtLoss(2001 + LinkState.PARKED_AT_LOSS_MS));
+    s.accept(new LinkProtocol.Sample(3, -1, 4, 2, -1, 0), 10000, 10000);
+    assertNull(s.parkedAtLoss(10000)); // Any newer reading replaces it.
+  }
+
+  @Test
+  public void lossWithoutStablePRecordsNothingAndUserStopClears() {
+    LinkState unstable = new LinkState();
+    unstable.accept(p(), 0, 0);
+    unstable.lost(500);
+    assertNull(unstable.parkedAtLoss(500));
+    LinkState drive = parked();
+    drive.accept(new LinkProtocol.Sample(3, -1, 4, 2, -1, 0), 2500, 2500);
+    drive.lost(3000);
+    assertNull(drive.parkedAtLoss(3000));
+    LinkState stopped = parked();
+    stopped.lost(2500);
+    stopped.clear();
+    assertNull(stopped.parkedAtLoss(2500));
+  }
+
+  @Test
   public void sampleAgeIncludesTransitTime() {
     LinkState s = parked();
     s.accept(p(), 2500, 4000);

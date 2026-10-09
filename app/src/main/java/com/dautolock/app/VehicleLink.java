@@ -90,11 +90,22 @@ final class VehicleLink {
     if (!configured()) return "선택 차량의 보조 앱을 QR로 연결하세요";
     long now = SystemClock.elapsedRealtime();
     String block = state.block(now);
-    if (block != null) return block;
+    if (block != null) {
+      // The link drops whenever the phone walks away. Accept only a stable P that was in force
+      // when it dropped, within 60 s, with no newer data; never a stale or non-P reading.
+      LinkProtocol.Sample parked = state.fresh(now) == null ? state.parkedAtLoss(now) : null;
+      if (parked == null) return block;
+      lastStopBasis = "P_at_link_loss";
+      return snapshot.automaticStopBlock(System.currentTimeMillis(), true, parked.brake);
+    }
     LinkProtocol.Sample sample = state.fresh(now);
     if (sample == null) return "차량 P단 최신 수신 없음";
+    lastStopBasis = "live_P";
     return snapshot.automaticStopBlock(System.currentTimeMillis(), true, sample.brake);
   }
+
+  /** Which P evidence the last automatic Stop check used (diagnostics only). */
+  volatile String lastStopBasis = "none";
 
   synchronized String describe() {
     return status + "\n" + state.describe(SystemClock.elapsedRealtime());
@@ -192,7 +203,7 @@ final class VehicleLink {
       } catch (Exception e) {
         synchronized (this) {
           if (ticket != epoch) break;
-          state.clear();
+          state.lost(SystemClock.elapsedRealtime());
           status = "차량 보조 앱 미연결 · 전원·페어링·QR 확인 (" + e.getClass().getSimpleName() + ")";
           controller.diagnostics.record(
               "VEHICLE_LINK_DISCONNECTED", "reason=" + e.getClass().getSimpleName());
@@ -203,7 +214,7 @@ final class VehicleLink {
         synchronized (this) {
           if (ticket == epoch) {
             socket = null;
-            state.clear();
+            state.lost(SystemClock.elapsedRealtime());
           }
         }
       }

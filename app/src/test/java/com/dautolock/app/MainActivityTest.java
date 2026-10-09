@@ -635,6 +635,34 @@ public class MainActivityTest {
   }
 
   @Test
+  public void boardingClimateAutoOffEnablesAfterConfirmAndStaysOffOnCancel() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      View root = a.get().getWindow().getDecorView();
+      Switch toggle = (Switch) root.findViewWithTag("climateAutoOff");
+      assertFalse(toggle.isChecked());
+      // Cancel: stays off, setting unchanged.
+      toggle.setChecked(true);
+      AlertDialog d1 = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+      d1.getButton(DialogInterface.BUTTON_NEGATIVE).performClick();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertFalse(toggle.isChecked());
+      assertFalse(c.settings.getBoolean("climateAutoOff", false));
+      // Confirm: turns on and persists.
+      toggle.setChecked(true);
+      AlertDialog d2 = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+      d2.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertTrue(toggle.isChecked());
+      assertTrue(c.settings.getBoolean("climateAutoOff", false));
+      toggle.setChecked(false);
+      assertFalse(c.settings.getBoolean("climateAutoOff", true));
+    }
+  }
+
+  @Test
   public void manualDoorTapDoesNotShowConfirmation() {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {

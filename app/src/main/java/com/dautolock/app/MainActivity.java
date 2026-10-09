@@ -348,26 +348,32 @@ public final class MainActivity extends Activity {
             controller.note("탑승 공조 자동 끄기 꺼짐");
             return;
           }
-          updating = true;
-          climateOffSwitch.setChecked(false);
-          updating = false;
-          new AlertDialog.Builder(this)
-              .setTitle("탑승 공조 자동 끄기")
-              .setMessage(
-                  "탑승 시 공조 시작은 차량 전원을 켜는 용도입니다. 시작 후 "
-                      + controller.climateOffSeconds()
-                      + "초 뒤 공조를 한 번 끕니다(수동 '시동 켜기'·'출차 준비'에는 적용되지 않음).\n\n"
-                      + "주의: 너무 빨리 끄면 차량 전원도 함께 꺼질 수 있습니다(과거 2초에서 관찰). 5초 이상에서는 전원이"
-                      + " 유지된 기록이 있으나 실차에서 직접 확인하세요.")
-              .setNegativeButton("취소", null)
-              .setPositiveButton(
-                  "켜기",
-                  (d, w) -> {
-                    controller.settings.edit().putBoolean("climateAutoOff", true).apply();
-                    controller.note("탑승 공조 자동 끄기 켜짐 · " + controller.climateOffSeconds() + "초 뒤 OFF");
-                    update();
-                  })
-              .show();
+          AlertDialog confirm =
+              new AlertDialog.Builder(this)
+                  .setTitle("탑승 공조 자동 끄기")
+                  .setMessage(
+                      "탑승 시 공조 시작은 차량 전원을 켜는 용도입니다. 시작 후 "
+                          + controller.climateOffSeconds()
+                          + "초 뒤 공조를 한 번 끕니다(수동 '시동 켜기'·'출차 준비'에는 적용되지 않음).\n\n"
+                          + "주의: 너무 빨리 끄면 차량 전원도 함께 꺼질 수 있습니다(과거 2초에서 관찰). 5초 이상에서는 전원이"
+                          + " 유지된 기록이 있으나 실차에서 직접 확인하세요.")
+                  .setNegativeButton("취소", null)
+                  .setPositiveButton(
+                      "켜기",
+                      (d, w) -> {
+                        controller.settings.edit().putBoolean("climateAutoOff", true).apply();
+                        controller.note(
+                            "탑승 공조 자동 끄기 켜짐 · " + controller.climateOffSeconds() + "초 뒤 OFF");
+                      })
+                  // Sync the switch to the saved value whether confirmed, cancelled or dismissed.
+                  .setOnDismissListener(
+                      d -> {
+                        updating = true;
+                        climateOffSwitch.setChecked(
+                            controller.settings.getBoolean("climateAutoOff", false));
+                        updating = false;
+                      })
+                  .show();
         });
     button(options, "탑승 공조 자동 끄기 시간", v -> climateOffDelayDialog());
     Switch windowsSwitch = new Switch(this);
@@ -542,7 +548,7 @@ public final class MainActivity extends Activity {
     }
     button(settingsBody, "처음 설정 안내", v -> showSetup());
     button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    text(settingsBody, "D-Autolock 0.3.11 · 비공식 개인용 앱", 12, MUTED);
+    text(settingsBody, "D-Autolock 0.3.12 · 비공식 개인용 앱", 12, MUTED);
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
     button(setupBanner, "처음 설정 이어하기", v -> showSetup());

@@ -15,7 +15,7 @@ import java.util.*;
 import org.json.JSONObject;
 
 public final class BridgeActivity extends Activity {
-  static final String VERSION = "0.2.9";
+  static final String VERSION = "0.3.0";
   private TextView status;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final Runnable tick =
@@ -137,25 +137,20 @@ public final class BridgeActivity extends Activity {
   }
 
   /**
-   * DiLink may have no document picker (ACTION_CREATE_DOCUMENT crashed with no handler). Try it,
-   * then fall back to Downloads (Android 10+) or the app's own folder, and always show the text.
+   * The DiLink document picker (ACTION_CREATE_DOCUMENT) crashed the app on this head unit, so it is
+   * not used at all. Save straight to Downloads (Android 10+) or the app folder and show the text;
+   * every step is guarded so the button can never crash.
    */
   private void saveDiagnostics() {
-    Intent pick =
-        new Intent(Intent.ACTION_CREATE_DOCUMENT)
-            .addCategory(Intent.CATEGORY_OPENABLE)
-            .setType("text/plain")
-            .putExtra(Intent.EXTRA_TITLE, DIAGNOSTIC_NAME);
+    String report, where;
     try {
-      startActivityForResult(pick, 51);
-      return;
-    } catch (ActivityNotFoundException | SecurityException ignored) {
-      // No document picker on this head unit: use the fallback below.
+      report = report();
+    } catch (Throwable e) {
+      report = "진단 내용 생성 실패: " + e.getClass().getSimpleName();
     }
-    String report = report(), where;
     try {
       where = saveFallback(report);
-    } catch (Exception e) {
+    } catch (Throwable e) {
       where = "파일 저장 실패 (" + e.getClass().getSimpleName() + ") · 아래 내용을 촬영해 주세요";
     }
     showReport(where, report);
@@ -188,17 +183,21 @@ public final class BridgeActivity extends Activity {
 
   private void showReport(String where, String report) {
     if (isFinishing() || isDestroyed()) return;
-    TextView text = new TextView(this);
-    text.setText(where + "\n\n" + report);
-    text.setTextIsSelectable(true);
-    text.setPadding(32, 16, 32, 16);
-    ScrollView scroll = new ScrollView(this);
-    scroll.addView(text);
-    new AlertDialog.Builder(this)
-        .setTitle("차량 진단")
-        .setView(scroll)
-        .setPositiveButton("닫기", null)
-        .show();
+    try {
+      TextView text = new TextView(this);
+      text.setText(where + "\n\n" + report);
+      text.setTextIsSelectable(true);
+      text.setPadding(32, 16, 32, 16);
+      ScrollView scroll = new ScrollView(this);
+      scroll.addView(text);
+      new AlertDialog.Builder(this)
+          .setTitle("차량 진단")
+          .setView(scroll)
+          .setPositiveButton("닫기", null)
+          .show();
+    } catch (Throwable e) {
+      Toast.makeText(this, "진단: " + where, Toast.LENGTH_LONG).show();
+    }
   }
 
   private void start() {
@@ -296,18 +295,4 @@ public final class BridgeActivity extends Activity {
     super.onDestroy();
   }
 
-  @Override
-  protected void onActivityResult(int request, int result, Intent data) {
-    super.onActivityResult(request, result, data);
-    if (request == 51 && result == RESULT_OK && data != null && data.getData() != null) {
-      String report = report();
-      try (java.io.OutputStream out = getContentResolver().openOutputStream(data.getData(), "wt")) {
-        if (out == null) throw new java.io.IOException();
-        out.write(report.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        Toast.makeText(this, "차량 진단 저장 완료", Toast.LENGTH_SHORT).show();
-      } catch (Exception e) {
-        showReport("진단 파일 저장 실패 · 아래 내용을 촬영해 주세요", report);
-      }
-    }
-  }
 }

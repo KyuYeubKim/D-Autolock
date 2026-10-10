@@ -718,8 +718,7 @@ public class CommandFlowTest {
       complete(c);
     }
     assertTrue(p.commands.isEmpty());
-    assertNull(c.securityAlert);
-    assertTrue(c.lockInUseBlocks >= 1); // Backed off instead of hammering/alerting.
+    assertNull(c.securityAlert); // No false "secure the car" alarm while sitting in a running car.
   }
 
   @Test

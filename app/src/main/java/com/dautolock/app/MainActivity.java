@@ -19,6 +19,7 @@ import com.dautolock.app.api.CloudClient;
 import com.dautolock.app.core.ActivityFeed;
 import com.dautolock.app.core.DashboardStatus;
 import com.dautolock.app.core.LogDisplay;
+import com.dautolock.app.core.ProximityEngine;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import org.json.*;
@@ -548,7 +549,7 @@ public final class MainActivity extends Activity {
     }
     button(settingsBody, "처음 설정 안내", v -> showSetup());
     button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    text(settingsBody, "D-Autolock 0.3.14 · 비공식 개인용 앱", 12, MUTED);
+    text(settingsBody, "D-Autolock 0.3.15 · 비공식 개인용 앱", 12, MUTED);
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
     button(setupBanner, "처음 설정 이어하기", v -> showSetup());
@@ -1716,7 +1717,7 @@ public final class MainActivity extends Activity {
         MUTED);
     TextView preview = text(f, "", 15, MINT);
     preview.setTag("thresholdPreview");
-    text(f, "아래 값은 저장 전 미리보기입니다. 관찰 중이면 현재 평균 신호와 비교합니다. 접근·이탈 기준은 8 dBm 이상 간격을 유지합니다.", 13, MUTED);
+    text(f, "아래 값은 저장 전 미리보기입니다. 관찰 중이면 현재 평균 신호와 비교합니다. 접근·이탈 기준은 5 dBm 이상 간격을 유지합니다.", 13, MUTED);
     SeekBar[] sensitivity = new SeekBar[2];
     sensitivity[0] =
         settingSlider(
@@ -1729,8 +1730,9 @@ public final class MainActivity extends Activity {
             " dBm 이상",
             "멀리서도 해제 ← → 가까워야 해제",
             value -> {
-              if (sensitivity[1] != null && value < sensitivity[1].getProgress() - 100 + 8)
-                sensitivity[1].setProgress(value - 8 + 100);
+              if (sensitivity[1] != null
+                  && value < sensitivity[1].getProgress() - 100 + ProximityEngine.MIN_GAP_DB)
+                sensitivity[1].setProgress(value - ProximityEngine.MIN_GAP_DB + 100);
               if (thresholdPreview != null) thresholdPreview.run();
             });
     sensitivity[1] =
@@ -1744,8 +1746,8 @@ public final class MainActivity extends Activity {
             " dBm 이하",
             "더 멀어져야 잠금 ← → 가까운 곳부터 잠금",
             value -> {
-              if (value > sensitivity[0].getProgress() - 92 - 8)
-                sensitivity[0].setProgress(value + 8 + 92);
+              if (value > sensitivity[0].getProgress() - 92 - ProximityEngine.MIN_GAP_DB)
+                sensitivity[0].setProgress(value + ProximityEngine.MIN_GAP_DB + 92);
               if (thresholdPreview != null) thresholdPreview.run();
             });
     SeekBar nearWait =
@@ -1789,10 +1791,10 @@ public final class MainActivity extends Activity {
           farWait.setProgress(Controller.DEFAULT_FAR_WAIT);
           lossWait.setProgress(Controller.DEFAULT_LOSS - 5);
         };
-    button(f, "추천값 적용 · −75 / −85 dBm", v -> recommended.run());
+    button(f, "추천값 적용 · −75 / −80 dBm", v -> recommended.run());
     text(
         f,
-        "추천값: 접근 −75 / 이탈 −85 dBm, 접근 1초 / 이탈 5초 / 신호 끊김 10초. 차에 1~2 m 다가가기 전에 열리도록 접근 기준을 앞당겼고, 차 옆에서도 신호가 −85 dBm 근처까지 흔들리는"
+        "추천값: 접근 −75 / 이탈 −80 dBm, 접근 1초 / 이탈 5초 / 신호 끊김 10초. 접근 기준은 1~2 m, 이탈 기준은 더 가까이서 잠기도록 −80으로 올렸습니다. 차 옆에서도 신호가 −80 dBm 근처까지 흔들리는"
             + " 실제 기록을 반영했습니다. 휴대폰 위치와 주변 환경에 맞춰 조정하세요.",
         13,
         MUTED);

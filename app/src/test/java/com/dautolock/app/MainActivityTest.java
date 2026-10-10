@@ -228,7 +228,7 @@ public class MainActivityTest {
       SeekBar near = decor.findViewWithTag("near");
       near.setProgress(-40 + 92);
       assertTrue(preview.getText().toString().contains("기준 미충족"));
-      find(decor, "추천값 적용 · −75 / −85 dBm").performClick();
+      find(decor, "추천값 적용 · −75 / −80 dBm").performClick();
       assertTrue(preview.getText().toString().contains("해제 신호 기준 충족"));
       assertTrue(preview.getText().toString().contains("-59.6 dBm"));
       assertFalse(c.settings.contains("near"));
@@ -242,7 +242,7 @@ public class MainActivityTest {
       assertTrue(preview.getText().toString().contains("현재 평균 —"));
       d.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
       assertEquals(-75, c.settings.getInt("near", 0));
-      assertEquals(-85, c.settings.getInt("far", 0));
+      assertEquals(-80, c.settings.getInt("far", 0));
       assertEquals(1, c.settings.getInt("nearWaitSeconds", 0));
       assertEquals(5, c.settings.getInt("farWaitSeconds", 0));
       assertEquals(10, c.settings.getInt("lossLockSeconds", 0));
@@ -265,17 +265,17 @@ public class MainActivityTest {
       fields(decor, inputs);
       assertTrue(inputs.isEmpty());
       SeekBar near = decor.findViewWithTag("near"), far = decor.findViewWithTag("far");
-      near.setProgress(0); // -92; far is pushed to -100 to maintain separation.
-      assertEquals(0, far.getProgress());
-      far.setProgress(62); // -38; near moves to -30.
-      assertEquals(62, near.getProgress());
+      near.setProgress(0); // -92; far is pushed to -97 (5 dB gap).
+      assertEquals(3, far.getProgress());
+      far.setProgress(62); // -38; near moves to -33 (5 dB gap).
+      assertEquals(59, near.getProgress());
       dialog.getButton(DialogInterface.BUTTON_NEUTRAL).performClick();
       ((SeekBar) decor.findViewWithTag("nearWait")).setProgress(1);
       ((SeekBar) decor.findViewWithTag("farWait")).setProgress(4);
       ((SeekBar) decor.findViewWithTag("lossWait")).setProgress(15); // 20 seconds.
       dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
       assertEquals(-75, c.settings.getInt("near", 0));
-      assertEquals(-85, c.settings.getInt("far", 0));
+      assertEquals(-80, c.settings.getInt("far", 0));
       assertEquals(1, c.settings.getInt("nearWaitSeconds", 0));
       assertEquals(4, c.settings.getInt("farWaitSeconds", 0));
       assertEquals(20, c.settings.getInt("lossLockSeconds", 0));

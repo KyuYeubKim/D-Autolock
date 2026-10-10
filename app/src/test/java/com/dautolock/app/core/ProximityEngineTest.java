@@ -334,6 +334,11 @@ public class ProximityEngineTest {
 
   @Test(expected = IllegalArgumentException.class)
   public void thresholdsNeedHysteresis() {
-    new ProximityEngine(-70, -75);
+    new ProximityEngine(-70, -73); // Gap below MIN_GAP_DB (5) is rejected.
+  }
+
+  @Test
+  public void fiveDbGapIsAllowedForEarlierLocking() {
+    new ProximityEngine(-75, -80); // near/far 5 dB apart: valid, locks closer.
   }
 }

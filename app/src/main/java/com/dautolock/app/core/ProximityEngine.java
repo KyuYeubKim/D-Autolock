@@ -53,8 +53,15 @@ public final class ProximityEngine {
     this(near, far, 3000, 8000, LOSS_LOCK_MS);
   }
 
+  /**
+   * Minimum approach/leave gap. Lowered from 8 to 5 dB so the lock threshold can sit closer (e.g.
+   * near −75 / far −80) for earlier locking; the anti-flap dwell windows above guard against the
+   * flapping a small gap would otherwise cause.
+   */
+  public static final int MIN_GAP_DB = 5;
+
   public ProximityEngine(int near, int far, long nearDwellMs, long farDwellMs, long lossLockMs) {
-    if (near > -30 || far < -100 || near - far < 8)
+    if (near > -30 || far < -100 || near - far < MIN_GAP_DB)
       throw new IllegalArgumentException("거리 기준을 확인하세요");
     if (nearDwellMs < 0
         || nearDwellMs > 15000

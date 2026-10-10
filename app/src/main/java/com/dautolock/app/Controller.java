@@ -58,7 +58,7 @@ final class Controller {
    * Recommended starting sensitivity (from real logs: standing by the car dips to about -85 dBm).
    * Only used when nothing was saved; existing users keep their own values.
    */
-  static final int DEFAULT_NEAR = -75, DEFAULT_FAR = -85;
+  static final int DEFAULT_NEAR = -75, DEFAULT_FAR = -80;
   static final int DEFAULT_NEAR_WAIT = 1, DEFAULT_FAR_WAIT = 5, DEFAULT_LOSS = 10;
   // Trip ownership is in memory only: an app restart mid-trip means no automatic Stop (safe side).
   static final long TRIP_MAX_MS = 12L * 60 * 60 * 1000;
@@ -119,12 +119,16 @@ final class Controller {
             + reason);
   }
 
-  /** Consecutive automatic checks refused because the car was powered ON or moving (phone inside). */
-  volatile int unlockInUseBlocks, lockInUseBlocks;
+  /** Consecutive automatic UNLOCK checks refused because the car was powered ON or moving. */
+  volatile int unlockInUseBlocks;
 
-  /** Re-check delay after an unretired automatic action: 15 s, or backoff up to 5 min in use. */
+  /**
+   * Re-check delay after an unretired automatic UNLOCK: 15 s, or backoff up to 5 min while the car
+   * is in use. LOCK is never backed off — a departure lock must fire promptly (a lock backoff once
+   * delayed a real departure lock by up to 2 min).
+   */
   long automaticRecheckMs(boolean unlock) {
-    int blocks = unlock ? unlockInUseBlocks : lockInUseBlocks;
+    int blocks = unlock ? unlockInUseBlocks : 0;
     if (blocks <= 0) return 15000;
     return Math.min(300000, 30000L << Math.min(4, blocks - 1));
   }
@@ -145,7 +149,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.3.14 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.3.15 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -870,16 +874,16 @@ final class Controller {
                     automatic,
                     departureConfirmed.getAsBoolean(),
                     parkingConfirmationCurrent(parkingConfirmedAt));
-            // Automatic door control blocked because the car is powered or moving (phone most likely
-            // inside): the service backs off so it does not retry — and alarm — every ~18 s.
-            boolean inUse =
-                block != null
-                    && (Integer.valueOf(3).equals(checked.power)
-                        || (checked.speed != null && checked.speed > 0));
+            // Automatic unlock blocked because the car is powered or moving (phone most likely
+            // inside): the service backs off so it does not retry every ~18 s. LOCK is not backed
+            // off — a real departure must lock promptly.
             if (automatic && command == CloudClient.Command.UNLOCK)
-              unlockInUseBlocks = inUse ? unlockInUseBlocks + 1 : 0;
-            if (automatic && command == CloudClient.Command.LOCK)
-              lockInUseBlocks = inUse ? lockInUseBlocks + 1 : 0;
+              unlockInUseBlocks =
+                  block != null
+                          && (Integer.valueOf(3).equals(checked.power)
+                              || (checked.speed != null && checked.speed > 0))
+                      ? unlockInUseBlocks + 1
+                      : 0;
             if (block != null) throw new Exception("제어 보류: " + block);
             if ((stop && Integer.valueOf(1).equals(snapshot.power))
                 || (!stop && Boolean.valueOf(lock).equals(snapshot.locked))) {

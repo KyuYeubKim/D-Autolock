@@ -8,9 +8,13 @@ android {
     defaultConfig {
         applicationId 'com.dautolock.bridge'
         minSdk 26
-        targetSdk 34
-        versionCode 5
-        versionName '0.3.1'
+        // Target 30 (not 34) so the head unit can auto-start the foreground service after a reboot:
+        // apps targeting 31+ are blocked from starting a foreground service from the background, and
+        // 34 further restricts which FGS types may start from BOOT_COMPLETED. The reference LinkLock
+        // relay app uses the same low-targetSdk workaround.
+        targetSdk 30
+        versionCode 6
+        versionName '0.3.2'
     }
     signingConfigs {
         localRelease {
@@ -28,6 +32,9 @@ android {
         targetCompatibility JavaVersion.VERSION_11
     }
     testOptions { unitTests.returnDefaultValues = false; unitTests.includeAndroidResources = true }
+    // Sideloaded head-unit app (not on Play), intentionally targetSdk 30 so it can auto-start a
+    // foreground service after a reboot. The Play-only "target API too old" check does not apply.
+    lint { abortOnError true; disable 'ExpiredTargetSdkVersion' }
 }
 dependencies {
     implementation project(':vehiclelink')

@@ -17,7 +17,11 @@ public final class BridgeBootReceiver extends BroadcastReceiver {
   public void onReceive(Context context, Intent intent) {
     String action = intent == null ? null : intent.getAction();
     if (action == null) return;
-    String tag = action.substring(action.lastIndexOf('.') + 1);
+    start(context, action.substring(action.lastIndexOf('.') + 1));
+  }
+
+  /** Ensure the vehicle-state server is running; called from boot broadcasts and the job watchdog. */
+  static void start(Context context, String tag) {
     if (Build.VERSION.SDK_INT >= 31
         && context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
             != PackageManager.PERMISSION_GRANTED) {
@@ -30,14 +34,14 @@ public final class BridgeBootReceiver extends BroadcastReceiver {
     }
     try {
       context.startForegroundService(
-          new Intent(context, BridgeService.class).putExtra("reason", action));
+          new Intent(context, BridgeService.class).putExtra("reason", tag));
       BootLog.add(context, tag + " · startForegroundService 호출함");
     } catch (Throwable e) {
       // Android 12+ can block a background FGS start; record the exact reason for the diagnostic.
       BootLog.add(context, tag + " · 자동시작 실패: " + e.getClass().getSimpleName());
       BridgeService.status = "자동 시작 차단됨 (" + e.getClass().getSimpleName() + ") · 앱을 한 번 여세요";
       try {
-        context.startService(new Intent(context, BridgeService.class).putExtra("reason", action));
+        context.startService(new Intent(context, BridgeService.class).putExtra("reason", tag));
         BootLog.add(context, tag + " · startService 재시도함");
       } catch (Throwable ignored) {
       }

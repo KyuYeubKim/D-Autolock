@@ -110,6 +110,15 @@ final class Controller {
         || s.speed == null
         || s.speed != 0d) return; // Moving or unknown: the phone is most likely inside.
     boolean on = Integer.valueOf(3).equals(s.power);
+    // A door is actually open after the user left: lock is held. Warn clearly so nothing/no one is
+    // left in an open, unlocked car (child/luggage). Only on a confirmed departure.
+    if (Boolean.FALSE.equals(s.doorsClosed)) {
+      raiseSecurityAlert(
+          "door_open",
+          "차량 문이 열려 있어 자동으로 잠그지 못했습니다. 문을 닫고 직접 잠그세요."
+              + (on ? " 시동도 켜져 있습니다." : ""));
+      return;
+    }
     if (Boolean.TRUE.equals(s.locked) && !on) return;
     raiseSecurityAlert(
         "lock_failed",
@@ -149,7 +158,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.3.15 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.3.16 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {

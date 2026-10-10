@@ -15,7 +15,7 @@ import java.util.*;
 import org.json.JSONObject;
 
 public final class BridgeActivity extends Activity {
-  static final String VERSION = "0.3.1";
+  static final String VERSION = "0.3.2";
   private TextView status;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final Runnable tick =
@@ -231,6 +231,7 @@ public final class BridgeActivity extends Activity {
       JSONObject saved = vault.read();
       if (!saved.has("qr")) vault.save(new JSONObject().put("qr", Pairing.create().qr()));
       startForegroundService(new Intent(this, BridgeService.class));
+      BridgeJobService.schedule(this); // Keep the service alive across head-unit standby/force-stop.
     } catch (Exception e) {
       error("연결 시작 실패 · " + e.getClass().getSimpleName());
     }

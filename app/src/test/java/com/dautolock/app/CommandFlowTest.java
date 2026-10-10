@@ -705,6 +705,24 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void openDoorAfterDepartureRaisesDoorOpenAlert() throws Exception {
+    Protocol p = new Protocol();
+    p.doorOpen = true; // A door is open, so the automatic lock is held.
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    assertFalse(p.commands.contains("LOCKDOOR"));
+    assertNotNull(c.securityAlert);
+    assertTrue(c.securityAlert.contains("문이 열려"));
+    p.doorOpen = false;
+    p.locked = true; // Door closed and secured.
+    c.refreshNow();
+    completeRead(c);
+    assertNull(c.securityAlert);
+  }
+
+  @Test
   public void signalLossNearRunningCarDoesNotRaiseRedAlert() throws Exception {
     // Real log 10-10: parked ON, BLE lost for minutes, loss-lock blocked every ~18 s. Departure is
     // NOT confirmed (phone likely inside), so this must not raise the "secure the car" alarm.

@@ -20,7 +20,7 @@ public class NotificationsUpdateTest {
     Notification notification = DoorNotifications.ongoing(context, true);
     assertEquals(3, notification.actions.length);
     assertEquals("열기", notification.actions[0].title);
-    assertEquals("닫기 · 잠금", notification.actions[1].title);
+    assertEquals("잠금", notification.actions[1].title);
     Intent intent = Shadows.shadowOf(notification.actions[0].actionIntent).getSavedIntent();
     assertEquals(DoorActionReceiver.class.getName(), intent.getComponent().getClassName());
     assertEquals(DoorNotifications.UNLOCK, intent.getAction());

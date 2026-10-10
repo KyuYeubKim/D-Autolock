@@ -639,7 +639,7 @@ final class Controller {
       // that wrongly ended the trip right before the Stop).
       if (!next.locked && Integer.valueOf(1).equals(next.power)) endTrip("unlocked_elsewhere");
       DoorNotifications.result(
-          context, next.locked ? "도어 잠김 확인" : "도어 잠금 해제 확인", "BYD Cloud 조회에서 상태 변경을 확인했습니다");
+          context, next.locked ? "도어 잠김 확인" : "도어 열림 확인", "BYD Cloud 조회에서 상태 변경을 확인했습니다");
     }
   }
 

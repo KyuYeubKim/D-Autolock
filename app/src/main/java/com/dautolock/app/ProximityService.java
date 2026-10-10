@@ -126,7 +126,9 @@ public final class ProximityService extends Service {
           if (notificationAutomatic != controller.autoEnabled) {
             notificationAutomatic = controller.autoEnabled;
             getSystemService(NotificationManager.class)
-                .notify(1, DoorNotifications.ongoing(ProximityService.this, notificationAutomatic));
+                .notify(
+                    DoorNotifications.ONGOING_ID,
+                    DoorNotifications.ongoing(ProximityService.this, notificationAutomatic));
           }
           boolean fresh = engine.fresh(now);
           controller.averageRssi = fresh ? engine.rssi() : Double.NaN;
@@ -376,10 +378,14 @@ public final class ProximityService extends Service {
     notificationAutomatic = automatic;
     try {
       if (Build.VERSION.SDK_INT >= 31)
-        startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        startForeground(
+            DoorNotifications.ONGOING_ID,
+            notification,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
       else if (Build.VERSION.SDK_INT >= 29)
-        startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
-      else startForeground(1, notification);
+        startForeground(
+            DoorNotifications.ONGOING_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
+      else startForeground(DoorNotifications.ONGOING_ID, notification);
       if (Build.VERSION.SDK_INT >= 31
           && (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
                   != PackageManager.PERMISSION_GRANTED

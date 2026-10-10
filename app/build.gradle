@@ -9,8 +9,8 @@ android {
         applicationId 'com.dautolock.app'
         minSdk 26
         targetSdk 34
-        versionCode 29
-        versionName '0.3.17'
+        versionCode 30
+        versionName '0.3.18'
     }
     signingConfigs {
         localRelease {

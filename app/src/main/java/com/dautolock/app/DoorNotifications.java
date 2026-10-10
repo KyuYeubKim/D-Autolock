@@ -9,6 +9,9 @@ import android.os.Build;
 final class DoorNotifications {
   static final String UNLOCK = "com.dautolock.app.UNLOCK", LOCK = "com.dautolock.app.LOCK";
   static final int RESULT_ID = 2;
+  // One shared ongoing notification id for every foreground service (proximity + vehicle link), so
+  // the user sees a single persistent notification instead of one per service.
+  static final int ONGOING_ID = 1;
 
   static void channels(Context context) {
     NotificationManager manager = context.getSystemService(NotificationManager.class);
@@ -51,15 +54,16 @@ final class DoorNotifications {
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
     return new Notification.Builder(context, "proximity")
         .setSmallIcon(R.drawable.ic_notification)
-        .setContentTitle("D-Autolock · " + (automatic ? "자동 도어 켜짐" : "거리 관찰 중"))
-        .setContentText("열기 / 잠금 · 상태를 확인한 뒤 실행합니다")
+        .setContentTitle("D-Autolock · " + (automatic ? "자동 열기·잠금 켜짐" : "거리 감지 중 · 자동 꺼짐"))
+        .setContentText(
+            automatic ? "가까이 가면 열고, 멀어지면 잠급니다" : "버튼으로 직접 열고 잠글 수 있습니다")
         .setContentIntent(open(context))
         .setOngoing(true)
         .setOnlyAlertOnce(true)
         .setVisibility(Notification.VISIBILITY_PRIVATE)
         .addAction(action(context, UNLOCK, "열기", 1))
-        .addAction(action(context, LOCK, "닫기 · 잠금", 2))
-        .addAction(new Notification.Action.Builder(null, "관찰 종료", stop).build())
+        .addAction(action(context, LOCK, "잠금", 2))
+        .addAction(new Notification.Action.Builder(null, "중지", stop).build())
         .build();
   }
 
@@ -83,12 +87,12 @@ final class DoorNotifications {
               STOP_PENDING_ID,
               new Notification.Builder(context, "door_events")
                   .setSmallIcon(R.drawable.ic_notification)
-                  .setContentTitle(seconds + "초 후 차량 전원 종료")
-                  .setContentText("차 안에 사람이 있으면 취소하세요. 종료 직전 P단·정차·잠금을 다시 확인합니다")
+                  .setContentTitle(seconds + "초 후 시동이 꺼집니다")
+                  .setContentText("차 안에 사람이 있으면 취소하세요. 끄기 직전 P단·정차·잠금을 다시 확인합니다")
                   .setContentIntent(open(context))
                   .setTimeoutAfter((seconds + 30) * 1000L)
                   .setVisibility(Notification.VISIBILITY_PUBLIC)
-                  .addAction(new Notification.Action.Builder(null, "종료 취소", cancel).build())
+                  .addAction(new Notification.Action.Builder(null, "취소", cancel).build())
                   .build());
     } catch (SecurityException ignored) {
     }
@@ -110,7 +114,7 @@ final class DoorNotifications {
         new NotificationChannel("security_alerts", "차량 잠금·시동 경고", NotificationManager.IMPORTANCE_HIGH);
     channel.enableVibration(true);
     manager.createNotificationChannel(channel);
-    android.text.SpannableString title = new android.text.SpannableString("차량 확인 필요 · 수동으로 잠그고 시동을 끄세요");
+    android.text.SpannableString title = new android.text.SpannableString("차량 확인 필요 · 직접 잠그고 시동을 끄세요");
     title.setSpan(
         new android.text.style.ForegroundColorSpan(ALERT_RED), 0, title.length(), 0);
     try {

@@ -2,6 +2,7 @@ package com.dautolock.app;
 
 import android.app.*;
 import android.content.*;
+import android.content.pm.ServiceInfo;
 import android.os.*;
 
 public final class VehicleLinkService extends Service {
@@ -10,24 +11,15 @@ public final class VehicleLinkService extends Service {
   public void onCreate() {
     super.onCreate();
     controller = ((DApplication) getApplication()).controller();
-    NotificationManager nm = getSystemService(NotificationManager.class);
-    nm.createNotificationChannel(
-        new NotificationChannel("vehicle_link", "차량 기어 연결", NotificationManager.IMPORTANCE_LOW));
-    PendingIntent open =
-        PendingIntent.getActivity(
-            this,
-            30,
-            new Intent(this, MainActivity.class),
-            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-    startForeground(
-        30,
-        new Notification.Builder(this, "vehicle_link")
-            .setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle("D-Autolock · 차량 상태 연결")
-            .setContentText("보조 앱에서 최신 기어를 확인합니다")
-            .setContentIntent(open)
-            .setOngoing(true)
-            .build());
+    // Share ProximityService's single ongoing notification (same id + channel) so the user never
+    // sees a second persistent notification when both services run.
+    Notification notification = DoorNotifications.ongoing(this, controller.autoEnabled);
+    if (Build.VERSION.SDK_INT >= 29)
+      startForeground(
+          DoorNotifications.ONGOING_ID,
+          notification,
+          ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+    else startForeground(DoorNotifications.ONGOING_ID, notification);
   }
 
   public int onStartCommand(Intent i, int flags, int id) {

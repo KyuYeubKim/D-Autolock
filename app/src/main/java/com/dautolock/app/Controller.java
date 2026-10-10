@@ -73,15 +73,18 @@ final class Controller {
   static final long SECURITY_RENOTIFY_MS = 5 * 60 * 1000;
 
   void raiseSecurityAlert(String kind, String text) {
+    // Same alert already showing: do nothing but the periodic re-notify. Avoids log/UI spam when a
+    // blocked auto-lock retries every ~18 s.
+    boolean sameActive = text.equals(securityAlert);
     securityAlert = text;
     long now = System.currentTimeMillis();
-    diagnostics.record("SECURITY_ALERT", "kind=" + kind);
+    if (!sameActive) diagnostics.record("SECURITY_ALERT", "kind=" + kind);
     if (!text.equals(securityAlertLast) || now - securityAlertAt >= SECURITY_RENOTIFY_MS) {
       securityAlertAt = now;
       securityAlertLast = text;
       DoorNotifications.securityAlert(context, text);
     }
-    changed();
+    if (!sameActive) changed();
   }
 
   void clearSecurityAlert(String reason) {
@@ -93,8 +96,14 @@ final class Controller {
     changed();
   }
 
-  /** Automatic lock refused while the car stands still: tell the user to secure it manually. */
-  private void lockFailedAlert(String reason) {
+  /**
+   * Automatic lock refused after the user actually left: tell them to secure it manually. Only when
+   * departure was confirmed — a bare signal loss next to a running car is most likely the phone
+   * sitting inside, so alerting there (repeatedly) was a false alarm (real log: ~18 s spam while
+   * parked ON with BLE lost). raiseSecurityAlert itself dedupes repeats of the same text.
+   */
+  private void lockFailedAlert(String reason, boolean departureConfirmed) {
+    if (!departureConfirmed) return;
     VehicleSnapshot s = snapshot;
     if (s == null
         || !s.fresh(System.currentTimeMillis())
@@ -110,12 +119,12 @@ final class Controller {
             + reason);
   }
 
-  /** Consecutive automatic unlock checks refused because the car was powered ON or moving. */
-  volatile int unlockInUseBlocks;
+  /** Consecutive automatic checks refused because the car was powered ON or moving (phone inside). */
+  volatile int unlockInUseBlocks, lockInUseBlocks;
 
   /** Re-check delay after an unretired automatic action: 15 s, or backoff up to 5 min in use. */
   long automaticRecheckMs(boolean unlock) {
-    int blocks = unlock ? unlockInUseBlocks : 0;
+    int blocks = unlock ? unlockInUseBlocks : lockInUseBlocks;
     if (blocks <= 0) return 15000;
     return Math.min(300000, 30000L << Math.min(4, blocks - 1));
   }
@@ -136,7 +145,7 @@ final class Controller {
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
     diagnostics.record(
-        "APP_START", "version=0.3.13 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=0.3.14 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -861,14 +870,16 @@ final class Controller {
                     automatic,
                     departureConfirmed.getAsBoolean(),
                     parkingConfirmationCurrent(parkingConfirmedAt));
-            // Automatic unlock blocked because the car is powered or moving: the service backs off.
+            // Automatic door control blocked because the car is powered or moving (phone most likely
+            // inside): the service backs off so it does not retry — and alarm — every ~18 s.
+            boolean inUse =
+                block != null
+                    && (Integer.valueOf(3).equals(checked.power)
+                        || (checked.speed != null && checked.speed > 0));
             if (automatic && command == CloudClient.Command.UNLOCK)
-              unlockInUseBlocks =
-                  block != null
-                          && (Integer.valueOf(3).equals(checked.power)
-                              || (checked.speed != null && checked.speed > 0))
-                      ? unlockInUseBlocks + 1
-                      : 0;
+              unlockInUseBlocks = inUse ? unlockInUseBlocks + 1 : 0;
+            if (automatic && command == CloudClient.Command.LOCK)
+              lockInUseBlocks = inUse ? lockInUseBlocks + 1 : 0;
             if (block != null) throw new Exception("제어 보류: " + block);
             if ((stop && Integer.valueOf(1).equals(snapshot.power))
                 || (!stop && Boolean.valueOf(lock).equals(snapshot.locked))) {
@@ -1005,7 +1016,9 @@ final class Controller {
             diagnostics.record(
                 "CONTROL_BLOCK_OR_ERROR", (automatic ? "AUTO " : "MANUAL ") + lastControl);
             if (automatic && command == CloudClient.Command.LOCK)
-              lockFailedAlert(e.getMessage() == null ? "알 수 없음" : e.getMessage());
+              lockFailedAlert(
+                  e.getMessage() == null ? "알 수 없음" : e.getMessage(),
+                  departureConfirmed.getAsBoolean());
             if (!automatic || dispatched.get())
               DoorNotifications.result(context, command.label + " 미완료", lastControl);
             throw e;

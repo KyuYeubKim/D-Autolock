@@ -21,7 +21,7 @@ public final class ProximityService extends Service {
   private boolean autoAttempt;
   private boolean notificationAutomatic;
   private long lastScanAttempt;
-  private long nextUnlockCheck;
+  private long nextUnlockCheck, nextLockCheck;
   private long watchdogIntervalMs = 120000;
   private String lastDiagnosticReason = "";
   private long nextPreflight, lastDiagnostic = -15000, lastCount = -1, started, lastIgnored = -5000;
@@ -228,10 +228,14 @@ public final class ProximityService extends Service {
     long cloudWait = controller.cloud.backoffMillis();
     ProximityEngine.Action pending = engine.pending(now);
     if (pending != readyAction) {
-      // A departure ends the in-use backoff (signal flicker inside the car must not reset it).
+      // Switching intent ends the opposite action's in-use backoff (a signal flicker inside the car
+      // must not reset the current one).
       if (pending == ProximityEngine.Action.LOCK) {
         controller.unlockInUseBlocks = 0;
         nextUnlockCheck = 0;
+      } else if (pending == ProximityEngine.Action.UNLOCK) {
+        controller.lockInUseBlocks = 0;
+        nextLockCheck = 0;
       }
       readyAction = pending;
       readyAt = now;
@@ -244,6 +248,7 @@ public final class ProximityService extends Service {
         && cloudWait == 0
         && now >= nextPreflight
         && (action != ProximityEngine.Action.UNLOCK || now >= nextUnlockCheck)
+        && (action != ProximityEngine.Action.LOCK || now >= nextLockCheck)
         && action != ProximityEngine.Action.NONE) {
       CloudClient.Command command =
           action == ProximityEngine.Action.UNLOCK
@@ -270,15 +275,17 @@ public final class ProximityService extends Service {
                         autoAttempt = false;
                         checkedEngine.endCheck();
                         long completed = SystemClock.elapsedRealtime();
-                        long recheck =
-                            controller.automaticRecheckMs(action == ProximityEngine.Action.UNLOCK);
+                        boolean unlockAction = action == ProximityEngine.Action.UNLOCK;
+                        long recheck = controller.automaticRecheckMs(unlockAction);
                         if (recheck > 15000)
                           controller.diagnostics.record(
                               "AUTO_RECHECK_BACKOFF",
                               action + " delayMs=" + recheck + " reason=vehicle_in_use");
-                        // In-use backoff gates only unlock re-checks; a departure lock is never
-                        // delayed by it.
-                        nextUnlockCheck = recheck > 15000 ? completed + recheck : 0;
+                        // In-use backoff gates the matching action's re-check so a powered car with
+                        // the phone inside is not polled/alerted every 18 s.
+                        long until = recheck > 15000 ? completed + recheck : 0;
+                        if (unlockAction) nextUnlockCheck = until;
+                        else nextLockCheck = until;
                         nextPreflight =
                             engine == checkedEngine && engine.pending(completed) == action
                                 ? completed + 15000

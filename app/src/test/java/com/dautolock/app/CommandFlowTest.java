@@ -686,21 +686,40 @@ public class CommandFlowTest {
   }
 
   @Test
-  public void lockRefusedWhileParkedRaisesRedAlertUntilLockedAndOff() throws Exception {
+  public void lockRefusedAfterConfirmedDepartureRaisesRedAlertUntilSecured() throws Exception {
     Protocol p = new Protocol();
-    p.power = 3; // Left ON, BLE silent, no departure evidence.
+    p.power = 3;
+    p.doorOpen = true; // A door is open, so the lock is refused even though the user left.
     Controller c = create(p);
     c.monitoring = c.autoEnabled = true;
-    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, false);
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
     complete(c);
-    assertTrue(p.commands.isEmpty());
+    assertFalse(p.commands.contains("LOCKDOOR"));
     assertNotNull(c.securityAlert);
-    assertTrue(c.securityAlert.contains("시동이 켜져"));
+    p.doorOpen = false;
     p.power = 1;
     p.locked = true; // Secured manually.
     c.refreshNow();
     completeRead(c);
     assertNull(c.securityAlert);
+  }
+
+  @Test
+  public void signalLossNearRunningCarDoesNotRaiseRedAlert() throws Exception {
+    // Real log 10-10: parked ON, BLE lost for minutes, loss-lock blocked every ~18 s. Departure is
+    // NOT confirmed (phone likely inside), so this must not raise the "secure the car" alarm.
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    for (int i = 0; i < 3; i++) {
+      c.automaticCommand(
+          CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, false);
+      complete(c);
+    }
+    assertTrue(p.commands.isEmpty());
+    assertNull(c.securityAlert);
+    assertTrue(c.lockInUseBlocks >= 1); // Backed off instead of hammering/alerting.
   }
 
   @Test

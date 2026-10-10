@@ -43,6 +43,8 @@ public final class BridgeService extends Service {
               .build());
       BootLog.add(this, "서비스 startForeground 성공 · 상태 전달 시작");
       BridgeJobService.schedule(this); // Re-arm the watchdog whenever the service runs.
+      // Self-update check when the service comes up (e.g. on car power-on), throttled inside tick().
+      new Thread(() -> new BridgeUpdate(getApplicationContext()).tick(false), "bridge-update").start();
     } catch (RuntimeException e) {
       // Missing foreground-service permission on this firmware: report instead of crashing.
       status = "백그라운드 실행 권한 확인 필요 (" + e.getClass().getSimpleName() + ")";

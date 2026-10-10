@@ -15,7 +15,7 @@ import java.util.*;
 import org.json.JSONObject;
 
 public final class BridgeActivity extends Activity {
-  static final String VERSION = "0.3.2";
+  static final String VERSION = "0.3.3";
   private TextView status;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final Runnable tick =
@@ -284,6 +284,16 @@ public final class BridgeActivity extends Activity {
   protected void onStart() {
     super.onStart();
     handler.post(tick);
+    // Self-update: check in the background; if a verified update is already downloaded, install it.
+    BridgeUpdate updater = new BridgeUpdate(this);
+    boolean fromNotice = getIntent() != null && getIntent().getBooleanExtra("install_update", false);
+    new Thread(
+            () -> {
+              updater.tick(fromNotice);
+              handler.post(() -> updater.installIfReady(this));
+            },
+            "bridge-update")
+        .start();
   }
 
   @Override

@@ -34,7 +34,9 @@ public final class BridgeJobService extends JobService {
   public boolean onStartJob(JobParameters params) {
     BootLog.add(this, "JobScheduler 워치독 · 서비스 재확인");
     BridgeBootReceiver.start(this, "job");
-    return false; // Work is synchronous; nothing left running on a background thread.
+    // Background self-update: finish a pending download (verify + notify) or check for a new one.
+    new Thread(() -> new BridgeUpdate(getApplicationContext()).tick(false), "bridge-update").start();
+    return false; // Service start is synchronous; the update thread is best-effort.
   }
 
   @Override

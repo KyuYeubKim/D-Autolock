@@ -236,9 +236,13 @@ public class CloudProtocol {
                     JSONObject outerResp = new JSONObject(decodedText);
                     String resCode = outerResp.optString("code", "unknown");
                     if (!"0".equals(resCode)) {
+                      // 1011 is a server-side session expiry too (seen repeatedly on status reads,
+                      // cleared only by a manual re-login). Treat it like the other expiry codes so
+                      // the client silently re-authenticates with the saved account and retries.
                       if ("1002".equals(resCode)
                           || "1005".equals(resCode)
-                          || "1010".equals(resCode)) {
+                          || "1010".equals(resCode)
+                          || "1011".equals(resCode)) {
                         expireSession(callback);
                         return;
                       }

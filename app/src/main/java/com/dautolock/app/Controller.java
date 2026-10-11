@@ -1218,7 +1218,15 @@ final class Controller {
           "WINDOWS_SKIP", "alreadyLocked=" + alreadyLocked + " power=" + s.power + " cloudClosed=true");
     } else closeWindowsAfterLock(valid);
     if (schedule) scheduleStop(() -> valid.getAsBoolean() && departureConfirmed.getAsBoolean());
-    else if (automatic && s != null && Integer.valueOf(3).equals(s.power))
+    // Warn about a locked-but-running car only after the user has actually left. While the phone is
+    // still near (driving, or sitting in the running car) a locked + powered-on car is normal, not a
+    // security problem — without this guard a red alert fired on every drive (real log:
+    // locked_power_on right after AUTO_STOP_SKIP departure_not_confirmed, phone NEAR). Same departure
+    // guard as lockFailedAlert (v0.3.14).
+    else if (automatic
+        && s != null
+        && Integer.valueOf(3).equals(s.power)
+        && departureConfirmed.getAsBoolean())
       raiseSecurityAlert(
           "locked_power_on",
           "도어는 잠겼지만 시동이 켜져 있습니다. 직접 시동을 끄거나 ‘시동 끄고 잠금’을 누르세요. 사유: " + stopStatus);

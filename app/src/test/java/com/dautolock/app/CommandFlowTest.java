@@ -752,6 +752,22 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void alreadyLockedRunningCarWhileNearDoesNotRaiseRedAlert() throws Exception {
+    // Real log: an automatic re-lock on an already-locked, still-running car while the phone is NEAR
+    // (departure NOT confirmed — most likely sitting in or driving the car) reached afterLock and
+    // raised the red "secure the car" alert on every drive. It must stay silent until departure.
+    Protocol p = new Protocol();
+    p.power = 3;
+    p.locked = true; // Already locked: the lock path goes straight to afterLock, no command sent.
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, false);
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertNull(c.securityAlert);
+  }
+
+  @Test
   public void tripSurvivesAppRestart() throws Exception {
     Protocol p = new Protocol();
     Controller c = create(p);

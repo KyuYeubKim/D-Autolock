@@ -412,6 +412,46 @@ public final class MainActivity extends Activity {
           controller.note(
               on ? "공유 차량 모드 켜짐 · 자동 잠금은 유지, 자동 종료는 하지 않습니다" : "공유 차량 모드 꺼짐");
         });
+    Switch parkUnlockSwitch = new Switch(this);
+    parkUnlockSwitch.setTag("unlockOnPark");
+    parkUnlockSwitch.setText("주차(P) 전환 시 도어 잠금 해제");
+    parkUnlockSwitch.setTextColor(TEXT);
+    parkUnlockSwitch.setPadding(0, dp(12), 0, dp(12));
+    parkUnlockSwitch.setMinHeight(dp(56));
+    parkUnlockSwitch.setChecked(controller.settings.getBoolean("unlockOnPark", false));
+    options.addView(parkUnlockSwitch);
+    parkUnlockSwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          if (updating) return;
+          if (!on) {
+            controller.settings.edit().putBoolean("unlockOnPark", false).apply();
+            controller.note("주차 시 자동 잠금 해제 꺼짐");
+            return;
+          }
+          new AlertDialog.Builder(this)
+              .setTitle("주차 시 자동 잠금 해제")
+              .setMessage(
+                  "차량 보조 앱(Bridge)이 실제 기어를 P로 2초 연속 확인하면 도어를 한 번 자동으로 엽니다."
+                      + " 주행한 뒤 주차했을 때만 동작하고, 휴대폰이 차 근처(보조 앱 연결)일 때만 동작합니다.\n\n"
+                      + "주의: 주차 직후 시동이 켜져 있어도 열립니다. 공공장소 주차 시 자동으로 문이 열릴 수 있으니"
+                      + " 필요할 때만 켜세요. 차량 보조 앱(QR) 연결이 되어 있어야 합니다.")
+              .setNegativeButton("취소", null)
+              .setPositiveButton(
+                  "켜기",
+                  (d, w) -> {
+                    controller.settings.edit().putBoolean("unlockOnPark", true).apply();
+                    controller.note("주차 시 자동 잠금 해제 켜짐 · 보조 앱이 P 확인 시 도어 열림");
+                  })
+              // Sync the switch to the saved value whether confirmed, cancelled or dismissed.
+              .setOnDismissListener(
+                  d -> {
+                    updating = true;
+                    parkUnlockSwitch.setChecked(
+                        controller.settings.getBoolean("unlockOnPark", false));
+                    updating = false;
+                  })
+              .show();
+        });
     stopDelay = button(options, "", v -> stopDelayDialog());
     stopDelay.setTag("stopDelay");
     text(

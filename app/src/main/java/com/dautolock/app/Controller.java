@@ -16,6 +16,7 @@ final class Controller {
   final DiagnosticLog diagnostics;
   final AutoUpdater updater;
   final VehicleLink vehicleLink;
+  private final ParkUnlockTrigger parkUnlock = new ParkUnlockTrigger();
   private final SecureStore store;
   private final Supplier<CloudClient> clients;
   volatile String loginUser = "";
@@ -1281,6 +1282,13 @@ final class Controller {
 
   /** Every authenticated Bridge sample. Gear out of P or a released brake is vehicle activity. */
   void vehicleSample(com.dautolock.link.LinkProtocol.Sample s) {
+    long now = SystemClock.elapsedRealtime();
+    // Auto-unlock on parking: a live, stable P after driving (checked before the brake-hold return
+    // below, since parking engages the brake). Default off; independent of the automation switch.
+    if (settings.getBoolean("unlockOnPark", false) && parkUnlock.onSample(s.gear, s.quality, now)) {
+      diagnostics.record("PARK_UNLOCK", "trigger=bridge_P gear=" + s.gearLabel());
+      main.post(this::unlockOnPark);
+    }
     boolean moving =
         s.quality == 0
             && s.gear != com.dautolock.link.LinkProtocol.UNKNOWN
@@ -1297,6 +1305,29 @@ final class Controller {
           () ->
               cancelPendingStop(
                   "대기 중 차량 조작 감지 (" + (moving ? "기어 " + s.gearLabel() : "주차브레이크 해제") + ")"));
+  }
+
+  /**
+   * Unlock the doors because the driver just shifted to P (feature {@code unlockOnPark}). Uses the
+   * manual unlock path: parking usually leaves the engine ON (power=3), which the automatic unlock
+   * gate blocks, whereas the manual gate allows unlock once the car is confirmed stopped — exactly
+   * the parked state here. Skipped if the last known state is already unlocked.
+   */
+  private void unlockOnPark() {
+    if (busy()) {
+      diagnostics.record("PARK_UNLOCK_SKIP", "reason=busy");
+      return;
+    }
+    if (vin.isEmpty() || pinHash.isEmpty()) {
+      diagnostics.record("PARK_UNLOCK_SKIP", "reason=not_configured");
+      return;
+    }
+    if (snapshot != null && Boolean.FALSE.equals(snapshot.locked)) {
+      diagnostics.record("PARK_UNLOCK_SKIP", "reason=already_unlocked");
+      return;
+    }
+    note("주차(P) 감지 · 도어 잠금 해제");
+    command(CloudClient.Command.UNLOCK, false, () -> true);
   }
 
   private void scheduleStop(BooleanSupplier valid) {

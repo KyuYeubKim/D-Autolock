@@ -242,11 +242,14 @@ public final class ProximityService extends Service {
         controller.diagnostics.record("PROXIMITY_READY", pending + " " + engine.diagnostic(now));
     }
     // A lost-signal lock right after the ignition turns off is the car's Bluetooth cycling, not the
-    // phone leaving (both the BLE advert and the Bridge drop together). Hold it off during the grace;
-    // a far reading still locks, and once the grace ends a genuinely gone signal locks as before.
+    // phone leaving (both the BLE advert and the Bridge drop together). Hold it off during the grace,
+    // but only when the phone was still near as the signal dropped — a real departure weakens to far
+    // first (real log: left while suppressed, had to lock by hand), and that still locks, as does a
+    // genuinely gone signal once the grace ends.
     boolean ignitionGraceSkip =
         pending == ProximityEngine.Action.LOCK
             && !engine.fresh(now)
+            && engine.lastReadingNear()
             && controller.ignitionOffRecently();
     if (ignitionGraceSkip && now - lastIgnitionGraceLog >= 15000) {
       controller.diagnostics.record(

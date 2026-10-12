@@ -54,6 +54,16 @@ public class ProximityEngineTest {
   }
 
   @Test
+  public void lastReadingNearReflectsSignalStrengthWhenLost() {
+    ProximityEngine e = new ProximityEngine(-75, -80, 1000, 2000, 10000);
+    assertFalse(e.lastReadingNear()); // No samples yet.
+    feed(e, -55, 0, 4000); // Phone close.
+    assertTrue(e.lastReadingNear()); // Strong signal: a loss here is a Bluetooth glitch near the car.
+    feed(e, -92, 5000, 9000); // Walked away to far.
+    assertFalse(e.lastReadingNear()); // Weak signal before loss: a real departure must still lock.
+  }
+
+  @Test
   public void departureLatchExpiresAndSignalLossAloneNeverSetsIt() {
     ProximityEngine e = new ProximityEngine(-60, -80, 0, 1000, 10000);
     feed(e, -50, 0, 3000);

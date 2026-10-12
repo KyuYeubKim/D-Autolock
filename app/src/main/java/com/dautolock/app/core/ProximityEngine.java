@@ -137,6 +137,15 @@ public final class ProximityEngine {
   }
 
   /**
+   * The last smoothed signal (held across a reception gap) was at least as strong as the near
+   * threshold — the phone was close when the signal dropped. Distinguishes a Bluetooth glitch while
+   * sitting in the car from a real departure, where the signal weakens to far before it is lost.
+   */
+  public synchronized boolean lastReadingNear() {
+    return !Double.isNaN(smoothed) && smoothed >= near;
+  }
+
+  /**
    * Still valid after claiming a lock. Loss alone never qualifies; loss right after a confirmed FAR
    * departure does (real log: the phone left range during the 6 s lock command and the departure
    * evidence expired before the Stop check). A returning phone clears it.

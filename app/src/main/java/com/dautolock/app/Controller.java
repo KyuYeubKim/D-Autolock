@@ -609,12 +609,25 @@ final class Controller {
   }
 
   static final long RECENT_POWER_MS = 5 * 60 * 1000;
-  private volatile long powerOnSeenAt;
+  // Turning the ignition off briefly cycles the car's Bluetooth, so both the BLE advert and the
+  // Bridge drop for ~15 s right after a power-off. Long enough to cover that transient (observed
+  // ~60 s after the key-off) without holding a real departure's lock for long.
+  static final long IGNITION_OFF_GRACE_MS = 90 * 1000;
+  private volatile long powerOnSeenAt, powerOffAt;
 
   /** Power ON was observed in the last 5 minutes: an opening door now is someone leaving. */
   boolean recentlyPowered() {
     long at = powerOnSeenAt;
     return at > 0 && System.currentTimeMillis() - at < RECENT_POWER_MS;
+  }
+
+  /**
+   * The ignition turned off within the grace window. A signal loss right after this is the car's
+   * Bluetooth cycling, not the phone leaving, so a lost-signal lock is held off until it passes.
+   */
+  boolean ignitionOffRecently() {
+    long at = powerOffAt;
+    return at > 0 && System.currentTimeMillis() - at < IGNITION_OFF_GRACE_MS;
   }
 
   private void observeSnapshot(VehicleSnapshot next, boolean announce) {
@@ -623,6 +636,12 @@ final class Controller {
     snapshot = next;
     if (Integer.valueOf(3).equals(next.power) && next.fresh(System.currentTimeMillis()))
       powerOnSeenAt = System.currentTimeMillis();
+    // Mark the ON->OFF transition so a signal loss in the next grace window (the Bluetooth cycling
+    // as the car powers down) is not mistaken for a departure.
+    if (previous != null
+        && Integer.valueOf(3).equals(previous.power)
+        && Integer.valueOf(1).equals(next.power)
+        && next.fresh(System.currentTimeMillis())) powerOffAt = System.currentTimeMillis();
     if (securityAlert != null
         && next.fresh(System.currentTimeMillis())
         && Boolean.TRUE.equals(next.locked)

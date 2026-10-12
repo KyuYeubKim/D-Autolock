@@ -25,6 +25,7 @@ public final class ProximityService extends Service {
   private long watchdogIntervalMs = 120000;
   private String lastDiagnosticReason = "";
   private long nextPreflight, lastDiagnostic = -15000, lastCount = -1, started, lastIgnored = -5000;
+  private long lastIgnitionGraceLog = -15000;
   private int deviceType;
   private String radioStatus = "BLE 검색 중";
   private final Runnable restartScan =
@@ -240,7 +241,19 @@ public final class ProximityService extends Service {
       if (pending != ProximityEngine.Action.NONE)
         controller.diagnostics.record("PROXIMITY_READY", pending + " " + engine.diagnostic(now));
     }
-    ProximityEngine.Action action = pending;
+    // A lost-signal lock right after the ignition turns off is the car's Bluetooth cycling, not the
+    // phone leaving (both the BLE advert and the Bridge drop together). Hold it off during the grace;
+    // a far reading still locks, and once the grace ends a genuinely gone signal locks as before.
+    boolean ignitionGraceSkip =
+        pending == ProximityEngine.Action.LOCK
+            && !engine.fresh(now)
+            && controller.ignitionOffRecently();
+    if (ignitionGraceSkip && now - lastIgnitionGraceLog >= 15000) {
+      controller.diagnostics.record(
+          "LOSS_LOCK_SKIP", "reason=ignition_off_grace " + engine.diagnostic(now));
+      lastIgnitionGraceLog = now;
+    }
+    ProximityEngine.Action action = ignitionGraceSkip ? ProximityEngine.Action.NONE : pending;
     if (controller.autoEnabled
         && !autoAttempt
         && cloudWait == 0

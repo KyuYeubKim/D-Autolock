@@ -17,6 +17,10 @@ final class VehicleLink {
   private Pairing pairing;
   private String vehicle = "", address = "";
   private volatile long epoch;
+  // Reconnect fast after a productive connection drops (a transient drop mid-drive, so a driving
+  // gear sample is caught quickly), but back off to the normal interval while the phone is away and
+  // connects keep failing, to spare the battery.
+  private static final long RECONNECT_MIN_MS = 1500, RECONNECT_MAX_MS = 5000;
   private Thread thread;
   private BluetoothSocket socket;
   volatile String status = "차량 보조 앱 미등록";
@@ -150,9 +154,10 @@ final class VehicleLink {
 
   private void receive(long ticket, Pairing pair, String target) {
     String last = "";
-    long lastLog = -15000;
+    long lastLog = -15000, retryMs = RECONNECT_MIN_MS;
     while (ticket == epoch) {
       BluetoothSocket active = null;
+      boolean delivered = false;
       try {
         if (android.os.Build.VERSION.SDK_INT >= 31
             && controller.context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
@@ -194,6 +199,7 @@ final class VehicleLink {
               throw new IOException("Vehicle read too slow");
             status = "차량 보조 앱 인증 연결됨";
           }
+          delivered = true;
           controller.vehicleSample(sample);
           String diagnostic = sample.diagnostic();
           if (!diagnostic.equals(last) || now - lastLog >= 15000) {
@@ -225,7 +231,8 @@ final class VehicleLink {
       }
       if (ticket == epoch)
         try {
-          Thread.sleep(5000);
+          retryMs = delivered ? RECONNECT_MIN_MS : Math.min(RECONNECT_MAX_MS, retryMs * 2);
+          Thread.sleep(retryMs);
         } catch (InterruptedException e) {
           break;
         }

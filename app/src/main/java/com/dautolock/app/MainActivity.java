@@ -51,7 +51,9 @@ public final class MainActivity extends Activity {
   private final Runnable disarmCommand = this::disarmCommand;
   private final TextView[] vehicleStates = new TextView[3];
   private TextView signalDetails, autoDetails, autoReason, controlDetails, readyDetails;
-  private SignalGauge signalGauge;
+  private SignalGauge signalGauge, beaconGauge;
+  private TextView beaconSignalView, beaconDbm, beaconDevice;
+  private LinearLayout beaconSection;
   private TextView updateStatus;
   private TextView bridgeStatus;
   private Button monitor, chooseVehicle, logout, login;
@@ -492,7 +494,25 @@ public final class MainActivity extends Activity {
                     .show());
     LinearLayout bluetooth = card("02  차량 블루투스");
     device = text(bluetooth, "기기 선택 전", 15, TEXT);
-    button(bluetooth, "블루투스 기기 검색 / 선택", v -> pickDevice());
+    button(bluetooth, "블루투스 기기 검색 / 선택", v -> pickDevice(false));
+    beaconDevice = text(bluetooth, "보조 BLE(비콘): 없음", 13, MUTED);
+    button(bluetooth, "보조 BLE(비콘) 검색 / 선택", v -> pickDevice(true));
+    button(bluetooth, "보조 BLE 작동 거리", v -> beaconThresholdDialog());
+    button(
+        bluetooth,
+        "보조 BLE 해제",
+        v ->
+            new AlertDialog.Builder(this)
+                .setMessage("보조 BLE(비콘)를 해제할까요? 주 BLE(차량)만 사용합니다.")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("해제", (d, w) -> controller.clearBeacon())
+                .show());
+    text(
+        bluetooth,
+        "보조 BLE는 지금은 '관찰 전용'입니다. 메인의 '보조 신호'에서 세기를 확인하고 작동 거리를 맞추세요."
+            + " 잠금/해제 판단은 아직 주 BLE만 사용합니다.",
+        12,
+        MUTED);
     button(
         bluetooth,
         "BLE 다시 검색",
@@ -867,6 +887,18 @@ public final class MainActivity extends Activity {
     signalDbm.setTag("signalDbm");
     signalGauge = new SignalGauge(this);
     dash.addView(signalGauge, new LinearLayout.LayoutParams(-1, dp(46)));
+    beaconSection = new LinearLayout(this);
+    beaconSection.setOrientation(LinearLayout.VERTICAL);
+    beaconSection.setTag("beaconSection");
+    dash.addView(beaconSection);
+    LinearLayout beaconReading = new LinearLayout(this);
+    beaconReading.setGravity(Gravity.CENTER_VERTICAL);
+    beaconSection.addView(beaconReading);
+    beaconSignalView = text(beaconReading, "보조 신호", 15, MINT);
+    beaconSignalView.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    beaconDbm = text(beaconReading, "— dBm", 14, MUTED);
+    beaconGauge = new SignalGauge(this);
+    beaconSection.addView(beaconGauge, new LinearLayout.LayoutParams(-1, dp(46)));
     LinearLayout signalRow = new LinearLayout(this);
     signalRow.setGravity(Gravity.CENTER_VERTICAL);
     dash.addView(signalRow);
@@ -1261,7 +1293,7 @@ public final class MainActivity extends Activity {
                   else vehicleDialog();
                   break;
                 case 3:
-                  pickDevice();
+                  pickDevice(false);
                   break;
                 case 4:
                   showPage("home");
@@ -1473,6 +1505,22 @@ public final class MainActivity extends Activity {
     boolean receiving = !Double.isNaN(controller.averageRssi);
     signalDbm.setText(receiving ? Math.round(controller.averageRssi) + " dBm" : "— dBm");
     signalDot.setBackground(background(receiving ? MINT : 0xff4a5361, 5));
+    boolean beaconOn = controller.beaconConfigured();
+    beaconSection.setVisibility(beaconOn ? View.VISIBLE : View.GONE);
+    if (beaconOn) {
+      beaconSignalView.setText("보조 " + controller.beaconSignal);
+      beaconGauge.reading(
+          controller.beaconRssi,
+          controller.settings.getInt("beaconNear", Controller.DEFAULT_BEACON_NEAR),
+          controller.settings.getInt("beaconFar", Controller.DEFAULT_BEACON_FAR));
+      beaconDbm.setText(
+          Double.isNaN(controller.beaconRssi)
+              ? "— dBm"
+              : Math.round(controller.beaconRssi) + " dBm");
+    }
+    beaconDevice.setText(
+        "보조 BLE(비콘): "
+            + (beaconOn ? controller.settings.getString("beaconName", "등록됨") : "없음"));
     updating = true;
     automation.setChecked(controller.monitoring && controller.autoEnabled);
     updating = false;
@@ -1906,6 +1954,83 @@ public final class MainActivity extends Activity {
     d.show();
   }
 
+  private void beaconThresholdDialog() {
+    if (!controller.beaconConfigured()) {
+      Toast.makeText(this, "먼저 보조 BLE(비콘)를 선택하세요", Toast.LENGTH_SHORT).show();
+      return;
+    }
+    LinearLayout f = form();
+    text(
+        f,
+        "보조 BLE(비콘)의 접근·이탈 신호 기준입니다. 위치마다 세기가 다르니 메인의 '보조 신호'를 보며 맞추세요."
+            + " 지금은 관찰용이라 잠금/해제 판단에는 아직 쓰이지 않습니다. 두 기준은 5 dBm 이상 간격을 둡니다.",
+        13,
+        MUTED);
+    text(
+        f,
+        "현재 보조 평균 "
+            + (Double.isNaN(controller.beaconRssi)
+                ? "— (수신 대기)"
+                : Math.round(controller.beaconRssi) + " dBm"),
+        15,
+        MINT);
+    SeekBar[] s = new SeekBar[2];
+    s[0] =
+        settingSlider(
+            f,
+            "보조 접근 · 해제 기준",
+            "beaconNear",
+            -92,
+            -30,
+            controller.settings.getInt("beaconNear", Controller.DEFAULT_BEACON_NEAR),
+            " dBm 이상",
+            "멀리서도 해제 ← → 가까워야 해제",
+            value -> {
+              if (s[1] != null
+                  && value < s[1].getProgress() - 100 + ProximityEngine.MIN_GAP_DB)
+                s[1].setProgress(value - ProximityEngine.MIN_GAP_DB + 100);
+            });
+    s[1] =
+        settingSlider(
+            f,
+            "보조 이탈 · 잠금 기준",
+            "beaconFar",
+            -100,
+            -38,
+            controller.settings.getInt("beaconFar", Controller.DEFAULT_BEACON_FAR),
+            " dBm 이하",
+            "더 멀어져야 잠금 ← → 가까운 곳부터 잠금",
+            value -> {
+              if (value > s[0].getProgress() - 92 - ProximityEngine.MIN_GAP_DB)
+                s[0].setProgress(value + ProximityEngine.MIN_GAP_DB + 92);
+            });
+    ScrollView scroll = new ScrollView(this);
+    scroll.addView(f);
+    AlertDialog d =
+        new AlertDialog.Builder(this)
+            .setTitle("보조 BLE 작동 거리")
+            .setView(scroll)
+            .setNegativeButton("취소", null)
+            .setPositiveButton("저장", null)
+            .create();
+    d.setOnShowListener(
+        x ->
+            d.getButton(-1)
+                .setOnClickListener(
+                    v -> {
+                      try {
+                        controller.beaconThresholds(
+                            s[0].getProgress() - 92, s[1].getProgress() - 100);
+                        d.dismiss();
+                      } catch (Exception e) {
+                        Toast.makeText(
+                                this, "접근·이탈 기준은 5 dBm 이상 간격이 필요합니다", Toast.LENGTH_SHORT)
+                            .show();
+                      }
+                    }));
+    d.show();
+  }
+
   private SeekBar settingSlider(
       LinearLayout parent,
       String title,
@@ -2116,7 +2241,7 @@ public final class MainActivity extends Activity {
     pickerCallback = null;
   }
 
-  private void pickDevice() {
+  private void pickDevice(boolean beacon) {
     if (!permissions(false)) return;
     if (controller.monitoring) {
       new AlertDialog.Builder(this)
@@ -2165,7 +2290,7 @@ public final class MainActivity extends Activity {
       redraw.run();
       AlertDialog d =
           new AlertDialog.Builder(this)
-              .setTitle("차량 블루투스 선택")
+              .setTitle(beacon ? "보조 BLE(비콘) 선택" : "차량 블루투스 선택")
               .setView(f)
               .setNegativeButton("닫기", null)
               .create();
@@ -2173,7 +2298,8 @@ public final class MainActivity extends Activity {
           (p, v, index, id) -> {
             String address = addresses.get(index);
             String label = names.get(address);
-            controller.device(label, address);
+            if (beacon) controller.beaconDevice(label, address);
+            else controller.device(label, address);
             d.dismiss();
           });
       d.setOnDismissListener(x -> stopPicker());

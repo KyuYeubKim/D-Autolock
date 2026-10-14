@@ -49,6 +49,10 @@ final class Controller {
   private volatile ReadinessWatch readinessWatch;
   volatile int signalStrength = 0;
   volatile double averageRssi = Double.NaN;
+  // Auxiliary (beacon) signal — observed only for now; it does not drive any lock/unlock decision.
+  volatile int beaconStrength = 0;
+  volatile double beaconRssi = Double.NaN;
+  volatile String beaconSignal = "보조 신호 대기", beaconDetail = "";
   volatile boolean initializing = true;
   private volatile long entryUntil, nextEntryCheck;
   private int entryTicket;
@@ -61,6 +65,8 @@ final class Controller {
    */
   static final int DEFAULT_NEAR = -75, DEFAULT_FAR = -80;
   static final int DEFAULT_NEAR_WAIT = 1, DEFAULT_FAR_WAIT = 5, DEFAULT_LOSS = 10;
+  // Beacon thresholds start wider (−70/−80); the user tunes them per placement from the observed RSSI.
+  static final int DEFAULT_BEACON_NEAR = -70, DEFAULT_BEACON_FAR = -80;
   // Trip ownership is in memory only: an app restart mid-trip means no automatic Stop (safe side).
   static final long TRIP_MAX_MS = 12L * 60 * 60 * 1000;
   private volatile long tripUnlockedAt = -1, vehicleActivityAt = -1;
@@ -377,7 +383,16 @@ final class Controller {
           vin = nextVin;
           vehicleName = nextName;
           pinHash = savedPin;
-          if (!same) settings.edit().remove("address").remove("deviceName").apply();
+          if (!same)
+            settings
+                .edit()
+                .remove("address")
+                .remove("deviceName")
+                .remove("beaconAddress")
+                .remove("beaconName")
+                .remove("beaconNear")
+                .remove("beaconFar")
+                .apply();
           if (!same) vehicleLink.forget();
           snapshot = null;
           capabilities = new JSONObject();
@@ -408,7 +423,15 @@ final class Controller {
           String selectedVin = vehicle.getString("vin");
           if (!selectedVin.equals(vin)) {
             vehicleLink.forget();
-            settings.edit().remove("address").remove("deviceName").apply();
+            settings
+                .edit()
+                .remove("address")
+                .remove("deviceName")
+                .remove("beaconAddress")
+                .remove("beaconName")
+                .remove("beaconNear")
+                .remove("beaconFar")
+                .apply();
           }
           vin = selectedVin;
           vehicleName =
@@ -598,7 +621,15 @@ final class Controller {
           vehicles = new JSONArray();
           capabilities = new JSONObject();
           permissionSummary = "공유 권한은 차량 선택 후 확인합니다";
-          settings.edit().remove("address").remove("deviceName").apply();
+          settings
+              .edit()
+              .remove("address")
+              .remove("deviceName")
+              .remove("beaconAddress")
+              .remove("beaconName")
+              .remove("beaconNear")
+              .remove("beaconFar")
+              .apply();
           note("저장된 ID·비밀번호·PIN과 차량 연결 정보를 삭제했습니다");
         });
   }
@@ -1135,10 +1166,53 @@ final class Controller {
     note("블루투스 기기 선택 완료 · 관찰에서 수신 여부를 확인하세요");
   }
 
+  /** Register the auxiliary beacon. Observed only for now (does not change lock/unlock yet). */
+  void beaconDevice(String name, String address) {
+    stop();
+    settings.edit().putString("beaconName", name).putString("beaconAddress", address).apply();
+    note("보조 BLE(비콘) 선택 완료 · 메인에서 보조 신호 세기를 관찰하세요");
+  }
+
+  void clearBeacon() {
+    stop();
+    settings.edit().remove("beaconName").remove("beaconAddress").apply();
+    beaconRssi = Double.NaN;
+    beaconStrength = 0;
+    beaconSignal = "보조 신호 없음";
+    beaconDetail = "";
+    note("보조 BLE 해제됨");
+  }
+
+  /** Save the beacon's own near/far thresholds and restart observation with them. */
+  void beaconThresholds(int near, int far) {
+    new ProximityEngine(near, far, 1000, 2000, 10000); // Validates the near/far gap; throws if bad.
+    settings.edit().putInt("beaconNear", near).putInt("beaconFar", far).apply();
+    diagnostics.record("BEACON_SETTINGS", "near=" + near + " far=" + far);
+    boolean resume = monitoring || settings.getBoolean("autoStart", true);
+    boolean automatic = autoEnabled || settings.getBoolean("autoStart", true);
+    note("보조 BLE 작동 거리 저장 · 관찰을 다시 시작합니다");
+    if (resume && setupReady()) startMonitoring(automatic, true);
+  }
+
   ProximityEngine proximityEngine() {
     return new ProximityEngine(
         settings.getInt("near", Controller.DEFAULT_NEAR),
         settings.getInt("far", Controller.DEFAULT_FAR),
+        settings.getInt("nearWaitSeconds", Controller.DEFAULT_NEAR_WAIT) * 1000L,
+        settings.getInt("farWaitSeconds", Controller.DEFAULT_FAR_WAIT) * 1000L,
+        settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS) * 1000L);
+  }
+
+  boolean beaconConfigured() {
+    return android.bluetooth.BluetoothAdapter.checkBluetoothAddress(
+        settings.getString("beaconAddress", ""));
+  }
+
+  /** Auxiliary engine for the beacon. Observed only for now; shares the dwell/loss timings. */
+  ProximityEngine beaconProximityEngine() {
+    return new ProximityEngine(
+        settings.getInt("beaconNear", Controller.DEFAULT_BEACON_NEAR),
+        settings.getInt("beaconFar", Controller.DEFAULT_BEACON_FAR),
         settings.getInt("nearWaitSeconds", Controller.DEFAULT_NEAR_WAIT) * 1000L,
         settings.getInt("farWaitSeconds", Controller.DEFAULT_FAR_WAIT) * 1000L,
         settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS) * 1000L);

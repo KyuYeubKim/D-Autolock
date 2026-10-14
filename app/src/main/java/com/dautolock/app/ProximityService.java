@@ -26,6 +26,9 @@ public final class ProximityService extends Service {
   private String lastDiagnosticReason = "";
   private long nextPreflight, lastDiagnostic = -15000, lastCount = -1, started, lastIgnored = -5000;
   private long lastIgnitionGraceLog = -15000;
+  // Auxiliary beacon engine — fed in parallel and shown/logged, but not yet used in any decision.
+  private volatile ProximityEngine beaconEngine;
+  private String beaconAddr = "";
   private int deviceType;
   private String radioStatus = "BLE 검색 중";
   private final Runnable restartScan =
@@ -162,6 +165,30 @@ public final class ProximityService extends Service {
                     + (deviceType == BluetoothDevice.DEVICE_TYPE_CLASSIC
                         ? "선택 기기는 일반 Bluetooth입니다. 차량 BLE 기기를 다시 검색하세요."
                         : "선택 주소에서 BLE 광고를 받지 못했습니다. 차량 기기·권한·전원 OFF 시 광고 여부를 확인하세요.");
+          if (beaconEngine != null) {
+            boolean beaconFresh = beaconEngine.fresh(now);
+            controller.beaconRssi = beaconFresh ? beaconEngine.rssi() : Double.NaN;
+            controller.beaconStrength = beaconFresh ? ProximityEngine.strength(beaconEngine.rssi()) : 0;
+            controller.beaconSignal =
+                beaconEngine.zone(now) + (beaconFresh ? " · " + beaconEngine.raw() + " dBm" : " · — dBm");
+            controller.beaconDetail =
+                "보조 평균 "
+                    + (beaconFresh ? Math.round(beaconEngine.rssi()) + " dBm" : "—")
+                    + " · 수신 "
+                    + beaconEngine.count()
+                    + "회 · "
+                    + (beaconEngine.age(now) < 0 ? "없음" : beaconEngine.age(now) / 1000 + "초 전")
+                    + "\n보조 접근 ≥ "
+                    + controller.settings.getInt("beaconNear", Controller.DEFAULT_BEACON_NEAR)
+                    + " / 이탈 ≤ "
+                    + controller.settings.getInt("beaconFar", Controller.DEFAULT_BEACON_FAR)
+                    + " dBm";
+          } else {
+            controller.beaconRssi = Double.NaN;
+            controller.beaconStrength = 0;
+            controller.beaconSignal = "보조 신호 없음";
+            controller.beaconDetail = "";
+          }
           controller.autoDetail =
               (controller.autoEnabled ? "자동 제어 ON · " : "관찰 모드 · 자동 제어 OFF\n") + engine.reason(now);
           if (controller.autoEnabled) {
@@ -189,6 +216,7 @@ public final class ProximityService extends Service {
                     + controller.busy()
                     + " cloudWaitMs="
                     + cloudWait
+                    + (beaconEngine != null ? " | 보조 " + beaconEngine.diagnostic(now) : "")
                     + " "
                     + engine.reason(now));
             lastDiagnostic = now;
@@ -352,6 +380,12 @@ public final class ProximityService extends Service {
       }
       return;
     }
+    String addr = result.getDevice().getAddress();
+    if (beaconEngine != null && addr != null && addr.equalsIgnoreCase(beaconAddr)) {
+      // Observe-only: feed the beacon engine for display/logging; it does not drive any decision yet.
+      beaconEngine.sample(result.getRssi(), sampleAt);
+      return;
+    }
     engine.sample(result.getRssi(), sampleAt);
     evaluate();
   }
@@ -417,11 +451,18 @@ public final class ProximityService extends Service {
       scanner = adapter.getBluetoothLeScanner();
       if (scanner == null) throw new Exception("BLE 관찰을 시작할 수 없습니다");
       engine = controller.proximityEngine();
+      beaconAddr =
+          controller.beaconConfigured() ? controller.settings.getString("beaconAddress", "") : "";
+      beaconEngine = beaconAddr.isEmpty() ? null : controller.beaconProximityEngine();
       started = SystemClock.elapsedRealtime();
       lastScanAttempt = started;
       scanning = true;
+      List<ScanFilter> filters = new ArrayList<>();
+      filters.add(new ScanFilter.Builder().setDeviceAddress(address).build());
+      if (!beaconAddr.isEmpty())
+        filters.add(new ScanFilter.Builder().setDeviceAddress(beaconAddr).build());
       scanner.startScan(
-          Collections.singletonList(new ScanFilter.Builder().setDeviceAddress(address).build()),
+          filters,
           new ScanSettings.Builder()
               .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
               .setReportDelay(0)
@@ -483,6 +524,11 @@ public final class ProximityService extends Service {
     controller.signalStrength = 0;
     controller.averageRssi = Double.NaN;
     controller.signalDetail = "거리 관찰을 시작하면 신호를 표시합니다";
+    controller.beaconStrength = 0;
+    controller.beaconRssi = Double.NaN;
+    controller.beaconSignal = "보조 신호 대기";
+    controller.beaconDetail = "";
+    beaconEngine = null;
     controller.autoDetail = "자동 제어 꺼짐";
     controller.diagnostics.record("SCAN_STOP", "monitoring=false auto=false");
     controller.changed();

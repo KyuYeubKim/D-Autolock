@@ -57,7 +57,7 @@ public final class DashboardStatus {
   /** Big door title; stale/unknown never reads as locked. */
   public static String doorTitle(VehicleSnapshot s, long now) {
     String door = vehicle(s, now)[0];
-    return door.equals("도어 잠김") ? "잠겨 있음" : door.equals("도어 열림") ? "열려 있음" : "도어 미확인";
+    return door.equals("도어 잠김") || door.equals("도어 열림") ? door : "도어 미확인";
   }
 
   /** Battery shows the last reading up to 15 minutes old (it changes slowly). */

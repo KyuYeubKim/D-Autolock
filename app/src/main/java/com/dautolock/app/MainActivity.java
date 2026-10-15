@@ -1468,7 +1468,7 @@ public final class MainActivity extends Activity {
     String[] labels = DashboardStatus.vehicle(shown, shownAt);
     String door = DashboardStatus.doorTitle(shown, shownAt);
     doorTitle.setText(door);
-    boolean open = door.equals("열려 있음"), closed = door.equals("잠겨 있음");
+    boolean open = door.equals("도어 열림"), closed = door.equals("도어 잠김");
     lockIcon.setImageResource(open ? R.drawable.ic_lock_open : R.drawable.ic_lock);
     lockTile.setBackground(
         background(open ? 0xff4a3220 : closed ? 0xff1f3350 : 0xff2a313b, 14));

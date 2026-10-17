@@ -589,7 +589,7 @@ public class CommandFlowTest {
     c.departureFinish();
     settle(c);
     assertTrue(p.commands.isEmpty());
-    assertTrue(c.message.contains("하차 마무리 중단"));
+    assertTrue(c.message.contains("주차 마무리 중단"));
   }
 
   @Test

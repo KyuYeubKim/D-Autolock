@@ -357,7 +357,7 @@ public final class MainActivity extends Activity {
                   .setMessage(
                       "탑승 시 공조 시작은 차량 전원을 켜는 용도입니다. 시작 후 "
                           + controller.climateOffSeconds()
-                          + "초 뒤 공조를 한 번 끕니다(수동 '시동 켜기'·'출차 준비'에는 적용되지 않음).\n\n"
+                          + "초 뒤 공조를 한 번 끕니다(수동 '시동 켜기'·'원격 Ready'에는 적용되지 않음).\n\n"
                           + "주의: 너무 빨리 끄면 차량 전원도 함께 꺼질 수 있습니다(과거 2초에서 관찰). 5초 이상에서는 전원이"
                           + " 유지된 기록이 있으나 실차에서 직접 확인하세요.")
                   .setNegativeButton("취소", null)
@@ -989,7 +989,7 @@ public final class MainActivity extends Activity {
 
   private void finishConfirm() {
     new AlertDialog.Builder(this)
-        .setTitle("하차 마무리")
+        .setTitle("주차 마무리")
         .setMessage(
             "차량이 P단이며 주차브레이크가 체결됐고 주변과 탑승자가 안전한지 직접 확인하세요. 최신 정차 상태를 조회해 시동을 한 번 끄고(Stop),"
                 + " 전원 OFF가 확인되면 도어를 잠급니다. 확인은 이번 요청에만 30초간 유효하며, 시동 꺼짐이 확인되지 않으면 잠그지 않습니다.")
@@ -1005,12 +1005,12 @@ public final class MainActivity extends Activity {
     bigRow.setBaselineAligned(false);
     controls.addView(bigRow);
     bigTile(
-        bigRow, R.drawable.ic_car, "출차 준비", "문 열고 예열", new int[] {0xff3f7be8, 0xff55bdce},
+        bigRow, R.drawable.ic_car, "원격 Ready", "문 열고 예열", new int[] {0xff3f7be8, 0xff55bdce},
         "control_prepare",
         new CloudClient.Command[] {CloudClient.Command.UNLOCK, CloudClient.Command.CLIMATE_ON},
-        () -> climateConfirm("출차 준비", "도어를 연 뒤 열림이 확인되면 원격 공조(예열)를 켭니다. ", controller::departurePrepare));
+        () -> climateConfirm("원격 Ready", "도어를 연 뒤 열림이 확인되면 원격 공조(예열)를 켭니다. ", controller::departurePrepare));
     bigTile(
-        bigRow, R.drawable.ic_walk, "하차 마무리", "시동 끄고 잠금", new int[] {0xff5874f3, 0xff7d6cf0},
+        bigRow, R.drawable.ic_walk, "주차 마무리", "시동 끄고 잠금", new int[] {0xff5874f3, 0xff7d6cf0},
         "control_finish",
         new CloudClient.Command[] {CloudClient.Command.STOP, CloudClient.Command.LOCK},
         this::finishConfirm);
@@ -1018,17 +1018,17 @@ public final class MainActivity extends Activity {
     smallRow.setBaselineAligned(false);
     controls.addView(smallRow);
     smallTile(
-        smallRow, R.drawable.ic_lock_open, "문 열기", 0xff62dca7, 0xff1b3029, "control_unlock",
+        smallRow, R.drawable.ic_lock_open, "도어 열기", 0xff62dca7, 0xff1b3029, "control_unlock",
         new CloudClient.Command[] {CloudClient.Command.UNLOCK},
         () -> controller.command(CloudClient.Command.UNLOCK, false, () -> true));
     smallTile(
-        smallRow, R.drawable.ic_lock, "문 잠금", 0xff8fa8ff, 0xff1e2747, "control_lock",
+        smallRow, R.drawable.ic_lock, "도어 잠금", 0xff8fa8ff, 0xff1e2747, "control_lock",
         new CloudClient.Command[] {CloudClient.Command.LOCK},
         () -> controller.command(CloudClient.Command.LOCK, false, () -> true));
     smallTile(
-        smallRow, R.drawable.ic_climate, "원격 READY", 0xff66cce0, 0xff1b343b, "control_power_on",
+        smallRow, R.drawable.ic_power, "시동 켜기", 0xff66cce0, 0xff1b343b, "control_power_on",
         new CloudClient.Command[] {CloudClient.Command.CLIMATE_ON},
-        () -> climateConfirm("원격 READY · 공조(예열)", "", controller::manualClimateStart));
+        () -> climateConfirm("시동 켜기 · 원격 공조", "", controller::manualClimateStart));
     smallTile(
         smallRow, R.drawable.ic_power_off, "시동 끄기", 0xffddaa67, 0xff35281f, "control_power_off",
         new CloudClient.Command[] {CloudClient.Command.STOP},
@@ -1539,7 +1539,7 @@ public final class MainActivity extends Activity {
     String alert = controller.securityAlert;
     securityBanner.setVisibility(alert == null ? View.GONE : View.VISIBLE);
     if (alert != null)
-      securityText.setText("수동으로 잠그고 시동을 끄세요\n" + alert + "\n(눌러서 하차 마무리 실행)");
+      securityText.setText("수동으로 잠그고 시동을 끄세요\n" + alert + "\n(눌러서 주차 마무리 실행)");
     com.dautolock.app.core.VehicleSnapshot state = controller.snapshot;
     String[] charge = DashboardStatus.charging(state, now);
     chargeCard.setVisibility(charge == null ? View.GONE : View.VISIBLE);

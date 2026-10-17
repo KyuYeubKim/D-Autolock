@@ -176,7 +176,7 @@ public class MainActivityTest {
       assertTrue(parent.indexOfChild(controls) < parent.indexOfChild(logs));
       assertEquals(View.GONE, root.findViewWithTag("settingsPage").getVisibility());
       assertNotNull(signal.findViewWithTag("thresholdEdit"));
-      assertNotNull(find(controls, "문 열기"));
+      assertNotNull(find(controls, "도어 열기"));
     }
   }
 
@@ -380,16 +380,16 @@ public class MainActivityTest {
       assertNotNull(find(decor, "D-Autolock"));
       assertNotNull(find(decor, "블루투스 기기 검색 / 선택"));
       assertNotNull(find(decor, "Sub 계정 로그인 / 변경"));
-      assertFalse(find(decor, "문 열기").isEnabled());
+      assertFalse(find(decor, "도어 열기").isEnabled());
       assertFalse(decor.findViewWithTag("control_power_off").isEnabled());
       assertFalse(decor.findViewWithTag("control_prepare").isEnabled());
       assertFalse(((Switch) find(decor, "실제 자동 도어 제어")).isChecked());
       assertNotNull(find(decor, "탑승 공조 · READY 상태 진단"));
       assertNotNull(find(decor, "진단 로그 파일 저장"));
       assertNotNull(find(decor, "탑승 시 공조 시작"));
-      assertNotNull(find(decor, "원격 READY"));
-      assertNotNull(find(decor, "출차 준비"));
-      assertNotNull(find(decor, "하차 마무리"));
+      assertNotNull(find(decor, "시동 켜기"));
+      assertNotNull(find(decor, "원격 Ready"));
+      assertNotNull(find(decor, "주차 마무리"));
     }
   }
 

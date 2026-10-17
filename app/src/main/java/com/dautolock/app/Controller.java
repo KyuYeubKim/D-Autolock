@@ -1680,7 +1680,7 @@ final class Controller {
   }
 
   /**
-   * 출차 준비: door unlock, then one parked remote climate start (which powers the car; this is not
+   * 원격 Ready (출차 준비): door unlock, then one parked remote climate start (which powers the car; this is not
    * driving READY). The climate step runs only after the unlock is confirmed by a fresh readback.
    */
   void departurePrepare() {
@@ -1697,14 +1697,14 @@ final class Controller {
                   if (s != null
                       && s.fresh(System.currentTimeMillis())
                       && Boolean.FALSE.equals(s.locked)) manualClimateStart();
-                  else note("출차 준비 중단 · 도어 열림을 확인하지 못해 시동을 켜지 않았습니다");
+                  else note("원격 Ready 중단 · 도어 열림을 확인하지 못해 시동을 켜지 않았습니다");
                 }),
         () -> false,
         -1);
   }
 
   /**
-   * 하차 마무리: Stop with this tap's one-use parking confirmation, then lock only when power OFF is
+   * 주차 마무리: Stop with this tap's one-use parking confirmation, then lock only when power OFF is
    * confirmed. An unconfirmed Stop never leads to another command on its own.
    */
   void departureFinish() {
@@ -1723,7 +1723,7 @@ final class Controller {
                       && s.fresh(System.currentTimeMillis())
                       && Integer.valueOf(1).equals(s.power))
                     command(CloudClient.Command.LOCK, false, () -> true);
-                  else note("하차 마무리 중단 · 시동 꺼짐을 확인하지 못해 잠그지 않았습니다. 차량을 확인하세요");
+                  else note("주차 마무리 중단 · 시동 꺼짐을 확인하지 못해 잠그지 않았습니다. 차량을 확인하세요");
                 }),
         () -> false,
         SystemClock.elapsedRealtime());

@@ -113,7 +113,7 @@ public final class ProximityEngine {
         && samples >= 4
         && now - since >= dwell(now)) {
       if (departedAt < 0) departedAt = now;
-    } else if (next == Zone.NEAR || smoothed > far + 4) departedAt = -1; // Clearly back.
+    } else if (next == Zone.NEAR || smoothed >= near - 4) departedAt = -1; // Clearly back near.
     return pending(now);
   }
 

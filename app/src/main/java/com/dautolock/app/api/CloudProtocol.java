@@ -16,22 +16,40 @@ public class CloudProtocol {
   private final BangcleCodec bangcleCodec;
   private final BydConfig config;
 
-  private String userId;
-  private String signToken;
-  private String encryToken;
+  private volatile String userId;
+  private volatile String signToken;
+  private volatile String encryToken;
 
   private final Map<String, String> deviceProfile = new HashMap<>();
   private boolean debug = false;
 
+  private static volatile OkHttpClient sharedClient;
+
+  // One OkHttpClient for the whole process: it owns a dispatcher thread pool and a connection pool,
+  // so building a new one on every login/logout churned threads and sockets. OkHttp is meant to be
+  // shared; reusing one keeps system load down during account switches and 1008 recovery.
+  private static OkHttpClient sharedClient() {
+    OkHttpClient client = sharedClient;
+    if (client == null)
+      synchronized (CloudProtocol.class) {
+        client = sharedClient;
+        if (client == null) {
+          client =
+              new OkHttpClient.Builder()
+                  .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                  .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+                  .callTimeout(25, java.util.concurrent.TimeUnit.SECONDS)
+                  .retryOnConnectionFailure(false)
+                  .followRedirects(false)
+                  .build();
+          sharedClient = client;
+        }
+      }
+    return client;
+  }
+
   public CloudProtocol(BydConfig config) {
-    this.httpClient =
-        new OkHttpClient.Builder()
-            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-            .callTimeout(25, java.util.concurrent.TimeUnit.SECONDS)
-            .retryOnConnectionFailure(false)
-            .followRedirects(false)
-            .build();
+    this.httpClient = sharedClient();
     this.bangcleCodec = new BangcleCodec();
     this.config = config;
 

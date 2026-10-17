@@ -758,7 +758,7 @@ final class Controller {
       BooleanSupplier departureConfirmed,
       long readyAt) {
     return executeCommand(
-        command, true, valid, claim, alreadyDone, finished, departureConfirmed, -1, readyAt);
+        command, true, valid, claim, alreadyDone, finished, departureConfirmed, -1, readyAt, false);
   }
 
   void discardApproachPreflight() {
@@ -865,7 +865,8 @@ final class Controller {
         finished,
         departureConfirmed,
         parkingConfirmedAt,
-        SystemClock.elapsedRealtime());
+        SystemClock.elapsedRealtime(),
+        false);
   }
 
   private boolean executeCommand(
@@ -877,7 +878,8 @@ final class Controller {
       Runnable finished,
       BooleanSupplier departureConfirmed,
       long parkingConfirmedAt,
-      long readyAt) {
+      long readyAt,
+      boolean preserveTrip) {
     int ticket = generation.get();
     String target = vin;
     // Any new door/Stop request from this phone supersedes a pending automatic Stop.
@@ -1063,7 +1065,7 @@ final class Controller {
             if (stop && verified && Boolean.TRUE.equals(after.locked))
               closeWindowsAfterLock(() -> validSession(ticket, target));
             if (command == CloudClient.Command.UNLOCK && verified && validSession(ticket, target)) {
-              startTrip(automatic ? "auto_unlock" : "manual_unlock");
+              if (!preserveTrip) startTrip(automatic ? "auto_unlock" : "manual_unlock");
               clearSecurityAlert("unlocked_by_this_phone");
             }
             if (automatic
@@ -1428,7 +1430,24 @@ final class Controller {
       return;
     }
     note("주차(P) 감지 · 도어 잠금 해제");
-    command(CloudClient.Command.UNLOCK, false, () -> true);
+    // Preserve the in-progress driven trip: parking ends a drive, it does not start a new one.
+    // Resetting ownership here would make the following departure lock skip the auto-Stop the user
+    // enabled (a verified UNLOCK otherwise restarts the trip and clears tripDriven).
+    executeParkUnlock();
+  }
+
+  private void executeParkUnlock() {
+    executeCommand(
+        CloudClient.Command.UNLOCK,
+        false,
+        () -> true,
+        () -> true,
+        () -> {},
+        () -> {},
+        () -> false,
+        -1,
+        SystemClock.elapsedRealtime(),
+        true);
   }
 
   private void scheduleStop(BooleanSupplier valid) {

@@ -92,6 +92,7 @@ public final class MainActivity extends Activity {
   private BluetoothLeScanner pickerScanner;
   private ScanCallback pickerCallback;
   private final Handler handler = new Handler(Looper.getMainLooper());
+  private Runnable pickerTimeout;
 
   @Override
   public void onCreate(Bundle saved) {
@@ -2231,7 +2232,9 @@ public final class MainActivity extends Activity {
   }
 
   private void stopPicker() {
-    handler.removeCallbacksAndMessages(null);
+    // Remove only this picker's own timeout, not every queued callback — the shared handler also
+    // drives the control-button disarm and the Stop countdown, which must not be cancelled here.
+    if (pickerTimeout != null) handler.removeCallbacks(pickerTimeout);
     if (pickerScanner != null && pickerCallback != null)
       try {
         pickerScanner.stopScan(pickerCallback);
@@ -2342,12 +2345,12 @@ public final class MainActivity extends Activity {
           null,
           new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
           pickerCallback);
-      handler.postDelayed(
+      pickerTimeout =
           () -> {
             stopPicker();
             status.setText("검색 완료 · 차량의 BLE 기기를 선택하세요");
-          },
-          20000);
+          };
+      handler.postDelayed(pickerTimeout, 20000);
     } catch (SecurityException e) {
       controller.note("블루투스 권한을 확인하세요");
     }

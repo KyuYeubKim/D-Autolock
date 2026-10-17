@@ -366,13 +366,9 @@ public class BangcleCodec {
     if (data.length == 0) return data;
     int padding = data[data.length - 1] & 0xFF;
     if (padding < 1 || padding > 16 || padding > data.length) {
-      StringBuilder sb = new StringBuilder();
-      sb.append("Invalid PKCS7 padding: ").append(padding).append(". Last 16 bytes: ");
-      int start = Math.max(0, data.length - 16);
-      for (int i = start; i < data.length; i++) {
-        sb.append(String.format("%02x ", data[i]));
-      }
-      throw new IllegalArgumentException(sb.toString());
+      // Do not include the decrypted bytes in the message: they are plaintext of the BYD response and
+      // must never reach a log. The padding length alone is enough to diagnose a decrypt failure.
+      throw new IllegalArgumentException("Invalid PKCS7 padding: " + padding);
     }
     byte[] unpadded = new byte[data.length - padding];
     System.arraycopy(data, 0, unpadded, 0, unpadded.length);

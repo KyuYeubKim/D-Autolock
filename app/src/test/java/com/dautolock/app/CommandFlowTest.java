@@ -247,6 +247,25 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void parkUnlockPreservesDrivenTripSoDepartureCanStillStop() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true; // The car auto-locked its doors while driving (normal BYD behaviour).
+    Controller c = create(p);
+    c.settings.edit().putBoolean("unlockOnPark", true).commit();
+    ownTrip(c); // This phone opened the car and drove it: an owned, driven trip.
+    assertNull(c.ownershipBlock());
+    // A real park: the Bridge reports a stable P after driving, which triggers the park-unlock.
+    c.vehicleSample(PARK);
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(3));
+    c.vehicleSample(PARK);
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+    complete(c);
+    assertEquals(Collections.singletonList("OPENDOOR"), p.commands); // It unlocked.
+    // The driven trip must survive the park-unlock, so a later departure lock still auto-Stops.
+    assertNull(c.ownershipBlock());
+  }
+
+  @Test
   public void approachReadIsSharedWithPendingUnlockAndConsumedWithoutDuplicatePreflight()
       throws Exception {
     Protocol p = new Protocol();

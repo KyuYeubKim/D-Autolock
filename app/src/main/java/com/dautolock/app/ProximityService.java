@@ -30,7 +30,7 @@ public final class ProximityService extends Service {
   private volatile ProximityEngine beaconEngine;
   private String beaconAddr = "";
   private int deviceType;
-  private String radioStatus = "BLE 검색 중";
+  private volatile String radioStatus = "BLE 검색 중";
   private final Runnable restartScan =
       () -> {
         if (!scanning) return;
@@ -409,6 +409,18 @@ public final class ProximityService extends Service {
     }
     boolean automatic =
         intent != null && intent.getBooleanExtra("automatic", false) && controller.setupReady();
+    boolean hasAutomatic = intent != null && intent.hasExtra("automatic");
+    // Every startForegroundService() delivery must call startForeground() promptly, including the
+    // already-scanning re-entries (RESCAN/RECONFIGURE/automatic toggle); otherwise the OS can kill
+    // the process (RemoteServiceException) and the whole proximity/lock loop stops. startForeground
+    // is idempotent when already in the foreground.
+    try {
+      promoteForeground(hasAutomatic || !scanning ? automatic : notificationAutomatic);
+    } catch (Exception e) {
+      controller.note(e.getMessage() == null ? "거리 관찰을 시작하지 못했습니다" : e.getMessage());
+      stopSelf();
+      return START_NOT_STICKY;
+    }
     if (scanning) {
       if (intent != null && "RECONFIGURE".equals(intent.getAction())) {
         controller.discardApproachPreflight();
@@ -424,18 +436,7 @@ public final class ProximityService extends Service {
       controller.changed();
       return START_NOT_STICKY;
     }
-    Notification notification = DoorNotifications.ongoing(this, automatic);
-    notificationAutomatic = automatic;
     try {
-      if (Build.VERSION.SDK_INT >= 31)
-        startForeground(
-            DoorNotifications.ONGOING_ID,
-            notification,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
-      else if (Build.VERSION.SDK_INT >= 29)
-        startForeground(
-            DoorNotifications.ONGOING_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
-      else startForeground(DoorNotifications.ONGOING_ID, notification);
       if (Build.VERSION.SDK_INT >= 31
           && (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
                   != PackageManager.PERMISSION_GRANTED
@@ -502,6 +503,20 @@ public final class ProximityService extends Service {
       stopSelf();
     }
     return START_NOT_STICKY;
+  }
+
+  private void promoteForeground(boolean automatic) {
+    Notification notification = DoorNotifications.ongoing(this, automatic);
+    notificationAutomatic = automatic;
+    if (Build.VERSION.SDK_INT >= 31)
+      startForeground(
+          DoorNotifications.ONGOING_ID,
+          notification,
+          ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+    else if (Build.VERSION.SDK_INT >= 29)
+      startForeground(
+          DoorNotifications.ONGOING_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
+    else startForeground(DoorNotifications.ONGOING_ID, notification);
   }
 
   @Override

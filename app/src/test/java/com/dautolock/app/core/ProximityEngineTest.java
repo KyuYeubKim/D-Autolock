@@ -64,6 +64,20 @@ public class ProximityEngineTest {
   }
 
   @Test
+  public void midRangeRecoveryDoesNotCancelLatchedDeparture() {
+    ProximityEngine e = new ProximityEngine(-60, -80, 0, 1000, 10000);
+    feed(e, -50, 0, 3000); // Near: seenNear.
+    e.alreadySatisfied(UNLOCK, 3000);
+    feed(e, -100, 4000, 9000); // Far: departure confirmed, latch set.
+    assertTrue(e.departureConfirmed(9000));
+    // A stray mid-range recovery (above far, still well below near) must not drop the departure
+    // latch; otherwise a single borderline sample during the Stop delay cancels a correct Stop.
+    feed(e, -70, 10000, 14000);
+    // Signal is then lost; still inside the 5-minute latch window, so the departure still counts.
+    assertTrue(e.departureConfirmed(40000));
+  }
+
+  @Test
   public void departureLatchExpiresAndSignalLossAloneNeverSetsIt() {
     ProximityEngine e = new ProximityEngine(-60, -80, 0, 1000, 10000);
     feed(e, -50, 0, 3000);

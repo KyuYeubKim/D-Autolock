@@ -1256,14 +1256,19 @@ final class Controller {
   void exportDiagnostics(android.net.Uri uri) {
     diagnostics.snapshot(
         data -> {
+          boolean saved = false;
           try (java.io.OutputStream out =
               context.getContentResolver().openOutputStream(uri, "wt")) {
             if (out == null) throw new java.io.IOException("output");
             out.write(data.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            note("진단 로그를 저장했습니다");
+            saved = true;
           } catch (Exception e) {
             note("진단 로그 내보내기 실패: " + e.getClass().getSimpleName());
           }
+          // Start a fresh log after a successful save so the file does not keep accumulating old
+          // sessions. Cleared only when the save succeeded, so a failed export never loses the log.
+          if (saved)
+            diagnostics.clear(() -> note("진단 로그를 저장하고 기존 로그를 비웠습니다 · 새 로그를 기록합니다"));
         });
   }
 

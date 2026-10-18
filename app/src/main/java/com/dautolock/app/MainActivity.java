@@ -579,7 +579,8 @@ public final class MainActivity extends Activity {
         v -> controller.diagnostics.clear(() -> controller.note("진단 로그를 삭제했습니다")));
     text(
         events,
-        "신호·판단·제어 결과를 휴대폰에 자동 저장합니다(최대 약 1.5 MB). 계정·비밀번호·PIN·VIN·기기 주소와 서버 원문은 포함하지 않습니다.",
+        "신호·판단·제어 결과를 휴대폰에 자동 저장합니다(최대 약 1.5 MB). 계정·비밀번호·PIN·VIN·기기 주소와 서버 원문은 포함하지 않습니다. "
+            + "‘진단 로그 파일 저장’을 누르면 파일로 저장한 뒤 기존 로그를 비우고 새로 기록합니다.",
         12,
         MUTED);
     LinearLayout updates = card("앱 업데이트");

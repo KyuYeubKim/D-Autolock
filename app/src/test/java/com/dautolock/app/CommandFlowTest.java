@@ -266,6 +266,30 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void savingDiagnosticsExportsThenClearsForAFreshStart() throws Exception {
+    Controller c = create(new Protocol());
+    c.diagnostics.record("TEST_EVENT_MARKER", "x");
+    java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
+    android.net.Uri uri = android.net.Uri.parse("content://test/diag.txt");
+    org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication().getContentResolver())
+        .registerOutputStream(uri, sink);
+    c.exportDiagnostics(uri);
+    // The export and the follow-up clear both run on the diagnostics writer thread; poll a fresh
+    // snapshot until the old entry is gone.
+    String after = "";
+    long limit = System.currentTimeMillis() + 5000;
+    while (System.currentTimeMillis() < limit) {
+      java.util.concurrent.CompletableFuture<String> snap = new java.util.concurrent.CompletableFuture<>();
+      c.diagnostics.snapshot(snap::complete);
+      after = snap.get(5, java.util.concurrent.TimeUnit.SECONDS);
+      if (!after.contains("TEST_EVENT_MARKER")) break;
+      Thread.sleep(20);
+    }
+    assertTrue(sink.toString("UTF-8").contains("TEST_EVENT_MARKER")); // Saved to the file first.
+    assertFalse(after.contains("TEST_EVENT_MARKER")); // Then the on-device log is cleared.
+  }
+
+  @Test
   public void approachReadIsSharedWithPendingUnlockAndConsumedWithoutDuplicatePreflight()
       throws Exception {
     Protocol p = new Protocol();

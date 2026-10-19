@@ -29,6 +29,8 @@ public final class ProximityService extends Service {
   // Auxiliary beacon engine — fed in parallel and shown/logged, but not yet used in any decision.
   private volatile ProximityEngine beaconEngine;
   private String beaconAddr = "";
+  private String beaconName = "";
+  private String primaryAddr = "";
   private int deviceType;
   private volatile String radioStatus = "BLE 검색 중";
   private final Runnable restartScan =
@@ -55,11 +57,14 @@ public final class ProximityService extends Service {
             }
           scanner = adapter.getBluetoothLeScanner();
           if (scanner == null) throw new IllegalStateException("scanner unavailable");
+          List<ScanFilter> filters = new ArrayList<>();
+          filters.add(
+              new ScanFilter.Builder()
+                  .setDeviceAddress(controller.settings.getString("address", ""))
+                  .build());
+          addBeaconFilters(filters);
           scanner.startScan(
-              Collections.singletonList(
-                  new ScanFilter.Builder()
-                      .setDeviceAddress(controller.settings.getString("address", ""))
-                      .build()),
+              filters,
               new ScanSettings.Builder()
                   .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
                   .setReportDelay(0)
@@ -381,11 +386,19 @@ public final class ProximityService extends Service {
       return;
     }
     String addr = result.getDevice().getAddress();
-    if (beaconEngine != null && addr != null && addr.equalsIgnoreCase(beaconAddr)) {
+    android.bluetooth.le.ScanRecord record = result.getScanRecord();
+    String name = record == null ? null : record.getDeviceName();
+    if (beaconEngine != null
+        && ((addr != null && addr.equalsIgnoreCase(beaconAddr))
+            || (!beaconName.isEmpty() && beaconName.equals(name)))) {
       // Observe-only: feed the beacon engine for display/logging; it does not drive any decision yet.
+      // Routed by address OR advertised name so a static-random / changed beacon MAC still matches.
       beaconEngine.sample(result.getRssi(), sampleAt);
       return;
     }
+    // Only the chosen vehicle device feeds the lock/unlock engine: the beacon name filter can deliver
+    // other devices, which must never be treated as the car.
+    if (addr == null || primaryAddr.isEmpty() || !addr.equalsIgnoreCase(primaryAddr)) return;
     engine.sample(result.getRssi(), sampleAt);
     evaluate();
   }
@@ -454,14 +467,15 @@ public final class ProximityService extends Service {
       engine = controller.proximityEngine();
       beaconAddr =
           controller.beaconConfigured() ? controller.settings.getString("beaconAddress", "") : "";
+      beaconName = beaconAddr.isEmpty() ? "" : controller.settings.getString("beaconName", "");
+      primaryAddr = address;
       beaconEngine = beaconAddr.isEmpty() ? null : controller.beaconProximityEngine();
       started = SystemClock.elapsedRealtime();
       lastScanAttempt = started;
       scanning = true;
       List<ScanFilter> filters = new ArrayList<>();
       filters.add(new ScanFilter.Builder().setDeviceAddress(address).build());
-      if (!beaconAddr.isEmpty())
-        filters.add(new ScanFilter.Builder().setDeviceAddress(beaconAddr).build());
+      addBeaconFilters(filters);
       scanner.startScan(
           filters,
           new ScanSettings.Builder()
@@ -503,6 +517,18 @@ public final class ProximityService extends Service {
       stopSelf();
     }
     return START_NOT_STICKY;
+  }
+
+  private void addBeaconFilters(List<ScanFilter> filters) {
+    if (beaconAddr.isEmpty()) return;
+    // A Holyiot beacon advertises with a static RANDOM address, which an address-only filter (PUBLIC
+    // type by default) never matches on strict phones — the unfiltered device picker still sees it,
+    // which is why the beacon was received only right after being picked and then dropped. Match by
+    // the stable advertised name as well; one of the two filters catches it in the filtered
+    // (screen-off) scan, and the name also survives a changed random address.
+    if (!beaconName.isEmpty()) filters.add(new ScanFilter.Builder().setDeviceName(beaconName).build());
+    if (BluetoothAdapter.checkBluetoothAddress(beaconAddr))
+      filters.add(new ScanFilter.Builder().setDeviceAddress(beaconAddr).build());
   }
 
   private void promoteForeground(boolean automatic) {

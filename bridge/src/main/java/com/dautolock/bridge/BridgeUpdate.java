@@ -78,12 +78,16 @@ final class BridgeUpdate {
         if (!name.startsWith(ASSET_PREFIX) || !name.endsWith(ASSET_SUFFIX)) continue;
         String v = name.substring(ASSET_PREFIX.length(), name.length() - ASSET_SUFFIX.length());
         if (order(v) <= best) continue;
+        // Pin the download to this repo's own release URL (mirrors the phone updater), so a tampered
+        // API response cannot redirect the fetch to another host. verify() still gates the install.
+        String expectedUrl = "https://github.com/" + REPO + "/releases/download/" + tag + "/" + name;
+        if (!expectedUrl.equals(a.optString("browser_download_url"))) continue;
         String d = a.optString("digest");
         long s = a.optLong("size", 0);
         if (!d.matches("sha256:[a-fA-F0-9]{64}") || s <= 0 || s > 50000000) continue;
         best = order(v);
         bestVersion = v;
-        url = a.optString("browser_download_url");
+        url = expectedUrl;
         digest = d.substring(7).toLowerCase(Locale.ROOT);
         size = s;
       }

@@ -11,6 +11,9 @@ import java.util.concurrent.*;
 public final class BridgeService extends Service {
   static volatile String status = "차량 조회 중지", detail = "", lastSample = "";
   static volatile long sampledAt = -1;
+  // Set by BridgeActivity while its status screen is on screen. The background gear read only feeds
+  // that screen, so it runs only while this is true (the phone's lock/unlock path reads on demand).
+  static volatile boolean screenVisible;
   private volatile boolean running;
   private volatile BluetoothServerSocket server;
   private volatile BluetoothSocket socket;
@@ -54,6 +57,11 @@ public final class BridgeService extends Service {
     }
     local.scheduleWithFixedDelay(
         () -> {
+          // This background read only feeds the Bridge status screen. Skip it when that screen is
+          // not showing: each read calls the car SDK getters (which log under this app's name and
+          // load a weak head-unit CPU all day). The phone's lock/unlock path still reads fresh per
+          // request in serve(), so this changes no control behaviour.
+          if (!screenVisible) return;
           // An exception here would silently cancel all later reads; keep the loop alive.
           try {
             LinkProtocol.Sample s = reader.read();
@@ -80,7 +88,9 @@ public final class BridgeService extends Service {
   }
 
   private void serve() {
+    long retryMs = 3000;
     while (running) {
+      boolean served = false;
       try {
         if (Build.VERSION.SDK_INT >= 31
             && checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
@@ -115,6 +125,7 @@ public final class BridgeService extends Service {
                 reader.read(); // A new getter call after each authenticated request.
             LinkProtocol.respond(active.getOutputStream(), pair.key, nonce, sample);
             status = "휴대폰 인증 연결 · 상태 전달 중";
+            served = true;
           } finally {
             deadline.cancel(false);
           }
@@ -130,9 +141,12 @@ public final class BridgeService extends Service {
         close(server);
         server = null;
       }
+      // A productive connection reconnects quickly; a dead wait (Bluetooth off, permission missing,
+      // unregistered phone) backs off 3 → 10 → 30 s so we stop re-opening the RFCOMM socket ~20×/min.
+      retryMs = served ? 3000 : Math.min(30000, retryMs <= 3000 ? 10000 : retryMs * 3);
       if (running)
         try {
-          Thread.sleep(3000);
+          Thread.sleep(retryMs);
         } catch (InterruptedException e) {
           break;
         }

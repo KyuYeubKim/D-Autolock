@@ -15,7 +15,7 @@ import java.util.*;
 import org.json.JSONObject;
 
 public final class BridgeActivity extends Activity {
-  static final String VERSION = "0.3.3";
+  static final String VERSION = "0.3.4";
   private TextView status;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final Runnable tick =
@@ -283,6 +283,7 @@ public final class BridgeActivity extends Activity {
   @Override
   protected void onStart() {
     super.onStart();
+    BridgeService.screenVisible = true; // Let the service read the gear for this live status screen.
     handler.post(tick);
     // Self-update: check in the background; if a verified update is already downloaded, install it.
     BridgeUpdate updater = new BridgeUpdate(this);
@@ -298,6 +299,7 @@ public final class BridgeActivity extends Activity {
 
   @Override
   protected void onStop() {
+    BridgeService.screenVisible = false; // Stop the background gear reads when the screen is hidden.
     handler.removeCallbacks(tick);
     super.onStop();
   }

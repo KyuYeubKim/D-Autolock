@@ -11,6 +11,16 @@ final class BydGearReader {
   private Object device;
   private int initQuality = 1;
   volatile String detail = "차량 API 확인 전";
+  // Reflection is resolved once: the getter Methods and the fixed parking-brake constants never
+  // change, so re-finding them on every read wasted CPU on a weak head-unit and the car SDK logs a
+  // line per call under this app's name.
+  private Method modeMethod, currentMethod, epbMethod;
+  private boolean reflectionResolved;
+  private Integer engagedConst, releasedConst;
+  // When the car gear API stays unavailable, back off instead of re-calling getInstance twice a
+  // second (each attempt makes the SDK log). 30 s → … → 5 min, reset implicitly once device is set.
+  private long nextInitAttempt;
+  private long initBackoffMs = 30000;
 
   BydGearReader(Context context) {
     this.context = context.getApplicationContext();
@@ -23,12 +33,18 @@ final class BydGearReader {
 
   private void initialize() {
     if (device != null || context == null) return;
+    long now = android.os.SystemClock.elapsedRealtime();
+    if (nextInitAttempt != 0 && now < nextInitAttempt) return; // Still backing off.
     try {
       Class<?> c = Class.forName("android.hardware.bydauto.gearbox.BYDAutoGearboxDevice");
       device = c.getMethod("getInstance", Context.class).invoke(null, new GetterContext(context));
       initQuality = device == null ? 1 : 0;
     } catch (Throwable e) {
       initQuality = security(e) ? 2 : 1;
+    }
+    if (device == null) {
+      nextInitAttempt = now + initBackoffMs;
+      initBackoffMs = Math.min(300000, initBackoffMs * 2); // 30 s → 1 m → … → 5 m.
     }
   }
 
@@ -42,16 +58,35 @@ final class BydGearReader {
     boolean denied;
   }
 
-  private Value value(String method) {
+  private Value value(Method method) {
     Value v = new Value();
+    if (method == null) return v; // Getter absent on this firmware: leave raw MISSING, not denied.
     try {
-      Object raw = device.getClass().getMethod(method).invoke(device);
+      Object raw = method.invoke(device);
       // Never turn null, void, Boolean or a fractional value into zero/N.
       if (raw instanceof Integer) v.raw = (Integer) raw;
     } catch (Throwable e) {
       v.denied = security(e);
     }
     return v;
+  }
+
+  private Method method(String name) {
+    try {
+      return device.getClass().getMethod(name);
+    } catch (Throwable e) {
+      return null;
+    }
+  }
+
+  private void resolveReflection() {
+    if (reflectionResolved) return;
+    modeMethod = method("getGearboxAutoModeType");
+    currentMethod = method("getCurrentGear");
+    epbMethod = method("getParkBrakeSwitch");
+    engagedConst = constant("GEARBOX_PARK_BREAK_SWITCH_VALID");
+    releasedConst = constant("GEARBOX_PARK_BREAK_SWITCH_INVALID");
+    reflectionResolved = true;
   }
 
   private Integer constant(String name) {
@@ -88,17 +123,15 @@ final class BydGearReader {
       return new LinkProtocol.Sample(
           -1, -1, LinkProtocol.MISSING, LinkProtocol.MISSING, LinkProtocol.MISSING, initQuality);
     }
-    Value a = value("getGearboxAutoModeType"),
-        b = value("getCurrentGear"),
-        epb = value("getParkBrakeSwitch");
+    resolveReflection();
+    Value a = value(modeMethod), b = value(currentMethod), epb = value(epbMethod);
     int first = mode(a.raw), second = current(b.raw), gear = first != -1 ? first : second;
     int quality = gear == -1 ? (a.denied || b.denied ? 2 : 1) : 0;
     if (first != -1 && second != -1 && first != second) {
       gear = -1;
       quality = 3;
     }
-    Integer engaged = constant("GEARBOX_PARK_BREAK_SWITCH_VALID"),
-        released = constant("GEARBOX_PARK_BREAK_SWITCH_INVALID");
+    Integer engaged = engagedConst, released = releasedConst;
     int brake = -1;
     // Read the firmware's named constants. An arbitrary 0/1 mapping is not assumed.
     if (engaged != null && released != null && !engaged.equals(released))

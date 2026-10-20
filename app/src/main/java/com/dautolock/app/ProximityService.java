@@ -9,6 +9,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.*;
 import com.dautolock.app.api.CloudClient;
+import com.dautolock.app.core.BeaconCombine;
 import com.dautolock.app.core.ProximityEngine;
 import java.util.*;
 
@@ -26,6 +27,8 @@ public final class ProximityService extends Service {
   private String lastDiagnosticReason = "";
   private long nextPreflight, lastDiagnostic = -15000, lastCount = -1, started, lastIgnored = -5000;
   private long lastIgnitionGraceLog = -15000;
+  // Phase 2 beacon combine: time of the last lock (flap mute) and when a beacon-held lock started.
+  private long lastLockAt = -1, lockHoldSince = -1;
   // Auxiliary beacon engine — fed in parallel and shown/logged, but not yet used in any decision.
   private volatile ProximityEngine beaconEngine;
   private String beaconAddr = "";
@@ -290,31 +293,68 @@ public final class ProximityService extends Service {
       lastIgnitionGraceLog = now;
     }
     ProximityEngine.Action action = ignitionGraceSkip ? ProximityEngine.Action.NONE : pending;
+    // Phase 2: combine with the auxiliary beacon — open on EITHER signal, lock only when BOTH are
+    // clear. A dead beacon never blocks a lock, a long hold locks anyway, and a beacon-only re-open
+    // is muted briefly after a lock. With no beacon (or combine off) this is the vehicle decision
+    // unchanged.
+    final ProximityEngine checkedEngine;
+    final ProximityEngine.Action commandAction;
+    if (beaconEngine != null && controller.settings.getBoolean("beaconCombine", true)) {
+      boolean beaconFresh = beaconEngine.fresh(now);
+      BeaconCombine.Decision decision =
+          BeaconCombine.decide(
+              action,
+              beaconEngine.pending(now),
+              beaconFresh,
+              beaconFresh && beaconEngine.lastReadingNear(),
+              now,
+              lastLockAt,
+              lockHoldSince);
+      if (decision == BeaconCombine.Decision.HOLD) {
+        if (lockHoldSince < 0) {
+          lockHoldSince = now;
+          controller.diagnostics.record(
+              "BEACON_LOCK_HOLD", "beacon still near · " + beaconEngine.diagnostic(now));
+        }
+        checkedEngine = engine;
+        commandAction = ProximityEngine.Action.NONE;
+      } else {
+        lockHoldSince = -1;
+        checkedEngine = decision == BeaconCombine.Decision.UNLOCK_BEACON ? beaconEngine : engine;
+        commandAction =
+            decision == BeaconCombine.Decision.UNLOCK_PRIMARY
+                    || decision == BeaconCombine.Decision.UNLOCK_BEACON
+                ? ProximityEngine.Action.UNLOCK
+                : decision == BeaconCombine.Decision.LOCK
+                    ? ProximityEngine.Action.LOCK
+                    : ProximityEngine.Action.NONE;
+      }
+    } else {
+      checkedEngine = engine;
+      commandAction = action;
+    }
     if (controller.autoEnabled
         && !autoAttempt
         && cloudWait == 0
         && now >= nextPreflight
-        && (action != ProximityEngine.Action.UNLOCK || now >= nextUnlockCheck)
-        && action != ProximityEngine.Action.NONE) {
+        && (commandAction != ProximityEngine.Action.UNLOCK || now >= nextUnlockCheck)
+        && commandAction != ProximityEngine.Action.NONE) {
       CloudClient.Command command =
-          action == ProximityEngine.Action.UNLOCK
+          commandAction == ProximityEngine.Action.UNLOCK
               ? CloudClient.Command.UNLOCK
               : CloudClient.Command.LOCK;
       autoAttempt = true;
-      final ProximityEngine checkedEngine = engine;
-      checkedEngine.beginCheck(action, now);
+      checkedEngine.beginCheck(commandAction, now);
       boolean accepted =
           controller.automaticCommand(
               command,
               () ->
-                  scanning
-                      && engine == checkedEngine
-                      && checkedEngine.stillValid(action, SystemClock.elapsedRealtime()),
+                  sameEngine(checkedEngine)
+                      && checkedEngine.stillValid(commandAction, SystemClock.elapsedRealtime()),
               () ->
-                  scanning
-                      && engine == checkedEngine
-                      && checkedEngine.claim(action, SystemClock.elapsedRealtime()),
-              () -> checkedEngine.alreadySatisfied(action, SystemClock.elapsedRealtime()),
+                  sameEngine(checkedEngine)
+                      && checkedEngine.claim(commandAction, SystemClock.elapsedRealtime()),
+              () -> checkedEngine.alreadySatisfied(commandAction, SystemClock.elapsedRealtime()),
               () ->
                   handler.post(
                       () -> {
@@ -323,35 +363,39 @@ public final class ProximityService extends Service {
                         long completed = SystemClock.elapsedRealtime();
                         // Unlock-only in-use backoff: a powered car with the phone inside is not
                         // polled every 18 s. LOCK is never delayed so a departure locks promptly.
-                        boolean unlockAction = action == ProximityEngine.Action.UNLOCK;
+                        boolean unlockAction = commandAction == ProximityEngine.Action.UNLOCK;
                         long recheck = unlockAction ? controller.automaticRecheckMs(true) : 15000;
                         if (recheck > 15000)
                           controller.diagnostics.record(
                               "AUTO_RECHECK_BACKOFF",
-                              action + " delayMs=" + recheck + " reason=vehicle_in_use");
+                              commandAction + " delayMs=" + recheck + " reason=vehicle_in_use");
                         nextUnlockCheck = recheck > 15000 ? completed + recheck : 0;
                         nextPreflight =
-                            engine == checkedEngine && engine.pending(completed) == action
+                            sameEngine(checkedEngine)
+                                    && checkedEngine.pending(completed) == commandAction
                                 ? completed + 15000
                                 : 0;
                         evaluate();
                       }),
               () ->
-                  scanning
-                      && engine == checkedEngine
+                  sameEngine(checkedEngine)
                       && checkedEngine.departureConfirmed(SystemClock.elapsedRealtime()),
               readyAt);
       if (!accepted) {
         autoAttempt = false;
         checkedEngine.endCheck();
-      } else
+      } else {
+        if (commandAction == ProximityEngine.Action.LOCK) lastLockAt = now;
         controller.diagnostics.record(
             "AUTO_CHECK",
-            action
+            commandAction
                 + " source="
-                + (engine.fresh(now) ? "signal" : "signal_loss")
+                + (checkedEngine == beaconEngine
+                    ? "beacon"
+                    : checkedEngine.fresh(now) ? "signal" : "signal_loss")
                 + " "
-                + engine.diagnostic(now));
+                + checkedEngine.diagnostic(now));
+      }
     }
     if (!autoAttempt
         && pending == ProximityEngine.Action.NONE
@@ -517,6 +561,11 @@ public final class ProximityService extends Service {
       stopSelf();
     }
     return START_NOT_STICKY;
+  }
+
+  /** The captured decision engine is still one of the live engines (not from a past scan session). */
+  private boolean sameEngine(ProximityEngine e) {
+    return scanning && (e == engine || e == beaconEngine);
   }
 
   private void addBeaconFilters(List<ScanFilter> filters) {

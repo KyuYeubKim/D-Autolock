@@ -508,10 +508,22 @@ public final class MainActivity extends Activity {
                 .setNegativeButton("취소", null)
                 .setPositiveButton("해제", (d, w) -> controller.clearBeacon())
                 .show());
+    Switch combineSwitch = new Switch(this);
+    combineSwitch.setTag("beaconCombine");
+    combineSwitch.setText("보조 비콘으로 열기·잠금 (열림 OR · 잠김 AND)");
+    combineSwitch.setTextColor(TEXT);
+    combineSwitch.setMinHeight(dp(56));
+    combineSwitch.setChecked(controller.settings.getBoolean("beaconCombine", true));
+    bluetooth.addView(combineSwitch);
+    combineSwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          controller.settings.edit().putBoolean("beaconCombine", on).apply();
+          controller.note(on ? "보조 비콘 결합 켜짐 · 열림 OR / 잠김 AND" : "보조 비콘 결합 꺼짐 · 관찰 전용");
+        });
     text(
         bluetooth,
-        "보조 BLE는 지금은 '관찰 전용'입니다. 메인의 '보조 신호'에서 세기를 확인하고 작동 거리를 맞추세요."
-            + " 잠금/해제 판단은 아직 주 BLE만 사용합니다.",
+        "보조 BLE 결합을 켜면 주 BLE 또는 비콘 중 하나만 가까워도 열리고(OR), 둘 다 멀어져야 잠깁니다(AND)."
+            + " 비콘이 한동안 안 잡히면 자동으로 주 BLE 단독 잠금으로 넘어갑니다(죽은 비콘 안전장치). 끄면 비콘은 관찰 전용입니다.",
         12,
         MUTED);
     button(

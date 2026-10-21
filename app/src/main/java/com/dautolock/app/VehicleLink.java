@@ -18,9 +18,13 @@ final class VehicleLink {
   private String vehicle = "", address = "";
   private volatile long epoch;
   // Reconnect fast after a productive connection drops (a transient drop mid-drive, so a driving
-  // gear sample is caught quickly), but back off to the normal interval while the phone is away and
-  // connects keep failing, to spare the battery.
+  // gear sample is caught quickly), back off to the normal interval while the phone is away and
+  // connects keep failing, and stretch it far once the phone has been away a long time (e.g. parked
+  // overnight), all to spare the battery.
   private static final long RECONNECT_MIN_MS = 1500, RECONNECT_MAX_MS = 5000;
+  // After this long with no delivered sample, treat the phone as away-for-a-while and cap the
+  // reconnect interval at the longer value below. Returning to range reconnects within that interval.
+  private static final long AWAY_AFTER_MS = 180000, RECONNECT_AWAY_MS = 45000;
   private Thread thread;
   private BluetoothSocket socket;
   volatile String status = "차량 보조 앱 미등록";
@@ -154,7 +158,7 @@ final class VehicleLink {
 
   private void receive(long ticket, Pairing pair, String target) {
     String last = "";
-    long lastLog = -15000, retryMs = RECONNECT_MIN_MS;
+    long lastLog = -15000, retryMs = RECONNECT_MIN_MS, lastDeliveredAt = SystemClock.elapsedRealtime();
     while (ticket == epoch) {
       BluetoothSocket active = null;
       boolean delivered = false;
@@ -231,7 +235,18 @@ final class VehicleLink {
       }
       if (ticket == epoch)
         try {
-          retryMs = delivered ? RECONNECT_MIN_MS : Math.min(RECONNECT_MAX_MS, retryMs * 2);
+          if (delivered) {
+            lastDeliveredAt = SystemClock.elapsedRealtime();
+            retryMs = RECONNECT_MIN_MS;
+          } else {
+            // Away a long time (parked overnight): stretch the interval. A productive drop stays fast
+            // so a driving gear sample is recaught; returning to range reconnects within this cap.
+            long cap =
+                SystemClock.elapsedRealtime() - lastDeliveredAt >= AWAY_AFTER_MS
+                    ? RECONNECT_AWAY_MS
+                    : RECONNECT_MAX_MS;
+            retryMs = Math.min(cap, retryMs * 2);
+          }
           Thread.sleep(retryMs);
         } catch (InterruptedException e) {
           break;

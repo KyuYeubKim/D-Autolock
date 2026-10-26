@@ -911,6 +911,13 @@ public final class MainActivity extends Activity {
     beaconSignalView = text(beaconReading, "보조 신호", 15, MINT);
     beaconSignalView.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
     beaconDbm = text(beaconReading, "— dBm", 14, MUTED);
+    // Adjust the beacon's near/far from the main screen too, like the primary BLE's tune icon above.
+    iconButton(
+        beaconReading,
+        R.drawable.ic_tune,
+        "보조 BLE 작동 거리",
+        "beaconThresholdEdit",
+        v -> beaconThresholdDialog());
     beaconGauge = new SignalGauge(this);
     beaconSection.addView(beaconGauge, new LinearLayout.LayoutParams(-1, dp(46)));
     LinearLayout signalRow = new LinearLayout(this);

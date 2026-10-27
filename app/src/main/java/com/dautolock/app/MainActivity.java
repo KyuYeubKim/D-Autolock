@@ -1900,11 +1900,11 @@ public final class MainActivity extends Activity {
           farWait.setProgress(Controller.DEFAULT_FAR_WAIT);
           lossWait.setProgress(Controller.DEFAULT_LOSS - 5);
         };
-    button(f, "추천값 적용 · −75 / −80 dBm", v -> recommended.run());
+    button(f, "추천값 적용 · −78 / −83 dBm", v -> recommended.run());
     text(
         f,
-        "추천값: 접근 −75 / 이탈 −80 dBm, 접근 1초 / 이탈 5초 / 신호 끊김 10초. 접근 기준은 1~2 m, 이탈 기준은 더 가까이서 잠기도록 −80으로 올렸습니다. 차 옆에서도 신호가 −80 dBm 근처까지 흔들리는"
-            + " 실제 기록을 반영했습니다. 휴대폰 위치와 주변 환경에 맞춰 조정하세요.",
+        "추천값: 접근 −78 / 이탈 −83 dBm, 접근 1초 / 이탈 5초 / 신호 끊김 10초. 주 BLE가 전방(헤드유닛)에서 강해 트렁크·조수석 접근 땐 −75 근처에서 한참 맴돌던 기록을 반영해 접근 기준을 −78로 낮췄습니다"
+            + " (이탈은 5 dBm 간격 유지). 휴대폰 위치와 주변 환경에 맞춰 조정하세요.",
         13,
         MUTED);
     text(
@@ -1984,7 +1984,8 @@ public final class MainActivity extends Activity {
     text(
         f,
         "보조 BLE(비콘)의 접근·이탈 신호 기준입니다. 위치마다 세기가 다르니 메인의 '보조 신호'를 보며 맞추세요."
-            + " 지금은 관찰용이라 잠금/해제 판단에는 아직 쓰이지 않습니다. 두 기준은 5 dBm 이상 간격을 둡니다.",
+            + " '보조 비콘으로 열기·잠금'이 켜져 있으면 이 기준이 열림(둘 중 하나 가까움)·잠금(둘 다 멀어짐)에 함께 쓰입니다."
+            + " 접근 기준을 낮추면(예: -78) 트렁크·조수석 쪽에서도 더 일찍 열립니다. 두 기준은 5 dBm 이상 간격을 둡니다.",
         13,
         MUTED);
     text(

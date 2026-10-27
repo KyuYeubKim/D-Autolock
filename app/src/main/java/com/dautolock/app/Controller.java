@@ -63,10 +63,13 @@ final class Controller {
    * Recommended starting sensitivity (from real logs: standing by the car dips to about -85 dBm).
    * Only used when nothing was saved; existing users keep their own values.
    */
-  static final int DEFAULT_NEAR = -75, DEFAULT_FAR = -80;
+  // Near loosened −75→−78 (far −80→−83): the primary module sits up front, so trunk/passenger
+  // approaches hovered just under −75 for ~12 s before crossing; a lower bar opens sooner there.
+  static final int DEFAULT_NEAR = -78, DEFAULT_FAR = -83;
   static final int DEFAULT_NEAR_WAIT = 1, DEFAULT_FAR_WAIT = 5, DEFAULT_LOSS = 10;
-  // Beacon thresholds start wider (−70/−80); the user tunes them per placement from the observed RSSI.
-  static final int DEFAULT_BEACON_NEAR = -70, DEFAULT_BEACON_FAR = -80;
+  // Beacon near loosened −70→−78 (far −80→−85): shielded in the trunk it reads −74~−80 on a rear
+  // approach, so −70 never crossed early; −78 lets the beacon OR-unlock help from trunk/passenger.
+  static final int DEFAULT_BEACON_NEAR = -78, DEFAULT_BEACON_FAR = -85;
   // Trip ownership is in memory only: an app restart mid-trip means no automatic Stop (safe side).
   static final long TRIP_MAX_MS = 12L * 60 * 60 * 1000;
   private volatile long tripUnlockedAt = -1, vehicleActivityAt = -1;

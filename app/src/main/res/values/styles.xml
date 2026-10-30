@@ -1,10 +1,19 @@
 <resources>
-    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#DDE8FB</item>
+        <item name="android:navigationBarColor">#EEF3FA</item>
+        <item name="android:windowBackground">#EEF3FA</item>
+        <item name="android:colorAccent">#1D5BD6</item>
+    </style>
+    <!-- The QR scanner is a full-screen camera view, so it keeps the dark bars. -->
+    <style name="ScannerTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:statusBarColor">#09111E</item>
         <item name="android:navigationBarColor">#09111E</item>
         <item name="android:windowBackground">#09111E</item>
-        <item name="android:colorAccent">#71EDCF</item>
+        <item name="android:colorAccent">#1D5BD6</item>
     </style>
 </resources>

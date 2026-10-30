@@ -1,18 +1,26 @@
 package com.dautolock.app;
 
+import static com.dautolock.app.Palette.*;
+
 import android.Manifest;
 import android.app.*;
 import android.bluetooth.*;
 import android.bluetooth.le.*;
 import android.content.*;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.os.*;
 import android.text.Editable;
 import android.text.InputType;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
 import android.text.TextWatcher;
 import android.text.method.PasswordTransformationMethod;
+import android.text.style.StyleSpan;
 import android.view.*;
 import android.widget.*;
 import com.dautolock.app.api.CloudClient;
@@ -25,15 +33,10 @@ import java.util.*;
 import org.json.*;
 
 public final class MainActivity extends Activity {
-  private static final int BG = 0xff0b0f14,
-      CARD = 0xff171c24,
-      MINT = 0xff62dca7,
-      TEXT = 0xffe9edf3,
-      MUTED = 0xff919ba9;
   private static final int QR_REQUEST = 52;
   private Controller controller;
   private LinearLayout body;
-  private TextView signal, message, account, device, capabilities, checkedTime;
+  private TextView message, account, device, capabilities, checkedTime;
   private ImageView refreshIcon;
   private LinearLayout chargeCard;
   private TextView chargeHeadline, chargeDetail;
@@ -41,7 +44,7 @@ public final class MainActivity extends Activity {
   private android.animation.ObjectAnimator refreshSpin;
   private LinearLayout activityRows;
   private String activityKey = "";
-  private View armedCommand;
+  private View armedCommand, armedRing;
   private TextView armedText;
   private CharSequence armedDescription;
   private Button cancelStop, stopDelay;
@@ -49,21 +52,44 @@ public final class MainActivity extends Activity {
   private final Runnable stopCountdown = this::update;
   private CharSequence armedLabel;
   private final Runnable disarmCommand = this::disarmCommand;
-  private final TextView[] vehicleStates = new TextView[3];
   private TextView signalDetails, autoDetails, autoReason, controlDetails, readyDetails;
-  private SignalGauge signalGauge, beaconGauge;
-  private TextView beaconSignalView, beaconDbm, beaconDevice;
-  private LinearLayout beaconSection;
+  private TextView beaconDevice;
   private TextView updateStatus;
   private TextView bridgeStatus;
-  private Button monitor, chooseVehicle, logout, login;
-  private ScrollView homeScroll, settingsScroll, setupScroll;
+  private Button monitor, chooseVehicle, logout, login, menu;
+  private ScrollView homeScroll, settingsScroll, setupScroll, bleScroll;
   private LinearLayout settingsBody, signalExtra, setupBanner;
   private TextView title, setupTitle, setupInstructions, setupStatus, setupProgress;
-  private Button back, signalMore, setupAction, setupNext, setupPrevious;
+  private Button setupAction, setupNext, setupPrevious;
+  private ImageView back;
+  private View signalMore;
   private String page = "home";
   private boolean signalExpanded;
   private int setupStep;
+  // Header BLE pill, car hero with its two signal badges, and the three status cards.
+  private LinearLayout bleStatusPill;
+  private TextView bleStatusText;
+  private ImageView bleStatusIcon, batteryIcon, powerIcon, windowIcon, stateChevron;
+  private CarHeroView carHero;
+  private Badge primaryBadge, beaconBadge;
+  private View beaconAdd, stateDot;
+  private TextView powerSub, windowSub;
+  private ProgressBar batteryBar;
+  // BLE settings page: index 0 is the car BLE, 1 the auxiliary beacon. Edits stay drafts until 저장.
+  private final TextView[] bleTabs = new TextView[2], liveValue = new TextView[2],
+      liveChip = new TextView[2], livePreview = new TextView[2], nearValue = new TextView[2],
+      farValue = new TextView[2], gapInfo = new TextView[2];
+  private final LinearLayout[] bleSection = new LinearLayout[2];
+  private final SignalHistory[] history = new SignalHistory[2];
+  private final RangeSlider[] range = new RangeSlider[2];
+  private final boolean[] bleDirty = new boolean[2];
+  private LinearLayout bleBeaconEmpty, bleBeaconSet;
+  private TextView beaconName;
+  private SeekBar nearWait, farWait, lossWait;
+  private Switch combineSwitch, bleCombine;
+  private boolean bleBeaconTab;
+  private String bleReturn = "home";
+  private long lastHistoryAt;
   private final Handler refreshHandler = new Handler(Looper.getMainLooper());
   private final Runnable refreshTick =
       new Runnable() {
@@ -78,15 +104,14 @@ public final class MainActivity extends Activity {
   private boolean updating;
   private final List<View> commands = new ArrayList<>();
   private final List<CloudClient.Command[]> commandNeeds = new ArrayList<>();
-  private View titleSpacer, signalDot;
-  private ImageView logo, lockIcon;
-  private FrameLayout lockTile;
-  private TextView doorTitle, batteryText, powerText, windowText, signalDbm, automationReason;
+  private View titleSpacer;
+  private ImageView lockIcon;
+  private FrameLayout lockTile, logoTile;
+  private TextView doorTitle, batteryText, powerText, windowText, automationReason;
   private Switch automation;
   private LinearLayout securityBanner;
   private TextView securityText;
   private final Runnable observer = this::update;
-  private Runnable thresholdPreview;
   private boolean foreground, resumePending;
   private boolean bridgeResumePending;
   private BluetoothLeScanner pickerScanner;
@@ -102,7 +127,9 @@ public final class MainActivity extends Activity {
     if (saved != null) {
       signalExpanded = saved.getBoolean("signalExpanded");
       setSignalExpanded(signalExpanded);
-      showPage(saved.getString("page", "home"));
+      String restored = saved.getString("page", "home");
+      if (restored.equals("ble")) openBle(saved.getBoolean("bleBeacon"));
+      else showPage(restored);
     }
   }
 
@@ -144,6 +171,29 @@ public final class MainActivity extends Activity {
     return d;
   }
 
+  /** A white card shape with the faint outline the light theme uses. */
+  private GradientDrawable surface(int radius) {
+    GradientDrawable d = background(CARD, radius);
+    d.setStroke(dp(1), STROKE);
+    return d;
+  }
+
+  private GradientDrawable oval(int color) {
+    GradientDrawable d = new GradientDrawable();
+    d.setShape(GradientDrawable.OVAL);
+    d.setColor(color);
+    return d;
+  }
+
+  /** Touch feedback over any background, so plain shapes still answer a press. */
+  private Drawable pressable(Drawable shape) {
+    return new RippleDrawable(ColorStateList.valueOf(0x1f1d5bd6), shape, null);
+  }
+
+  private void lift(View view, float elevationDp) {
+    view.setElevation(elevationDp * getResources().getDisplayMetrics().density);
+  }
+
   private TextView text(LinearLayout parent, String value, int size, int color) {
     TextView t = new TextView(this);
     t.setText(value);
@@ -154,17 +204,42 @@ public final class MainActivity extends Activity {
     return t;
   }
 
+  /**
+   * Korean wraps between any two syllables, so a short line can end in "잠 / 가요". A word joiner
+   * between the letters of each word leaves the spaces as the only places a line may break.
+   */
+  private static String keepWords(String value) {
+    StringBuilder out = new StringBuilder();
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      if (i > 0 && c != ' ' && value.charAt(i - 1) != ' ') out.append('⁠');
+      out.append(c);
+    }
+    return out.toString();
+  }
+
+  private TextView bold(LinearLayout parent, String value, int size, int color) {
+    TextView t = text(parent, value, size, color);
+    t.setTypeface(null, Typeface.BOLD);
+    t.setPadding(0, 0, 0, 0);
+    return t;
+  }
+
   private LinearLayout card(String title) {
+    return card(body, title);
+  }
+
+  /** A white rounded card appended to {@code parent}; a null title leaves it untitled. */
+  private LinearLayout card(LinearLayout parent, String title) {
     LinearLayout box = new LinearLayout(this);
     box.setOrientation(LinearLayout.VERTICAL);
-    box.setPadding(dp(14), dp(12), dp(14), dp(14));
-    GradientDrawable shape = background(CARD, 18);
-    shape.setStroke(dp(1), 0xff252b35);
-    box.setBackground(shape);
+    box.setPadding(dp(18), dp(16), dp(18), dp(16));
+    box.setBackground(surface(22));
+    lift(box, 1.5f);
     LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
-    p.setMargins(0, dp(10), 0, 0);
-    body.addView(box, p);
-    text(box, title, 14, MINT).setTypeface(null, Typeface.BOLD);
+    p.setMargins(0, dp(14), 0, 0);
+    parent.addView(box, p);
+    if (title != null) text(box, title, 17, TEXT).setTypeface(null, Typeface.BOLD);
     return box;
   }
 
@@ -175,7 +250,8 @@ public final class MainActivity extends Activity {
     b.setAllCaps(false);
     b.setTextSize(14);
     b.setBackgroundTintList(null);
-    b.setBackground(background(0xff242e3d, 12));
+    b.setStateListAnimator(null); // Flat light theme: no raised press shadow.
+    b.setBackground(pressable(background(FIELD, 14)));
     b.setPadding(dp(8), dp(4), dp(8), dp(4));
     b.setOnClickListener(listener);
     LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(50));
@@ -184,32 +260,65 @@ public final class MainActivity extends Activity {
     return b;
   }
 
+  private Button primaryButton(LinearLayout box, String title, View.OnClickListener listener) {
+    Button b = button(box, title, listener);
+    b.setTextColor(0xffffffff);
+    b.setTextSize(17);
+    b.setTypeface(null, Typeface.BOLD);
+    b.setBackground(pressable(background(ACCENT, 18)));
+    return b;
+  }
+
   private void build() {
     LinearLayout shell = new LinearLayout(this);
     shell.setOrientation(LinearLayout.VERTICAL);
-    shell.setBackgroundColor(BG);
+    shell.setBackground(
+        new GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM, new int[] {BG_TOP, BG, BG}));
     LinearLayout bar = new LinearLayout(this);
     bar.setGravity(Gravity.CENTER_VERTICAL);
-    bar.setPadding(dp(12), dp(6), dp(12), dp(6));
-    shell.addView(bar, new LinearLayout.LayoutParams(-1, dp(60)));
-    back = button(bar, "‹", v -> showPage("home"));
-    back.setContentDescription("메인 화면으로");
-    back.setLayoutParams(new LinearLayout.LayoutParams(dp(44), dp(44)));
+    bar.setPadding(dp(20), dp(10), dp(20), dp(6));
+    shell.addView(bar, new LinearLayout.LayoutParams(-1, dp(72)));
+    back = new ImageView(this);
+    back.setImageResource(R.drawable.ic_back);
+    back.setColorFilter(TEXT);
+    back.setScaleType(ImageView.ScaleType.CENTER);
+    back.setContentDescription("뒤로");
+    back.setBackground(pressable(oval(0x00000000)));
+    back.setOnClickListener(v -> navigateBack());
     back.setVisibility(View.GONE);
-    titleSpacer = new View(this);
-    bar.addView(titleSpacer, new LinearLayout.LayoutParams(dp(48), dp(44)));
-    titleSpacer.setVisibility(View.GONE);
+    bar.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
     LinearLayout brand = new LinearLayout(this);
     brand.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
     bar.addView(brand, new LinearLayout.LayoutParams(0, -1, 1));
-    logo = new ImageView(this);
+    logoTile = new FrameLayout(this);
+    logoTile.setBackground(background(ACCENT, 12));
+    ImageView logo = new ImageView(this);
     logo.setImageResource(R.drawable.ic_logo);
+    logo.setColorFilter(0xffffffff);
     logo.setContentDescription(null);
-    brand.addView(logo, new LinearLayout.LayoutParams(dp(34), dp(34)));
-    title = text(brand, "D-Autolock", 23, TEXT);
-    title.setTypeface(null, Typeface.BOLD);
-    title.setPadding(dp(8), 0, 0, 0);
-    Button menu =
+    logoTile.addView(logo, new FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER));
+    brand.addView(logoTile, new LinearLayout.LayoutParams(dp(42), dp(42)));
+    title = bold(brand, "D-Autolock", 24, TEXT);
+    title.setMaxLines(1); // Not setSingleLine: that scrolls horizontally and disables autosize.
+    title.setPadding(dp(12), 0, 0, 0);
+    title.setGravity(Gravity.CENTER_VERTICAL);
+    title.setLayoutParams(new LinearLayout.LayoutParams(0, -1, 1));
+    // Narrow phones: shrink the name rather than cut it next to the BLE pill and menu.
+    title.setAutoSizeTextTypeUniformWithConfiguration(15, 24, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+    bleStatusPill = new LinearLayout(this);
+    bleStatusPill.setTag("bleStatus");
+    bleStatusPill.setGravity(Gravity.CENTER_VERTICAL);
+    bleStatusPill.setPadding(dp(12), 0, dp(14), 0);
+    bleStatusPill.setBackground(pressable(surface(22)));
+    bleStatusPill.setOnClickListener(v -> openBle(false));
+    bleStatusIcon = icon(bleStatusPill, R.drawable.ic_bluetooth, SUBTLE, 18);
+    bleStatusText = bold(bleStatusPill, "BLE 미연결", 14, SUBTLE);
+    bleStatusText.setPadding(dp(4), 0, 0, 0);
+    LinearLayout.LayoutParams pill = new LinearLayout.LayoutParams(-2, dp(44));
+    pill.setMargins(dp(8), 0, dp(10), 0);
+    bar.addView(bleStatusPill, pill);
+    menu =
         button(
             bar,
             "⋮",
@@ -229,8 +338,14 @@ public final class MainActivity extends Activity {
             });
     menu.setTag("overflowMenu");
     menu.setContentDescription("메뉴");
-    menu.setTextSize(24);
-    menu.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(44)));
+    menu.setTextSize(22);
+    menu.setPadding(0, 0, 0, 0);
+    menu.setBackground(pressable(surface(14)));
+    menu.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
+    // Balances the back arrow on sub pages so their title sits in the middle.
+    titleSpacer = new View(this);
+    bar.addView(titleSpacer, new LinearLayout.LayoutParams(dp(44), dp(44)));
+    titleSpacer.setVisibility(View.GONE);
     FrameLayout pages = new FrameLayout(this);
     shell.addView(pages, new LinearLayout.LayoutParams(-1, 0, 1));
     homeScroll = new ScrollView(this);
@@ -238,14 +353,16 @@ public final class MainActivity extends Activity {
     homeScroll.setFillViewport(true);
     body = new LinearLayout(this);
     body.setOrientation(LinearLayout.VERTICAL);
-    body.setPadding(dp(12), 0, dp(12), dp(16));
+    body.setPadding(dp(20), 0, dp(20), dp(24));
+    body.setClipToPadding(false); // Card shadows reach into the side gutters.
     homeScroll.addView(body);
     pages.addView(homeScroll);
     settingsScroll = new ScrollView(this);
     settingsScroll.setTag("settingsPage");
     settingsBody = new LinearLayout(this);
     settingsBody.setOrientation(LinearLayout.VERTICAL);
-    settingsBody.setPadding(dp(12), 0, dp(12), dp(24));
+    settingsBody.setPadding(dp(20), 0, dp(20), dp(28));
+    settingsBody.setClipToPadding(false);
     settingsScroll.addView(settingsBody);
     pages.addView(settingsScroll);
     settingsScroll.setVisibility(View.GONE);
@@ -253,12 +370,14 @@ public final class MainActivity extends Activity {
     setupScroll.setTag("setupPage");
     pages.addView(setupScroll);
     setupScroll.setVisibility(View.GONE);
+    buildBlePage(pages);
     setContentView(shell);
     buildStatusAndSignal();
     LinearLayout bridgeCard = card("차량 보조 앱 연결 / QR");
     bridgeStatus = text(bridgeCard, "차량 보조 앱 미등록", 13, MUTED);
     button(bridgeCard, "차량 보조 앱 연결 / QR", v -> bridgeDialog());
-    LinearLayout proximity = card("자동 도어");
+    // Not "자동 도어": that is now the main screen's automation card.
+    LinearLayout proximity = card("자동 도어 · 거리 관찰");
     text(proximity, "가까워지면 잠금 해제 · 멀어지면 잠금", 17, TEXT);
     text(
         proximity,
@@ -465,7 +584,7 @@ public final class MainActivity extends Activity {
             + "공유 차량 모드에서는 자동 잠금·창문 닫기만 하고 자동 종료는 하지 않습니다.",
         13,
         MUTED);
-    text(options, "탑승 공조 · READY 상태 진단", 16, 0xffffc77d);
+    text(options, "탑승 공조 · READY 상태 진단", 16, LOCK);
     text(
         options,
         "자동 해제 후 90초 안에 문 닫힘→열림을 확인하면 공조를 시작합니다. 기존 2초 후 OFF는 제거했습니다. 종료는 차량에서 직접 조작하며 차량의 원격 공조 시간"
@@ -498,7 +617,7 @@ public final class MainActivity extends Activity {
     button(bluetooth, "블루투스 기기 검색 / 선택", v -> pickDevice(false));
     beaconDevice = text(bluetooth, "보조 BLE(비콘): 없음", 13, MUTED);
     button(bluetooth, "보조 BLE(비콘) 검색 / 선택", v -> pickDevice(true));
-    button(bluetooth, "보조 BLE 작동 거리", v -> beaconThresholdDialog());
+    button(bluetooth, "보조 BLE 작동 거리", v -> openBle(true));
     button(
         bluetooth,
         "보조 BLE 해제",
@@ -508,18 +627,7 @@ public final class MainActivity extends Activity {
                 .setNegativeButton("취소", null)
                 .setPositiveButton("해제", (d, w) -> controller.clearBeacon())
                 .show());
-    Switch combineSwitch = new Switch(this);
-    combineSwitch.setTag("beaconCombine");
-    combineSwitch.setText("보조 비콘으로 열기·잠금 (열림 OR · 잠김 AND)");
-    combineSwitch.setTextColor(TEXT);
-    combineSwitch.setMinHeight(dp(56));
-    combineSwitch.setChecked(controller.settings.getBoolean("beaconCombine", true));
-    bluetooth.addView(combineSwitch);
-    combineSwitch.setOnCheckedChangeListener(
-        (b, on) -> {
-          controller.settings.edit().putBoolean("beaconCombine", on).apply();
-          controller.note(on ? "보조 비콘 결합 켜짐 · 열림 OR / 잠김 AND" : "보조 비콘 결합 꺼짐 · 관찰 전용");
-        });
+    combineSwitch = combineToggle(bluetooth, "beaconCombine");
     text(
         bluetooth,
         "보조 BLE 결합을 켜면 주 BLE 또는 비콘 중 하나만 가까워도 열리고(OR), 둘 다 멀어져야 잠깁니다(AND)."
@@ -623,14 +731,47 @@ public final class MainActivity extends Activity {
     }
     button(settingsBody, "처음 설정 안내", v -> showSetup());
     button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    text(settingsBody, "D-Autolock 0.3.17 · 비공식 개인용 앱", 12, MUTED);
+    String version = null;
+    try {
+      version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+    } catch (PackageManager.NameNotFoundException ignored) {
+    }
+    text(
+        settingsBody,
+        "D-Autolock" + (version == null ? "" : " " + version) + " · 비공식 개인용 앱",
+        12,
+        MUTED);
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
-    button(setupBanner, "처음 설정 이어하기", v -> showSetup());
-    body.addView(setupBanner);
+    primaryButton(setupBanner, "처음 설정 이어하기", v -> showSetup());
+    LinearLayout.LayoutParams banner = new LinearLayout.LayoutParams(-1, -2);
+    banner.topMargin = dp(10);
+    body.addView(setupBanner, banner);
     setupBanner.setVisibility(View.GONE);
+    TextView foot = text(body, "BLE 신호는 차량 주변 환경에 따라 달라질 수 있어요", 12, MUTED);
+    foot.setGravity(Gravity.CENTER);
+    foot.setPadding(0, dp(18), 0, 0);
     buildSetup();
     styleSwitches(shell);
+  }
+
+  /** The beacon OR/AND combine switch. It appears in settings and on the BLE page; update() syncs both. */
+  private Switch combineToggle(LinearLayout parent, String tag) {
+    Switch toggle = new Switch(this);
+    toggle.setTag(tag);
+    toggle.setText("보조 비콘으로 열기·잠금 (열림 OR · 잠김 AND)");
+    toggle.setTextColor(TEXT);
+    toggle.setMinHeight(dp(56));
+    toggle.setChecked(controller.settings.getBoolean("beaconCombine", true));
+    parent.addView(toggle);
+    toggle.setOnCheckedChangeListener(
+        (b, on) -> {
+          if (updating) return;
+          controller.settings.edit().putBoolean("beaconCombine", on).apply();
+          controller.note(on ? "보조 비콘 결합 켜짐 · 열림 OR / 잠김 AND" : "보조 비콘 결합 꺼짐 · 관찰 전용");
+          update();
+        });
+    return toggle;
   }
 
   private void climateOffDelayDialog() {
@@ -713,8 +854,12 @@ public final class MainActivity extends Activity {
     controller.updater.request();
   }
 
-  /** Vehicle controls run only on a second tap within 3 seconds, so a stray touch does nothing. */
-  private View.OnClickListener doubleTap(TextView label, String hint, Runnable action) {
+  /**
+   * Vehicle controls run only on a second tap within 3 seconds, so a stray touch does nothing.
+   * While armed, {@code ring} (the circle or the tile) gets an outline and the label asks again.
+   */
+  private View.OnClickListener doubleTap(
+      TextView label, String hint, View ring, boolean round, Runnable action) {
     return v -> {
       if (armedCommand == v) {
         disarmCommand();
@@ -723,15 +868,17 @@ public final class MainActivity extends Activity {
       }
       disarmCommand();
       armedCommand = v;
+      armedRing = ring;
       armedText = label;
       armedLabel = label.getText();
       armedDescription = v.getContentDescription();
       label.setText(hint);
       v.setContentDescription(armedDescription + ". 3초 안에 한 번 더 누르면 실행합니다");
-      GradientDrawable ring = new GradientDrawable();
-      ring.setCornerRadius(dp(14));
-      ring.setStroke(dp(2), 0xffffffff);
-      v.setForeground(ring);
+      GradientDrawable mark = new GradientDrawable();
+      if (round) mark.setShape(GradientDrawable.OVAL);
+      else mark.setCornerRadius(dp(22));
+      mark.setStroke(dp(3), TEXT);
+      ring.setForeground(mark);
       v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
       handler.postDelayed(disarmCommand, 3000);
     };
@@ -742,8 +889,9 @@ public final class MainActivity extends Activity {
     if (armedCommand == null) return;
     armedText.setText(armedLabel);
     armedCommand.setContentDescription(armedDescription);
-    armedCommand.setForeground(null);
+    armedRing.setForeground(null);
     armedCommand = null;
+    armedRing = null;
   }
 
   private void setTreeEnabled(View view, boolean enabled) {
@@ -766,13 +914,13 @@ public final class MainActivity extends Activity {
       LinearLayout parent, int drawable, String description, String tag, View.OnClickListener click) {
     ImageView image = new ImageView(this);
     image.setImageResource(drawable);
-    image.setColorFilter(MUTED);
+    image.setColorFilter(SUBTLE);
     image.setScaleType(ImageView.ScaleType.CENTER);
     image.setPadding(dp(8), dp(8), dp(8), dp(8));
     image.setContentDescription(description);
     image.setTag(tag);
     image.setOnClickListener(click);
-    image.setBackground(background(0x00000000, 18));
+    image.setBackground(pressable(oval(0x00000000)));
     parent.addView(image, new LinearLayout.LayoutParams(dp(38), dp(38)));
     return image;
   }
@@ -788,55 +936,105 @@ public final class MainActivity extends Activity {
     return header;
   }
 
-  private LinearLayout statusItem(LinearLayout row, int drawable, int color, String tag) {
-    LinearLayout item = new LinearLayout(this);
-    item.setOrientation(LinearLayout.VERTICAL);
-    item.setGravity(Gravity.CENTER);
-    item.setTag(tag);
-    icon(item, drawable, color, 20);
-    row.addView(item, new LinearLayout.LayoutParams(dp(44), -2));
-    return item;
+  /** A floating pill on the car picture: which signal, its smoothed dBm, coloured by band. */
+  private static final class Badge {
+    final LinearLayout root;
+    final View dot;
+    final TextView value;
+    final String name;
+
+    Badge(LinearLayout root, View dot, TextView value, String name) {
+      this.root = root;
+      this.dot = dot;
+      this.value = value;
+      this.name = name;
+    }
+  }
+
+  private Badge badge(
+      FrameLayout parent, String name, String tag, int gravity, View.OnClickListener click) {
+    LinearLayout root = new LinearLayout(this);
+    root.setTag(tag);
+    root.setGravity(Gravity.CENTER_VERTICAL);
+    root.setPadding(dp(12), dp(8), dp(6), dp(8));
+    root.setBackground(pressable(surface(16)));
+    lift(root, 3);
+    root.setOnClickListener(click);
+    View dot = new View(this);
+    root.addView(dot, new LinearLayout.LayoutParams(dp(9), dp(9)));
+    LinearLayout texts = new LinearLayout(this);
+    texts.setOrientation(LinearLayout.VERTICAL);
+    texts.setPadding(dp(8), 0, dp(2), 0);
+    root.addView(texts);
+    text(texts, name, 12, SUBTLE).setPadding(0, 0, 0, 0);
+    TextView value = bold(texts, "끊김", 16, IDLE);
+    icon(root, R.drawable.ic_back, MUTED, 16).setRotation(180); // A "›" hint that it opens.
+    FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(-2, -2, gravity);
+    p.topMargin = dp(2);
+    parent.addView(root, p);
+    return new Badge(root, dot, value, name);
+  }
+
+  /** One of the three equal status cards under the car; the icon is tagged {@code tag + "Icon"}. */
+  private LinearLayout statusCard(LinearLayout row, String name, int drawable, String tag) {
+    LinearLayout card = new LinearLayout(this);
+    card.setOrientation(LinearLayout.VERTICAL);
+    card.setTag(tag);
+    card.setPadding(dp(14), dp(12), dp(12), dp(14));
+    card.setBackground(pressable(surface(18)));
+    lift(card, 1.5f);
+    card.setOnClickListener(v -> showVehicleDetails());
+    LinearLayout head = new LinearLayout(this);
+    head.setGravity(Gravity.CENTER_VERTICAL);
+    card.addView(head);
+    TextView label = text(head, name, 14, SUBTLE);
+    label.setPadding(0, 0, 0, 0);
+    label.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    icon(head, drawable, SUBTLE, 20).setTag(tag + "Icon");
+    LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -1, 1);
+    p.setMargins(row.getChildCount() == 0 ? 0 : dp(10), 0, 0, 0);
+    row.addView(card, p);
+    return card;
+  }
+
+  private TextView statusValue(LinearLayout card, String value) {
+    TextView t = bold(card, value, 24, TEXT);
+    t.setSingleLine(true);
+    t.setPadding(0, dp(8), 0, 0);
+    return t;
   }
 
   private void buildStatusAndSignal() {
-    LinearLayout status = card("");
-    status.removeViewAt(0);
+    LinearLayout status = new LinearLayout(this);
+    status.setOrientation(LinearLayout.VERTICAL);
     status.setTag("alertsCard");
-    status.setPadding(dp(12), dp(12), dp(8), dp(12));
+    status.setPadding(0, dp(6), 0, 0);
+    body.addView(status, new LinearLayout.LayoutParams(-1, -2));
     LinearLayout row = new LinearLayout(this);
     row.setGravity(Gravity.CENTER_VERTICAL);
     status.addView(row);
     lockTile = new FrameLayout(this);
     lockTile.setTag("doorTile");
+    lift(lockTile, 3);
     lockIcon = new ImageView(this);
-    lockTile.addView(lockIcon, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
-    row.addView(lockTile, new LinearLayout.LayoutParams(dp(44), dp(44)));
-    LinearLayout titles = new LinearLayout(this);
-    titles.setOrientation(LinearLayout.VERTICAL);
-    titles.setPadding(dp(10), 0, dp(4), 0);
-    row.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
-    doorTitle = text(titles, "도어 미확인", 17, TEXT);
+    lockIcon.setColorFilter(0xffffffff);
+    lockTile.addView(lockIcon, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
+    row.addView(lockTile, new LinearLayout.LayoutParams(dp(56), dp(56)));
+    doorTitle = bold(row, "도어 미확인", 32, TEXT);
     doorTitle.setTag("doorTitle");
-    doorTitle.setTypeface(null, Typeface.BOLD);
-    doorTitle.setPadding(0, 0, 0, 0);
     doorTitle.setSingleLine(true);
-    checkedTime = text(titles, "업데이트 대기", 11, MUTED);
-    checkedTime.setTag("statusCheckedTime");
-    checkedTime.setPadding(0, dp(2), 0, 0);
-    checkedTime.setMaxLines(2); // Never cut the time off; wrap on narrow phones.
-    batteryText = text(statusItem(row, R.drawable.ic_battery, MINT, "batteryItem"), "--%", 12, TEXT);
-    powerText = text(statusItem(row, R.drawable.ic_power, 0xff66cce0, "powerItem"), "미확인", 12, TEXT);
-    windowText = text(statusItem(row, R.drawable.ic_window, 0xff8fb4ff, "windowItem"), "미확인", 12, TEXT);
-    for (TextView t : new TextView[] {batteryText, powerText, windowText}) {
-      t.setPadding(0, dp(2), 0, 0);
-      t.setMaxLines(1);
-      t.setGravity(Gravity.CENTER);
-      t.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
-    }
+    doorTitle.setPadding(dp(16), 0, dp(8), 0);
+    doorTitle.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    // The icon spins while reading, so the card shape lives on a still container behind it.
+    FrameLayout refreshBox = new FrameLayout(this);
+    refreshBox.setBackground(surface(16));
+    lift(refreshBox, 2);
     refreshIcon = new ImageView(this);
     refreshIcon.setTag("statusRefresh");
     refreshIcon.setImageResource(R.drawable.ic_refresh);
+    refreshIcon.setColorFilter(ACCENT);
     refreshIcon.setScaleType(ImageView.ScaleType.CENTER);
+    refreshIcon.setBackground(pressable(oval(0x00000000)));
     refreshIcon.setContentDescription("차량 상태 새로고침");
     refreshIcon.setOnClickListener(
         v -> {
@@ -844,21 +1042,26 @@ public final class MainActivity extends Activity {
           controller.refreshNow();
           update();
         });
-    row.addView(refreshIcon, new LinearLayout.LayoutParams(dp(34), dp(44)));
+    refreshBox.addView(refreshIcon, new FrameLayout.LayoutParams(-1, -1));
+    row.addView(refreshBox, new LinearLayout.LayoutParams(dp(56), dp(56)));
+    checkedTime = text(status, "업데이트 대기", 15, MUTED);
+    checkedTime.setTag("statusCheckedTime");
+    checkedTime.setPadding(dp(2), dp(10), 0, 0);
+    checkedTime.setMaxLines(2); // Never cut the time off; wrap on narrow phones.
     message = text(status, "", 12, MUTED); // Recent alert text lives in the activity log now.
     message.setVisibility(View.GONE);
     status.setOnClickListener(v -> showVehicleDetails());
     chargeCard = card("충전 상태");
     chargeCard.setTag("chargeCard");
     body.removeView(chargeCard);
-    body.addView(chargeCard, 0); // Above the status bar, only while charging.
+    body.addView(chargeCard, 0); // Above the door header, only while charging.
     chargeHeadline = text(chargeCard, "", 20, TEXT);
     chargeHeadline.setTypeface(null, Typeface.BOLD);
     chargeHeadline.setTag("chargeHeadline");
     chargeBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
     chargeBar.setMax(100);
-    chargeBar.setProgressTintList(android.content.res.ColorStateList.valueOf(MINT));
-    chargeBar.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(0xff2a3340));
+    chargeBar.setProgressTintList(ColorStateList.valueOf(SUCCESS));
+    chargeBar.setProgressBackgroundTintList(ColorStateList.valueOf(IDLE_SOFT));
     chargeCard.addView(chargeBar, new LinearLayout.LayoutParams(-1, dp(14)));
     chargeDetail = text(chargeCard, "", 14, TEXT);
     chargeDetail.setTag("chargeDetail");
@@ -866,13 +1069,13 @@ public final class MainActivity extends Activity {
     securityBanner = new LinearLayout(this);
     securityBanner.setTag("securityAlert");
     securityBanner.setGravity(Gravity.CENTER_VERTICAL);
-    securityBanner.setPadding(dp(12), dp(10), dp(12), dp(10));
-    GradientDrawable alarm = background(0xff3a1416, 16);
-    alarm.setStroke(dp(1), DoorNotifications.ALERT_RED);
+    securityBanner.setPadding(dp(14), dp(12), dp(14), dp(12));
+    GradientDrawable alarm = background(DANGER_SOFT, 18);
+    alarm.setStroke(dp(1), DANGER);
     securityBanner.setBackground(alarm);
-    icon(securityBanner, R.drawable.ic_warning, DoorNotifications.ALERT_RED, 26);
+    icon(securityBanner, R.drawable.ic_warning, DANGER, 26);
     securityText = new TextView(this);
-    securityText.setTextColor(0xffff6b6b);
+    securityText.setTextColor(0xffa61b1b);
     securityText.setTextSize(14);
     securityText.setTypeface(null, Typeface.BOLD);
     securityText.setPadding(dp(10), 0, 0, 0);
@@ -883,117 +1086,125 @@ public final class MainActivity extends Activity {
     body.addView(securityBanner, 0, bannerParams);
     securityBanner.setVisibility(View.GONE);
 
-    LinearLayout dash = card("BLE 신호 상태");
-    dash.setTag("signalCard");
-    LinearLayout header = cardHeader(dash);
-    iconButton(header, R.drawable.ic_tune, "거리 감도 / 대기 시간", "thresholdEdit", v -> thresholdDialog());
-    signalDot = new View(this);
-    signalDot.setTag("signalDot");
-    LinearLayout.LayoutParams dot = new LinearLayout.LayoutParams(dp(9), dp(9));
-    dot.setMargins(dp(4), 0, dp(4), 0);
-    header.addView(signalDot, dot);
-    LinearLayout reading = new LinearLayout(this);
-    reading.setGravity(Gravity.CENTER_VERTICAL);
-    dash.addView(reading);
-    signal = text(reading, "신호 대기", 16, MINT);
-    signal.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
-    signalDbm = text(reading, "— dBm", 14, MUTED);
-    signalDbm.setTag("signalDbm");
-    signalGauge = new SignalGauge(this);
-    dash.addView(signalGauge, new LinearLayout.LayoutParams(-1, dp(46)));
-    beaconSection = new LinearLayout(this);
-    beaconSection.setOrientation(LinearLayout.VERTICAL);
-    beaconSection.setTag("beaconSection");
-    dash.addView(beaconSection);
-    LinearLayout beaconReading = new LinearLayout(this);
-    beaconReading.setGravity(Gravity.CENTER_VERTICAL);
-    beaconSection.addView(beaconReading);
-    beaconSignalView = text(beaconReading, "보조 신호", 15, MINT);
-    beaconSignalView.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
-    beaconDbm = text(beaconReading, "— dBm", 14, MUTED);
-    // Adjust the beacon's near/far from the main screen too, like the primary BLE's tune icon above.
-    iconButton(
-        beaconReading,
-        R.drawable.ic_tune,
-        "보조 BLE 작동 거리",
-        "beaconThresholdEdit",
-        v -> beaconThresholdDialog());
-    beaconGauge = new SignalGauge(this);
-    beaconSection.addView(beaconGauge, new LinearLayout.LayoutParams(-1, dp(46)));
-    LinearLayout signalRow = new LinearLayout(this);
-    signalRow.setGravity(Gravity.CENTER_VERTICAL);
-    dash.addView(signalRow);
-    autoDetails = text(signalRow, "자동 도어 OFF", 13, MINT);
-    autoDetails.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
-    signalMore = button(signalRow, "＋", v -> setSignalExpanded(!signalExpanded));
-    signalMore.setTag("signalMore");
-    signalMore.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(40)));
-    signalExtra = new LinearLayout(this);
-    signalExtra.setTag("signalExtra");
-    signalExtra.setOrientation(LinearLayout.VERTICAL);
-    dash.addView(signalExtra);
-    text(signalExtra, "주황: 잠금 기준 / 초록: 열기 기준\n신호 세기는 실제 거리와 다를 수 있습니다.", 12, MUTED);
-    signalDetails = text(signalExtra, "", 12, MUTED);
-    controlDetails = text(signalExtra, "", 12, MUTED);
-    readyDetails = text(signalExtra, "", 12, MUTED);
-    setSignalExpanded(false);
+    // The car with a badge where each signal comes from: car BLE up front, the beacon at the back.
+    FrameLayout hero = new FrameLayout(this);
+    hero.setTag("signalCard");
+    hero.setClipChildren(false);
+    carHero = new CarHeroView(this);
+    carHero.setPadding(0, dp(14), 0, 0);
+    hero.addView(carHero, new FrameLayout.LayoutParams(-1, -2));
+    primaryBadge =
+        badge(hero, "차량 BLE", "thresholdEdit", Gravity.TOP | Gravity.START, v -> openBle(false));
+    beaconBadge =
+        badge(hero, "보조 비콘", "beaconThresholdEdit", Gravity.TOP | Gravity.END, v -> openBle(true));
+    TextView add = new TextView(this);
+    add.setTag("beaconAdd");
+    add.setText("+ 보조 비콘");
+    add.setTextSize(13);
+    add.setTextColor(ACCENT);
+    add.setTypeface(null, Typeface.BOLD);
+    add.setPadding(dp(12), dp(8), dp(12), dp(8));
+    GradientDrawable dashed = background(0xccffffff, 16);
+    dashed.setStroke(dp(1), ACCENT, dp(4), dp(3));
+    add.setBackground(pressable(dashed));
+    add.setContentDescription("보조 비콘 추가 · BLE 신호 설정 열기");
+    add.setOnClickListener(v -> openBle(true));
+    FrameLayout.LayoutParams addParams =
+        new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
+    addParams.topMargin = dp(6);
+    hero.addView(add, addParams);
+    beaconAdd = add;
+    LinearLayout.LayoutParams heroParams = new LinearLayout.LayoutParams(-1, -2);
+    heroParams.topMargin = dp(16);
+    body.addView(hero, heroParams);
+
+    LinearLayout cards = new LinearLayout(this);
+    cards.setTag("statusRow");
+    cards.setBaselineAligned(false);
+    LinearLayout.LayoutParams cardsParams = new LinearLayout.LayoutParams(-1, -2);
+    cardsParams.topMargin = dp(14);
+    body.addView(cards, cardsParams);
+    LinearLayout battery = statusCard(cards, "배터리", R.drawable.ic_battery, "batteryItem");
+    batteryIcon = battery.findViewWithTag("batteryItemIcon");
+    batteryText = statusValue(battery, "--%");
+    batteryBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+    batteryBar.setMax(100);
+    batteryBar.setProgressBackgroundTintList(ColorStateList.valueOf(IDLE_SOFT));
+    LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(-1, dp(5));
+    barParams.topMargin = dp(10);
+    battery.addView(batteryBar, barParams);
+    LinearLayout power = statusCard(cards, "시동", R.drawable.ic_power, "powerItem");
+    powerIcon = power.findViewWithTag("powerItemIcon");
+    powerText = statusValue(power, "미확인");
+    powerSub = text(power, "", 12, MUTED);
+    powerSub.setPadding(0, dp(2), 0, 0);
+    LinearLayout window = statusCard(cards, "창문", R.drawable.ic_window, "windowItem");
+    windowIcon = window.findViewWithTag("windowItemIcon");
+    windowText = statusValue(window, "미확인");
+    windowSub = text(window, "", 12, MUTED);
+    windowSub.setPadding(0, dp(2), 0, 0);
   }
 
+  /** A wide action tile; {@code filled} is the blue primary one, otherwise a white card. */
   private LinearLayout bigTile(
-      LinearLayout row, int drawable, String title, String sub, int[] colors, String tag,
+      LinearLayout row, int drawable, String title, String sub, boolean filled, String tag,
       CloudClient.Command[] needs, Runnable action) {
     LinearLayout tile = new LinearLayout(this);
     tile.setTag(tag);
     tile.setGravity(Gravity.CENTER_VERTICAL);
-    tile.setPadding(dp(12), dp(8), dp(8), dp(8));
-    GradientDrawable gradient = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, colors);
-    gradient.setCornerRadius(dp(14));
-    tile.setBackground(gradient);
+    tile.setPadding(dp(16), dp(8), dp(10), dp(8));
+    tile.setBackground(pressable(filled ? background(ACCENT, 22) : surface(22)));
+    lift(tile, filled ? 4 : 1.5f);
     tile.setClickable(true);
     tile.setContentDescription(title + " · " + sub);
-    icon(tile, drawable, 0xffffffff, 28);
+    icon(tile, drawable, filled ? 0xffffffff : TEXT, 30);
     LinearLayout texts = new LinearLayout(this);
     texts.setOrientation(LinearLayout.VERTICAL);
-    texts.setPadding(dp(10), 0, 0, 0);
+    texts.setPadding(dp(12), 0, 0, 0);
     tile.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
-    TextView name = text(texts, title, 16, 0xffffffff);
-    name.setTypeface(null, Typeface.BOLD);
-    name.setPadding(0, 0, 0, 0);
-    TextView detail = text(texts, sub, 12, 0xddffffff);
-    detail.setPadding(0, dp(1), 0, 0);
-    tile.setOnClickListener(doubleTap(detail, "한 번 더 누르세요", action));
-    LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(66), 1);
-    p.setMargins(row.getChildCount() == 0 ? 0 : dp(4), 0, row.getChildCount() == 0 ? dp(4) : 0, 0);
+    TextView name = bold(texts, title, 17, filled ? 0xffffffff : TEXT);
+    name.setMaxLines(1);
+    TextView detail = text(texts, sub, 13, filled ? 0xe6ffffff : SUBTLE);
+    detail.setPadding(0, dp(2), 0, 0);
+    tile.setOnClickListener(doubleTap(detail, "한 번 더 누르세요", tile, false, action));
+    LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(84), 1);
+    p.setMargins(row.getChildCount() == 0 ? 0 : dp(6), 0, row.getChildCount() == 0 ? dp(6) : 0, 0);
     row.addView(tile, p);
     commands.add(tile);
     commandNeeds.add(needs);
     return tile;
   }
 
-  private LinearLayout smallTile(
-      LinearLayout row, int drawable, String label, int color, int fill, String tag,
+  /** A white circle with its label underneath; the whole column is the touch target. */
+  private LinearLayout roundButton(
+      LinearLayout row, int drawable, String label, int color, String tag,
       CloudClient.Command[] needs, Runnable action) {
-    LinearLayout tile = new LinearLayout(this);
-    tile.setTag(tag);
-    tile.setOrientation(LinearLayout.VERTICAL);
-    tile.setGravity(Gravity.CENTER);
-    GradientDrawable shape = background(fill, 12);
-    shape.setStroke(dp(1), (color & 0x00ffffff) | 0x55000000);
-    tile.setBackground(shape);
-    tile.setClickable(true);
-    tile.setContentDescription(label);
-    icon(tile, drawable, color, 22);
-    TextView name = text(tile, label, 12, color);
-    name.setPadding(0, dp(4), 0, 0);
+    LinearLayout column = new LinearLayout(this);
+    column.setTag(tag);
+    column.setOrientation(LinearLayout.VERTICAL);
+    column.setGravity(Gravity.CENTER_HORIZONTAL);
+    column.setClickable(true);
+    column.setContentDescription(label);
+    FrameLayout circle = new FrameLayout(this);
+    GradientDrawable face = oval(CARD);
+    face.setStroke(dp(1), STROKE);
+    circle.setBackground(pressable(face));
+    circle.setDuplicateParentStateEnabled(true); // The ripple follows a press on the column.
+    lift(circle, 3);
+    ImageView image = new ImageView(this);
+    image.setImageResource(drawable);
+    image.setColorFilter(color);
+    circle.addView(image, new FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER));
+    column.addView(circle, new LinearLayout.LayoutParams(dp(70), dp(70)));
+    TextView name = text(column, label, 14, TEXT);
+    name.setPadding(0, dp(10), 0, 0);
     name.setMaxLines(1); // setSingleLine + centered gravity scrolls the text out of view.
     name.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
-    tile.setOnClickListener(doubleTap(name, "한 번 더", action));
-    LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(62), 1);
-    p.setMargins(row.getChildCount() == 0 ? 0 : dp(3), dp(8), 0, 0);
-    row.addView(tile, p);
-    commands.add(tile);
+    column.setOnClickListener(doubleTap(name, "한 번 더", circle, true, action));
+    row.addView(column, new LinearLayout.LayoutParams(0, -2, 1));
+    commands.add(column);
     commandNeeds.add(needs);
-    return tile;
+    return column;
   }
 
   private void climateConfirm(String title, String action, Runnable run) {
@@ -1020,66 +1231,119 @@ public final class MainActivity extends Activity {
   }
 
   private void buildControlsAutomationLog() {
-    LinearLayout controls = card("차량 제어");
+    LinearLayout controls = new LinearLayout(this);
+    controls.setOrientation(LinearLayout.VERTICAL);
     controls.setTag("controlsCard");
+    LinearLayout.LayoutParams controlsParams = new LinearLayout.LayoutParams(-1, -2);
+    controlsParams.topMargin = dp(24);
+    body.addView(controls, controlsParams);
+    LinearLayout head = new LinearLayout(this);
+    head.setGravity(Gravity.CENTER_VERTICAL);
+    controls.addView(head);
+    bold(head, "차량 제어", 20, TEXT).setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    text(head, "3초 안에 두 번 탭하면 실행", 13, MUTED).setPadding(dp(8), 0, 0, 0);
+    LinearLayout roundRow = new LinearLayout(this);
+    roundRow.setBaselineAligned(false);
+    roundRow.setClipChildren(false);
+    LinearLayout.LayoutParams roundParams = new LinearLayout.LayoutParams(-1, -2);
+    roundParams.topMargin = dp(16);
+    controls.addView(roundRow, roundParams);
+    roundButton(
+        roundRow, R.drawable.ic_lock_open, "도어 열기", TEXT, "control_unlock",
+        new CloudClient.Command[] {CloudClient.Command.UNLOCK},
+        () -> controller.command(CloudClient.Command.UNLOCK, false, () -> true));
+    roundButton(
+        roundRow, R.drawable.ic_lock, "도어 잠금", TEXT, "control_lock",
+        new CloudClient.Command[] {CloudClient.Command.LOCK},
+        () -> controller.command(CloudClient.Command.LOCK, false, () -> true));
+    roundButton(
+        roundRow, R.drawable.ic_power, "시동 켜기", OPEN, "control_power_on",
+        new CloudClient.Command[] {CloudClient.Command.CLIMATE_ON},
+        () -> climateConfirm("시동 켜기 · 원격 공조", "", controller::manualClimateStart));
+    roundButton(
+        roundRow, R.drawable.ic_power, "시동 끄기", LOCK, "control_power_off",
+        new CloudClient.Command[] {CloudClient.Command.STOP},
+        () -> confirm(CloudClient.Command.STOP));
     LinearLayout bigRow = new LinearLayout(this);
     bigRow.setBaselineAligned(false);
-    controls.addView(bigRow);
+    bigRow.setClipChildren(false);
+    LinearLayout.LayoutParams bigParams = new LinearLayout.LayoutParams(-1, -2);
+    bigParams.topMargin = dp(20);
+    controls.addView(bigRow, bigParams);
     bigTile(
-        bigRow, R.drawable.ic_car, "원격 Ready", "문 열고 예열", new int[] {0xff3f7be8, 0xff55bdce},
-        "control_prepare",
+        bigRow, R.drawable.ic_car, "원격 Ready", "문 열고 예열", true, "control_prepare",
         new CloudClient.Command[] {CloudClient.Command.UNLOCK, CloudClient.Command.CLIMATE_ON},
         () -> climateConfirm("원격 Ready", "도어를 연 뒤 열림이 확인되면 원격 공조(예열)를 켭니다. ", controller::departurePrepare));
     bigTile(
-        bigRow, R.drawable.ic_walk, "주차 마무리", "시동 끄고 잠금", new int[] {0xff5874f3, 0xff7d6cf0},
-        "control_finish",
+        bigRow, R.drawable.ic_walk, "주차 마무리", "시동 끄고 잠금", false, "control_finish",
         new CloudClient.Command[] {CloudClient.Command.STOP, CloudClient.Command.LOCK},
         this::finishConfirm);
-    LinearLayout smallRow = new LinearLayout(this);
-    smallRow.setBaselineAligned(false);
-    controls.addView(smallRow);
-    smallTile(
-        smallRow, R.drawable.ic_lock_open, "도어 열기", 0xff62dca7, 0xff1b3029, "control_unlock",
-        new CloudClient.Command[] {CloudClient.Command.UNLOCK},
-        () -> controller.command(CloudClient.Command.UNLOCK, false, () -> true));
-    smallTile(
-        smallRow, R.drawable.ic_lock, "도어 잠금", 0xff8fa8ff, 0xff1e2747, "control_lock",
-        new CloudClient.Command[] {CloudClient.Command.LOCK},
-        () -> controller.command(CloudClient.Command.LOCK, false, () -> true));
-    smallTile(
-        smallRow, R.drawable.ic_power, "시동 켜기", 0xff66cce0, 0xff1b343b, "control_power_on",
-        new CloudClient.Command[] {CloudClient.Command.CLIMATE_ON},
-        () -> climateConfirm("시동 켜기 · 원격 공조", "", controller::manualClimateStart));
-    smallTile(
-        smallRow, R.drawable.ic_power_off, "시동 끄기", 0xffddaa67, 0xff35281f, "control_power_off",
-        new CloudClient.Command[] {CloudClient.Command.STOP},
-        () -> confirm(CloudClient.Command.STOP));
     cancelStop = button(controls, "", v -> controller.cancelPendingStop("앱에서 사용자 취소"));
     cancelStop.setTag("cancelStop");
-    cancelStop.setTextColor(0xffffc77d);
-    cancelStop.setBackground(background(0xff4a2f22, 12));
+    cancelStop.setTextColor(LOCK);
+    cancelStop.setTypeface(null, Typeface.BOLD);
+    cancelStop.setBackground(pressable(background(LOCK_SOFT, 14)));
+    ((LinearLayout.LayoutParams) cancelStop.getLayoutParams()).topMargin = dp(12);
     cancelStop.setVisibility(View.GONE);
-    text(controls, "실수 방지: 3초 안에 두 번 누르면 실행합니다.", 12, MUTED);
 
-    LinearLayout automationCard = card("자동화");
+    LinearLayout automationCard = card(body, null);
     automationCard.setTag("automationCard");
     LinearLayout row = new LinearLayout(this);
     row.setGravity(Gravity.CENTER_VERTICAL);
     automationCard.addView(row);
+    FrameLayout bolt = new FrameLayout(this);
+    bolt.setBackground(background(ACCENT_SOFT, 16));
+    ImageView boltIcon = new ImageView(this);
+    boltIcon.setImageResource(R.drawable.ic_bolt);
+    boltIcon.setColorFilter(ACCENT);
+    bolt.addView(boltIcon, new FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER));
+    row.addView(bolt, new LinearLayout.LayoutParams(dp(50), dp(50)));
     LinearLayout texts = new LinearLayout(this);
     texts.setOrientation(LinearLayout.VERTICAL);
+    texts.setPadding(dp(14), 0, dp(8), 0);
     row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
-    TextView name = text(texts, "자동화 켜기", 17, TEXT);
-    name.setTypeface(null, Typeface.BOLD);
-    name.setPadding(0, 0, 0, 0);
-    text(texts, "가까우면 해제 · 멀어지면 잠금", 12, MUTED).setPadding(0, dp(2), 0, 0);
+    bold(texts, "자동 도어", 19, TEXT);
+    text(texts, keepWords("가까워지면 열고 · 멀어지면 잠가요"), 13, SUBTLE).setPadding(0, dp(3), 0, 0);
     automation = new Switch(this);
     automation.setTag("automationSwitch");
-    automation.setContentDescription("자동화 켜기");
+    automation.setContentDescription("자동 도어 켜기");
     automation.setMinHeight(dp(48));
     row.addView(automation);
+    // "현재 상태" row; tapping it opens the BLE diagnostics that used to sit in the signal card.
+    LinearLayout state = new LinearLayout(this);
+    state.setTag("signalMore");
+    state.setGravity(Gravity.CENTER_VERTICAL);
+    state.setPadding(dp(16), dp(14), dp(12), dp(14));
+    state.setBackground(pressable(background(FIELD, 16)));
+    state.setOnClickListener(v -> setSignalExpanded(!signalExpanded));
+    LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(-1, -2);
+    stateParams.topMargin = dp(16);
+    automationCard.addView(state, stateParams);
+    text(state, "현재 상태", 15, SUBTLE)
+        .setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    stateDot = new View(this);
+    state.addView(stateDot, new LinearLayout.LayoutParams(dp(9), dp(9)));
+    autoDetails = bold(state, "신호 없음 · 대기 중", 15, TEXT);
+    autoDetails.setPadding(dp(8), 0, dp(4), 0);
+    stateChevron = icon(state, R.drawable.ic_back, MUTED, 18);
+    signalMore = state;
+    signalExtra = new LinearLayout(this);
+    signalExtra.setTag("signalExtra");
+    signalExtra.setOrientation(LinearLayout.VERTICAL);
+    signalExtra.setPadding(dp(4), dp(6), dp(4), 0);
+    automationCard.addView(signalExtra);
+    text(
+        signalExtra,
+        "차 그림의 배지: 청록 = 열림 구간, 주황 = 잠금 구간. 신호 세기는 실제 거리와 다를 수 있습니다.",
+        12,
+        MUTED);
+    signalDetails = text(signalExtra, "", 12, MUTED);
+    controlDetails = text(signalExtra, "", 12, MUTED);
+    readyDetails = text(signalExtra, "", 12, MUTED);
+    setSignalExpanded(false);
     automationReason = text(automationCard, "", 12, MUTED);
     automationReason.setTag("automationReason");
+    automationReason.setPadding(dp(4), dp(10), dp(4), 0);
     automation.setOnCheckedChangeListener(
         (b, on) -> {
           if (updating) return;
@@ -1143,13 +1407,13 @@ public final class MainActivity extends Activity {
   private static int activityColor(ActivityFeed.Kind kind) {
     switch (kind) {
       case SUCCESS:
-        return 0xff62dca7;
+        return Palette.SUCCESS;
       case FAILURE:
-        return 0xffff7b7b;
+        return DANGER;
       case WAIT:
-        return 0xffffc77d;
+        return Palette.LOCK;
       default:
-        return 0xff8fb4ff;
+        return ACCENT;
     }
   }
 
@@ -1164,7 +1428,7 @@ public final class MainActivity extends Activity {
     badge.setTextColor(color);
     badge.setTypeface(null, Typeface.BOLD);
     badge.setGravity(Gravity.CENTER);
-    GradientDrawable pill = background((color & 0x00ffffff) | 0x26000000, 10);
+    GradientDrawable pill = background((color & 0x00ffffff) | 0x1f000000, 10);
     badge.setBackground(pill);
     badge.setPadding(dp(6), dp(3), dp(6), dp(3));
     LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(dp(42), -2);
@@ -1219,8 +1483,9 @@ public final class MainActivity extends Activity {
   private void setSignalExpanded(boolean expanded) {
     signalExpanded = expanded;
     signalExtra.setVisibility(expanded ? View.VISIBLE : View.GONE);
-    signalMore.setText(expanded ? "−" : "＋");
-    signalMore.setContentDescription(expanded ? "BLE 상세 접기" : "BLE 상세 펼치기");
+    stateChevron.setRotation(expanded ? 90 : -90); // The back chevron turned to point up or down.
+    signalMore.setContentDescription(
+        "현재 상태 " + autoDetails.getText() + (expanded ? " · BLE 상세 접기" : " · BLE 상세 펼치기"));
   }
 
   private void showVehicleDetails() {
@@ -1248,25 +1513,43 @@ public final class MainActivity extends Activity {
 
   private void showPage(String destination) {
     page = destination;
-    homeScroll.setVisibility(page.equals("home") ? View.VISIBLE : View.GONE);
+    boolean home = page.equals("home");
+    homeScroll.setVisibility(home ? View.VISIBLE : View.GONE);
     settingsScroll.setVisibility(page.equals("settings") ? View.VISIBLE : View.GONE);
     setupScroll.setVisibility(page.equals("setup") ? View.VISIBLE : View.GONE);
-    back.setVisibility(page.equals("home") ? View.GONE : View.VISIBLE);
-    titleSpacer.setVisibility(View.GONE);
-    logo.setVisibility(page.equals("home") ? View.VISIBLE : View.GONE);
-    title.setText(page.equals("home") ? "D-Autolock" : page.equals("settings") ? "설정" : "처음 설정");
+    bleScroll.setVisibility(page.equals("ble") ? View.VISIBLE : View.GONE);
+    // Home shows the brand, BLE pill and menu; sub pages a back arrow and a centred title.
+    back.setVisibility(home ? View.GONE : View.VISIBLE);
+    titleSpacer.setVisibility(home ? View.GONE : View.VISIBLE);
+    logoTile.setVisibility(home ? View.VISIBLE : View.GONE);
+    bleStatusPill.setVisibility(home ? View.VISIBLE : View.GONE);
+    menu.setVisibility(home ? View.VISIBLE : View.GONE);
+    title.setGravity(home ? Gravity.CENTER_VERTICAL | Gravity.START : Gravity.CENTER);
+    title.setAutoSizeTextTypeUniformWithConfiguration(
+        15, home ? 24 : 19, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+    title.setPadding(home ? dp(12) : 0, 0, 0, 0);
+    title.setText(
+        home
+            ? "D-Autolock"
+            : page.equals("settings") ? "설정" : page.equals("setup") ? "처음 설정" : "BLE 신호 설정");
+  }
+
+  private void navigateBack() {
+    if (page.equals("ble")) showPage(bleReturn); // Unsaved threshold drafts are dropped.
+    else if (!page.equals("home")) showPage("home");
   }
 
   @Override
   public void onBackPressed() {
-    if (!page.equals("home")) showPage("home");
-    else super.onBackPressed();
+    if (page.equals("home")) super.onBackPressed();
+    else navigateBack();
   }
 
   @Override
   protected void onSaveInstanceState(Bundle state) {
     state.putString("page", page);
     state.putBoolean("signalExpanded", signalExpanded);
+    state.putBoolean("bleBeacon", bleBeaconTab);
     super.onSaveInstanceState(state);
   }
 
@@ -1288,10 +1571,10 @@ public final class MainActivity extends Activity {
     LinearLayout content = form();
     content.setPadding(dp(20), dp(16), dp(20), dp(24));
     setupScroll.addView(content);
-    setupProgress = text(content, "", 14, MINT);
+    setupProgress = text(content, "", 14, ACCENT);
     setupTitle = text(content, "", 23, TEXT);
-    setupInstructions = text(content, "", 16, MUTED);
-    setupStatus = text(content, "", 14, MINT);
+    setupInstructions = text(content, "", 16, SUBTLE);
+    setupStatus = text(content, "", 14, ACCENT);
     setupStatus.setTag("setupStatus");
     setupAction =
         button(
@@ -1323,7 +1606,7 @@ public final class MainActivity extends Activity {
                   bridgeDialog();
                   break;
                 case 6:
-                  thresholdDialog();
+                  openBle(false);
                   break;
               }
             });
@@ -1465,11 +1748,27 @@ public final class MainActivity extends Activity {
     if (view instanceof Switch) {
       Switch toggle = (Switch) view;
       toggle.setTextSize(14);
+      // Solid pill track with a white knob inside it, instead of Material's translucent track.
+      // The track's padding keeps the knob 3 dp from the ends; the knob's own vertical inset
+      // keeps it round, since Switch stretches the thumb to the full track height.
+      GradientDrawable knob = oval(0xffffffff);
+      knob.setSize(dp(22), dp(22));
+      toggle.setThumbDrawable(new android.graphics.drawable.InsetDrawable(knob, 0, dp(3), 0, dp(3)));
+      toggle.setThumbTintList(ColorStateList.valueOf(0xffffffff));
+      GradientDrawable pill = background(0xffffffff, 14);
+      pill.setSize(dp(50), dp(28));
+      android.graphics.drawable.LayerDrawable track =
+          new android.graphics.drawable.LayerDrawable(new Drawable[] {pill});
+      track.setPadding(dp(3), dp(3), dp(3), dp(3));
+      toggle.setTrackDrawable(track);
       toggle.setTrackTintList(
-          new android.content.res.ColorStateList(
-              new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},
-              new int[] {0xff54ba62, 0xff3d4653}));
-      toggle.setThumbTintList(android.content.res.ColorStateList.valueOf(TEXT));
+          new ColorStateList(
+              new int[][] {
+                new int[] {-android.R.attr.state_enabled},
+                new int[] {android.R.attr.state_checked},
+                new int[] {}
+              },
+              new int[] {0xffdfe4eb, ACCENT, 0xffc7cfdb}));
     } else if (view instanceof ViewGroup) {
       ViewGroup group = (ViewGroup) view;
       for (int i = 0; i < group.getChildCount(); i++) styleSwitches(group.getChildAt(i));
@@ -1491,59 +1790,38 @@ public final class MainActivity extends Activity {
     doorTitle.setText(door);
     boolean open = door.equals("도어 열림"), closed = door.equals("도어 잠김");
     lockIcon.setImageResource(open ? R.drawable.ic_lock_open : R.drawable.ic_lock);
-    lockTile.setBackground(
-        background(open ? 0xff4a3220 : closed ? 0xff1f3350 : 0xff2a313b, 14));
-    lockIcon.setColorFilter(open ? 0xffffa94d : closed ? 0xff8fb4ff : MUTED);
+    lockTile.setBackground(background(open ? LOCK : closed ? ACCENT : IDLE, 16));
     lockTile.setContentDescription(labels[0]);
-    batteryText.setText(DashboardStatus.battery(shown, shownAt));
-    powerText.setText(labels[1].replace("시동 ", ""));
-    powerText.setContentDescription(labels[1]);
-    windowText.setText(labels[2].replace("창문 ", ""));
-    windowText.setContentDescription(labels[2]);
-    signal.setText(controller.signal);
-    signalGauge.reading(
-        controller.averageRssi,
-        controller.settings.getInt("near", Controller.DEFAULT_NEAR),
-        controller.settings.getInt("far", Controller.DEFAULT_FAR));
-    signalDetails.setText(controller.signalDetail);
+    showStatusCards(shown, shownAt, labels);
     bridgeStatus.setText(controller.vehicleLink.describe());
-    if (thresholdPreview != null) thresholdPreview.run();
-    autoDetails.setText(
-        !controller.monitoring
-            ? "관찰 중지 · 자동 도어 OFF"
-            : (controller.autoEnabled ? "자동 도어 ON" : "관찰 중 · 자동 도어 OFF")
-                + (controller.cloud.backoffMillis() > 0
-                    ? " · BYD 응답 대기"
-                    : Double.isNaN(controller.averageRssi)
-                        ? " · 신호 없음"
-                        : controller.busy() ? " · 차량 확인 중" : ""));
+    boolean beaconOn = controller.beaconConfigured();
+    showSignals(beaconOn);
+    signalDetails.setText(
+        controller.signal
+            + "\n"
+            + controller.signalDetail
+            + (beaconOn ? "\n보조 " + controller.beaconSignal + "\n" + controller.beaconDetail : ""));
     controlDetails.setText(controller.autoDetail);
     message.setText(DashboardStatus.brief(controller.message));
     readyDetails.setText(controller.readyStatus);
     long now = System.currentTimeMillis();
     String checked = DashboardStatus.updated(controller.snapshot, now);
     checkedTime.setText(controller.statusReading ? "확인 중… · " + checked : checked);
-    boolean receiving = !Double.isNaN(controller.averageRssi);
-    signalDbm.setText(receiving ? Math.round(controller.averageRssi) + " dBm" : "— dBm");
-    signalDot.setBackground(background(receiving ? MINT : 0xff4a5361, 5));
-    boolean beaconOn = controller.beaconConfigured();
-    beaconSection.setVisibility(beaconOn ? View.VISIBLE : View.GONE);
-    if (beaconOn) {
-      beaconSignalView.setText("보조 " + controller.beaconSignal);
-      beaconGauge.reading(
-          controller.beaconRssi,
-          controller.settings.getInt("beaconNear", Controller.DEFAULT_BEACON_NEAR),
-          controller.settings.getInt("beaconFar", Controller.DEFAULT_BEACON_FAR));
-      beaconDbm.setText(
-          Double.isNaN(controller.beaconRssi)
-              ? "— dBm"
-              : Math.round(controller.beaconRssi) + " dBm");
-    }
     beaconDevice.setText(
         "보조 BLE(비콘): "
             + (beaconOn ? controller.settings.getString("beaconName", "등록됨") : "없음"));
+    // update() runs about once a second while monitoring; that sets the history bar pace.
+    if (now - lastHistoryAt >= 900) {
+      lastHistoryAt = now;
+      history[0].push(controller.averageRssi, range[0].near(), range[0].far());
+      history[1].push(controller.beaconRssi, range[1].near(), range[1].far());
+    }
+    if (page.equals("ble")) refreshBle();
     updating = true;
     automation.setChecked(controller.monitoring && controller.autoEnabled);
+    boolean combine = controller.settings.getBoolean("beaconCombine", true);
+    combineSwitch.setChecked(combine);
+    bleCombine.setChecked(combine);
     updating = false;
     automationReason.setText(
         controller.monitoring && controller.autoEnabled
@@ -1648,6 +1926,108 @@ public final class MainActivity extends Activity {
         && !controller.settings.getBoolean("setupIntroSeen", false)) showSetup();
     setupBanner.setVisibility(setupPending() ? View.VISIBLE : View.GONE);
     tryAutoResume();
+  }
+
+  private void showStatusCards(
+      com.dautolock.app.core.VehicleSnapshot shown, long now, String[] labels) {
+    String battery = DashboardStatus.battery(shown, now);
+    boolean known = !battery.equals("--%");
+    int level = known ? Integer.parseInt(battery.substring(0, battery.length() - 1)) : 0;
+    int tone = !known ? IDLE : level < 20 ? DANGER : level <= 40 ? LOCK : SUCCESS;
+    batteryText.setText(battery);
+    batteryText.setTextColor(known ? tone : TEXT);
+    batteryIcon.setColorFilter(known ? tone : SUBTLE);
+    batteryBar.setProgress(level);
+    batteryBar.setProgressTintList(ColorStateList.valueOf(tone));
+    String power = labels[1].replace("시동 ", ""), window = labels[2].replace("창문 ", "");
+    powerText.setText(power);
+    powerText.setContentDescription(labels[1]);
+    powerSub.setText(power.equals("꺼짐") ? "대기 중" : power.equals("켜짐") ? "전원 ON" : "정보 없음");
+    powerIcon.setColorFilter(power.equals("켜짐") ? OPEN : SUBTLE);
+    windowText.setText(window);
+    windowText.setContentDescription(labels[2]);
+    windowSub.setText(window.equals("닫힘") ? "전체" : window.equals("열림") ? "열린 창 있음" : "정보 없음");
+    windowIcon.setColorFilter(window.equals("열림") ? LOCK : SUBTLE);
+  }
+
+  /** Car badges, the header BLE pill and the automation card's "현재 상태" line. */
+  private void showSignals(boolean beaconOn) {
+    boolean on = controller.monitoring;
+    SignalBand primary =
+        SignalBand.of(
+            on ? controller.averageRssi : Double.NaN,
+            controller.settings.getInt("near", Controller.DEFAULT_NEAR),
+            controller.settings.getInt("far", Controller.DEFAULT_FAR));
+    SignalBand beacon =
+        !beaconOn
+            ? null
+            : SignalBand.of(
+                on ? controller.beaconRssi : Double.NaN,
+                controller.settings.getInt("beaconNear", Controller.DEFAULT_BEACON_NEAR),
+                controller.settings.getInt("beaconFar", Controller.DEFAULT_BEACON_FAR));
+    carHero.bands(primary, beacon);
+    showBadge(primaryBadge, primary, controller.averageRssi, on);
+    beaconBadge.root.setVisibility(beaconOn ? View.VISIBLE : View.GONE);
+    beaconAdd.setVisibility(beaconOn ? View.GONE : View.VISIBLE);
+    if (beaconOn) showBadge(beaconBadge, beacon, controller.beaconRssi, on);
+    boolean any = primary != SignalBand.LOST || (beacon != null && beacon != SignalBand.LOST);
+    String ble = !on ? "BLE 꺼짐" : any ? "BLE 수신 중" : "BLE 미연결";
+    int tone = on && any ? ACCENT : SUBTLE;
+    bleStatusText.setText(ble);
+    bleStatusText.setTextColor(tone);
+    bleStatusIcon.setColorFilter(tone);
+    bleStatusPill.setContentDescription(ble + " · 눌러서 BLE 신호 설정");
+    String state;
+    int dot;
+    if (!on) {
+      state = "감지 꺼짐";
+      dot = IDLE;
+    } else if (controller.cloud.backoffMillis() > 0) {
+      state = "BYD 응답 대기";
+      dot = LOCK;
+    } else if (controller.busy()) {
+      state = "차량 확인 중";
+      dot = ACCENT;
+    } else if (!any) {
+      state = "신호 없음 · 대기 중";
+      dot = IDLE;
+    } else if (primary == SignalBand.OPEN || beacon == SignalBand.OPEN) {
+      state = "가까움 · 열림 구간"; // Either signal opens (beacon OR-unlock).
+      dot = OPEN;
+    } else if ((primary == SignalBand.LOCK || primary == SignalBand.LOST)
+        && (beacon == null || beacon == SignalBand.LOCK || beacon == SignalBand.LOST)) {
+      state = "멀어짐 · 잠금 구간"; // Both clear (beacon AND-lock).
+      dot = LOCK;
+    } else {
+      state = "중간 거리 · 대기 중";
+      dot = ACCENT;
+    }
+    autoDetails.setText(state);
+    tint(stateDot, dot);
+    signalMore.setContentDescription(
+        "현재 상태 " + state + (signalExpanded ? " · BLE 상세 접기" : " · BLE 상세 펼치기"));
+  }
+
+  private void showBadge(Badge badge, SignalBand band, double rssi, boolean on) {
+    String value =
+        !on
+            ? "꺼짐"
+            : band == SignalBand.LOST ? "끊김" : RangeSlider.dbm((int) Math.round(rssi)) + " dBm";
+    badge.value.setText(value);
+    badge.value.setTextColor(band.color);
+    tint(badge.dot, band == SignalBand.MIDDLE ? ACCENT : band.color);
+    badge.root.setContentDescription(
+        badge.name
+            + " "
+            + (band == SignalBand.LOST ? value : value + ", " + band.label)
+            + " · 눌러서 BLE 신호 설정");
+  }
+
+  /** Colours a small round marker, reusing its shape between updates. */
+  private void tint(View dot, int color) {
+    if (dot.getBackground() instanceof GradientDrawable)
+      ((GradientDrawable) dot.getBackground()).setColor(color);
+    else dot.setBackground(oval(color));
   }
 
   private void tryAutoResume() {
@@ -1816,241 +2196,356 @@ public final class MainActivity extends Activity {
         .show();
   }
 
-  private void thresholdDialog() {
-    LinearLayout f = form();
+  // BLE 신호 설정: a full page with a 차량 BLE tab and a 보조 비콘 tab. Each tab shows the live
+  // signal, then the thresholds as a draft; nothing is saved until 저장, and back discards it.
+
+  private void buildBlePage(FrameLayout pages) {
+    bleScroll = new ScrollView(this);
+    bleScroll.setTag("blePage");
+    bleScroll.setFillViewport(true);
+    LinearLayout content = new LinearLayout(this);
+    content.setOrientation(LinearLayout.VERTICAL);
+    content.setPadding(dp(20), dp(4), dp(20), dp(28));
+    content.setClipToPadding(false);
+    bleScroll.addView(content);
+    pages.addView(bleScroll);
+    bleScroll.setVisibility(View.GONE);
+    LinearLayout tabs = new LinearLayout(this);
+    tabs.setPadding(dp(5), dp(5), dp(5), dp(5));
+    tabs.setBackground(background(0xffe2e8f2, 20));
+    content.addView(tabs, new LinearLayout.LayoutParams(-1, dp(58)));
+    for (int i = 0; i < 2; i++) {
+      boolean beacon = i == 1;
+      TextView tab = new TextView(this);
+      tab.setTag(beacon ? "bleTabBeacon" : "bleTabPrimary");
+      tab.setText(beacon ? "보조 비콘" : "차량 BLE");
+      tab.setTextSize(16);
+      tab.setGravity(Gravity.CENTER);
+      tab.setOnClickListener(v -> selectBleTab(beacon));
+      tabs.addView(tab, new LinearLayout.LayoutParams(0, -1, 1));
+      bleTabs[i] = tab;
+      bleSection[i] = new LinearLayout(this);
+      bleSection[i].setOrientation(LinearLayout.VERTICAL);
+      content.addView(bleSection[i]);
+    }
+    liveCard(bleSection[0], 0);
+    thresholdCard(bleSection[0], 0, Controller.DEFAULT_NEAR, Controller.DEFAULT_FAR);
+    LinearLayout waits = card(bleSection[0], "대기 시간");
+    nearWait =
+        settingSlider(
+            waits, "접근 후 잠금 해제 대기", "nearWait", 0, 15, Controller.DEFAULT_NEAR_WAIT, "초",
+            "0초 ← → 15초", value -> bleDirty[0] = true);
+    farWait =
+        settingSlider(
+            waits, "이탈 후 잠금 대기", "farWait", 0, 30, Controller.DEFAULT_FAR_WAIT, "초",
+            "0초 ← → 30초", value -> bleDirty[0] = true);
+    lossWait =
+        settingSlider(
+            waits, "BLE 신호 끊김 후 잠금", "lossWait", 5, 60, Controller.DEFAULT_LOSS, "초",
+            "5초 ← → 60초", value -> bleDirty[0] = true);
     text(
-        f,
-        "문이 동작할 신호 기준을 조절합니다. 수신 신호나 게이지 세기 자체는 바뀌지 않습니다. −50 dBm은 −75 dBm보다 강한 신호입니다. dBm은 미터 거리가"
-            + " 아닙니다.",
-        13,
+        waits,
+        "자동 해제 후 2분 동안은 20초 연속 멀어져야 잠그는 반복 방지가 함께 적용됩니다. 0초도 유효 신호 4회와 차량 상태 조회가 필요합니다."
+            + " 저장하면 자동 시작 설정에 따라 새 기준으로 관찰·자동 제어를 다시 시작합니다.",
+        12,
         MUTED);
-    TextView preview = text(f, "", 15, MINT);
-    preview.setTag("thresholdPreview");
-    text(f, "아래 값은 저장 전 미리보기입니다. 관찰 중이면 현재 평균 신호와 비교합니다. 접근·이탈 기준은 5 dBm 이상 간격을 유지합니다.", 13, MUTED);
-    SeekBar[] sensitivity = new SeekBar[2];
-    sensitivity[0] =
-        settingSlider(
-            f,
-            "접근 · 잠금 해제 기준",
-            "near",
-            -92,
-            -30,
-            controller.settings.getInt("near", Controller.DEFAULT_NEAR),
-            " dBm 이상",
-            "멀리서도 해제 ← → 가까워야 해제",
-            value -> {
-              if (sensitivity[1] != null
-                  && value < sensitivity[1].getProgress() - 100 + ProximityEngine.MIN_GAP_DB)
-                sensitivity[1].setProgress(value - ProximityEngine.MIN_GAP_DB + 100);
-              if (thresholdPreview != null) thresholdPreview.run();
-            });
-    sensitivity[1] =
-        settingSlider(
-            f,
-            "이탈 · 도어 잠금 기준",
-            "far",
-            -100,
-            -38,
-            controller.settings.getInt("far", Controller.DEFAULT_FAR),
-            " dBm 이하",
-            "더 멀어져야 잠금 ← → 가까운 곳부터 잠금",
-            value -> {
-              if (value > sensitivity[0].getProgress() - 92 - ProximityEngine.MIN_GAP_DB)
-                sensitivity[0].setProgress(value + ProximityEngine.MIN_GAP_DB + 92);
-              if (thresholdPreview != null) thresholdPreview.run();
-            });
-    SeekBar nearWait =
-        settingSlider(
-            f,
-            "접근 후 잠금 해제 대기",
-            "nearWait",
-            0,
-            15,
-            controller.settings.getInt("nearWaitSeconds", Controller.DEFAULT_NEAR_WAIT),
-            "초",
-            "0초 ← → 15초",
-            value -> {});
-    SeekBar farWait =
-        settingSlider(
-            f,
-            "이탈 후 잠금 대기",
-            "farWait",
-            0,
-            30,
-            controller.settings.getInt("farWaitSeconds", Controller.DEFAULT_FAR_WAIT),
-            "초",
-            "0초 ← → 30초",
-            value -> {});
-    SeekBar lossWait =
-        settingSlider(
-            f,
-            "BLE 신호 끊김 후 잠금",
-            "lossWait",
-            5,
-            60,
-            controller.settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS),
-            "초",
-            "5초 ← → 60초",
-            value -> {});
-    Runnable recommended =
-        () -> {
-          sensitivity[0].setProgress(Controller.DEFAULT_NEAR + 92);
-          sensitivity[1].setProgress(Controller.DEFAULT_FAR + 100);
-          nearWait.setProgress(Controller.DEFAULT_NEAR_WAIT);
-          farWait.setProgress(Controller.DEFAULT_FAR_WAIT);
-          lossWait.setProgress(Controller.DEFAULT_LOSS - 5);
-        };
-    button(f, "추천값 적용 · −78 / −83 dBm", v -> recommended.run());
+
+    bleBeaconEmpty = card(bleSection[1], "보조 비콘이 없어요");
     text(
-        f,
-        "추천값: 접근 −78 / 이탈 −83 dBm, 접근 1초 / 이탈 5초 / 신호 끊김 10초. 주 BLE가 전방(헤드유닛)에서 강해 트렁크·조수석 접근 땐 −75 근처에서 한참 맴돌던 기록을 반영해 접근 기준을 −78로 낮췄습니다"
-            + " (이탈은 5 dBm 간격 유지). 휴대폰 위치와 주변 환경에 맞춰 조정하세요.",
+        bleBeaconEmpty,
+        "트렁크 등 차 뒤쪽에 BLE 비콘을 두면 뒤·옆에서 다가갈 때도 더 빨리 열 수 있어요. 차량 BLE와 비콘 중 하나만 가까워도 열리고,"
+            + " 둘 다 멀어져야 잠깁니다.",
         13,
-        MUTED);
+        SUBTLE);
+    Button addDevice = button(bleBeaconEmpty, "+  신호 기기 추가", v -> pickDevice(true));
+    addDevice.setTag("beaconAddDevice");
+    addDevice.setTextColor(ACCENT);
+    addDevice.setTypeface(null, Typeface.BOLD);
+    GradientDrawable dashed = background(CARD, 16);
+    dashed.setStroke(dp(1), 0xffb9c6dd, dp(5), dp(4));
+    addDevice.setBackground(pressable(dashed));
+    LinearLayout.LayoutParams addParams = (LinearLayout.LayoutParams) addDevice.getLayoutParams();
+    addParams.height = dp(56);
+    addParams.topMargin = dp(12);
+    bleBeaconSet = new LinearLayout(this);
+    bleBeaconSet.setOrientation(LinearLayout.VERTICAL);
+    bleSection[1].addView(bleBeaconSet);
+    liveCard(bleBeaconSet, 1);
+    thresholdCard(bleBeaconSet, 1, Controller.DEFAULT_BEACON_NEAR, Controller.DEFAULT_BEACON_FAR);
+    LinearLayout device = card(bleBeaconSet, "보조 비콘 기기");
+    beaconName = text(device, "", 15, TEXT);
+    bleCombine = combineToggle(device, "bleBeaconCombine");
     text(
-        f,
-        "자동 해제 후 2분 동안은 20초 연속 멀어져야 잠그는 반복 방지가 함께 적용됩니다.\n"
-            + "0초도 유효 신호 4회와 차량 상태 조회가 필요합니다. 조회 중 작은 신호 흔들림은 최대 10초·4 dBm 범위에서 허용합니다. 저장하면 자동 시작"
-            + " 설정에 따라 새 기준으로 관찰·자동 제어를 다시 시작합니다.",
-        13,
+        device,
+        "켜면 차량 BLE 또는 비콘 중 하나만 가까워도 열리고, 둘 다 멀어져야 잠깁니다. 비콘이 한동안 안 잡히면 차량 BLE만으로 잠급니다.",
+        12,
         MUTED);
-    ScrollView scroll = new ScrollView(this);
-    scroll.addView(f);
-    AlertDialog d =
-        new AlertDialog.Builder(this)
-            .setTitle("감도 · 대기 시간")
-            .setView(scroll)
-            .setNegativeButton("취소", null)
-            .setNeutralButton("추천값", null)
-            .setPositiveButton("저장", null)
-            .create();
-    d.setOnShowListener(
-        x -> {
-          d.getButton(-3).setOnClickListener(v -> recommended.run());
-          d.getButton(-1)
-              .setOnClickListener(
-                  v -> {
-                    try {
-                      controller.thresholds(
-                          sensitivity[0].getProgress() - 92,
-                          sensitivity[1].getProgress() - 100,
-                          nearWait.getProgress(),
-                          farWait.getProgress(),
-                          lossWait.getProgress() + 5);
-                      d.dismiss();
-                    } catch (Exception e) {
-                      Toast.makeText(this, "감도와 대기 시간 범위를 확인하세요", Toast.LENGTH_SHORT).show();
-                    }
-                  });
-        });
-    thresholdPreview =
-        () -> {
-          double average = controller.averageRssi;
-          int near = sensitivity[0].getProgress() - 92;
-          int far = sensitivity[1].getProgress() - 100;
-          String comparison;
-          if (!controller.monitoring || Double.isNaN(average))
-            comparison = "현재 평균 — · 거리 관찰과 BLE 수신이 필요합니다";
-          else {
-            String condition =
-                average >= near
-                    ? "해제 신호 기준 충족"
-                    : average <= far ? "잠금 신호 기준 충족" : "두 기준 사이 · 신호 기준 미충족";
-            comparison =
-                "현재 평균 " + String.format(Locale.KOREA, "%.1f", average) + " dBm\n" + condition;
-          }
-          preview.setText(
-              comparison
-                  + "\n선택 기준: 해제 ≥ "
-                  + near
-                  + " / 잠금 ≤ "
-                  + far
-                  + " dBm"
-                  + "\n신호 기준만 비교합니다. 실제 동작에는 대기 시간·차량 상태·BYD 응답이 필요합니다."
-                  + "\n현재 자동 판단: "
-                  + controller.autoDetail);
-        };
-    d.setOnDismissListener(x -> thresholdPreview = null);
-    thresholdPreview.run();
-    d.show();
+    button(device, "다른 비콘 선택", v -> pickDevice(true));
+    button(
+        device,
+        "보조 비콘 해제",
+        v ->
+            new AlertDialog.Builder(this)
+                .setMessage("보조 BLE(비콘)를 해제할까요? 주 BLE(차량)만 사용합니다.")
+                .setNegativeButton("취소", null)
+                .setPositiveButton("해제", (d, w) -> controller.clearBeacon())
+                .show());
+
+    Button save = primaryButton(content, "저장", v -> saveBle());
+    save.setTag("bleSave");
+    LinearLayout.LayoutParams saveParams = (LinearLayout.LayoutParams) save.getLayoutParams();
+    saveParams.height = dp(58);
+    saveParams.topMargin = dp(24);
+    loadBleDrafts();
+    selectBleTab(false);
   }
 
-  private void beaconThresholdDialog() {
-    if (!controller.beaconConfigured()) {
-      Toast.makeText(this, "먼저 보조 BLE(비콘)를 선택하세요", Toast.LENGTH_SHORT).show();
+  private void liveCard(LinearLayout parent, int i) {
+    LinearLayout card = card(parent, null);
+    LinearLayout head = new LinearLayout(this);
+    head.setGravity(Gravity.CENTER_VERTICAL);
+    card.addView(head);
+    text(head, "실시간 신호 세기", 16, SUBTLE).setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    liveChip[i] = bold(head, "● 끊김", 13, SUBTLE);
+    liveChip[i].setPadding(dp(12), dp(5), dp(12), dp(5));
+    LinearLayout reading = new LinearLayout(this); // Baseline-aligned: big number, small unit.
+    card.addView(reading);
+    liveValue[i] = bold(reading, "—", 44, TEXT);
+    text(reading, "dBm", 22, MUTED).setPadding(dp(8), 0, 0, 0);
+    history[i] = new SignalHistory(this);
+    LinearLayout.LayoutParams barsParams = new LinearLayout.LayoutParams(-1, -2);
+    barsParams.topMargin = dp(10);
+    card.addView(history[i], barsParams);
+    livePreview[i] = text(card, "", 13, MUTED);
+    livePreview[i].setTag(i == 0 ? "thresholdPreview" : "beaconPreview");
+    livePreview[i].setPadding(0, dp(12), 0, 0);
+  }
+
+  private void thresholdCard(LinearLayout parent, int i, int nearDefault, int farDefault) {
+    LinearLayout card = card(parent, "임계값");
+    RangeSlider slider = new RangeSlider(this);
+    slider.setTag(i == 0 ? "thresholdRange" : "beaconRange");
+    LinearLayout.LayoutParams sliderParams = new LinearLayout.LayoutParams(-1, -2);
+    sliderParams.topMargin = dp(10);
+    card.addView(slider, sliderParams);
+    range[i] = slider;
+    slider.listener(
+        (far, near) -> {
+          bleDirty[i] = true;
+          showThresholds(i);
+          refreshPreview(i);
+        });
+    String far = i == 0 ? "far" : "beaconFar", near = i == 0 ? "near" : "beaconNear";
+    farValue[i] =
+        stepper(
+            card, LOCK, "잠금 임계값", "이 값보다 약해지면 잠금", far,
+            () -> slider.moveFar(slider.far() - 1), () -> slider.moveFar(slider.far() + 1));
+    nearValue[i] =
+        stepper(
+            card, OPEN, "열림 임계값", "이 값보다 강해지면 열림", near,
+            () -> slider.moveNear(slider.near() - 1), () -> slider.moveNear(slider.near() + 1));
+    LinearLayout info = new LinearLayout(this);
+    info.setGravity(Gravity.CENTER_VERTICAL);
+    info.setPadding(dp(14), dp(12), dp(14), dp(12));
+    info.setBackground(background(FIELD, 14));
+    LinearLayout.LayoutParams infoParams = new LinearLayout.LayoutParams(-1, -2);
+    infoParams.topMargin = dp(18);
+    card.addView(info, infoParams);
+    icon(info, R.drawable.ic_info, ACCENT, 20);
+    gapInfo[i] = text(info, "", 13, SUBTLE);
+    gapInfo[i].setTag(i == 0 ? "gapInfo" : "beaconGapInfo");
+    gapInfo[i].setPadding(dp(10), 0, 0, 0);
+    gapInfo[i].setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    Button preset =
+        button(
+            card,
+            "추천값 적용 · " + RangeSlider.dbm(nearDefault) + " / " + RangeSlider.dbm(farDefault) + " dBm",
+            v -> {
+              slider.set(farDefault, nearDefault);
+              if (i == 0) {
+                nearWait.setProgress(Controller.DEFAULT_NEAR_WAIT);
+                farWait.setProgress(Controller.DEFAULT_FAR_WAIT);
+                lossWait.setProgress(Controller.DEFAULT_LOSS - 5);
+              }
+              bleDirty[i] = true;
+              showThresholds(i);
+              refreshPreview(i);
+            });
+    preset.setTextColor(ACCENT);
+    preset.setBackground(pressable(background(0x00000000, 14)));
+  }
+
+  /** A threshold row: coloured dot, name and meaning, then a [− value +] box. Returns the value. */
+  private TextView stepper(
+      LinearLayout card, int color, String name, String hint, String tag, Runnable minus,
+      Runnable plus) {
+    LinearLayout row = new LinearLayout(this);
+    row.setGravity(Gravity.CENTER_VERTICAL);
+    LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
+    rowParams.topMargin = dp(16);
+    card.addView(row, rowParams);
+    View dot = new View(this);
+    dot.setBackground(oval(color));
+    LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(10), dp(10));
+    dotParams.rightMargin = dp(12);
+    row.addView(dot, dotParams);
+    LinearLayout texts = new LinearLayout(this);
+    texts.setOrientation(LinearLayout.VERTICAL);
+    row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
+    bold(texts, name, 16, TEXT);
+    text(texts, hint, 13, SUBTLE).setPadding(0, dp(3), dp(6), 0);
+    LinearLayout box = new LinearLayout(this);
+    GradientDrawable frame = background(FIELD, 16);
+    frame.setStroke(dp(1), STROKE);
+    box.setBackground(frame);
+    box.setPadding(dp(1), dp(1), dp(1), dp(1)); // Keep the white middle inside the outline.
+    row.addView(box, new LinearLayout.LayoutParams(dp(128), dp(52)));
+    step(box, "−", name + " 1 dB 낮추기", tag + "Minus", minus);
+    TextView value = bold(box, "", 20, TEXT);
+    value.setTag(tag + "Value");
+    value.setGravity(Gravity.CENTER);
+    value.setBackgroundColor(CARD);
+    value.setLayoutParams(new LinearLayout.LayoutParams(dp(50), -1));
+    step(box, "+", name + " 1 dB 높이기", tag + "Plus", plus);
+    return value;
+  }
+
+  private void step(LinearLayout box, String sign, String description, String tag, Runnable action) {
+    TextView b = new TextView(this);
+    b.setText(sign);
+    b.setTextSize(22);
+    b.setTextColor(TEXT);
+    b.setGravity(Gravity.CENTER);
+    b.setTag(tag);
+    b.setContentDescription(description);
+    b.setBackground(pressable(background(0x00000000, 14)));
+    b.setOnClickListener(v -> action.run());
+    box.addView(b, new LinearLayout.LayoutParams(0, -1, 1));
+  }
+
+  private void showThresholds(int i) {
+    farValue[i].setText(RangeSlider.dbm(range[i].far()));
+    nearValue[i].setText(RangeSlider.dbm(range[i].near()));
+    SpannableStringBuilder note = new SpannableStringBuilder("두 값 사이 ");
+    int start = note.length();
+    note.append(String.valueOf(range[i].near() - range[i].far())).append(" dB 구간");
+    note.setSpan(new StyleSpan(Typeface.BOLD), start, note.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+    note.append("에서는 상태를 바꾸지 않아요.\n문 앞에서 잠금·열림이 반복되면 간격을 넓혀 보세요.");
+    gapInfo[i].setText(note);
+  }
+
+  /** Compares the live average with the draft thresholds, not the saved ones. */
+  private void refreshPreview(int i) {
+    double rssi = i == 0 ? controller.averageRssi : controller.beaconRssi;
+    String preview;
+    if (!controller.monitoring || Double.isNaN(rssi))
+      preview =
+          "현재 평균 — · "
+              + (controller.monitoring
+                  ? "휴대폰을 들고 차 주변을 걸으면 여기에 값이 표시돼요"
+                  : "자동 도어를 켜면 여기에 값이 표시돼요");
+    else {
+      int near = range[i].near(), far = range[i].far();
+      preview =
+          "현재 평균 "
+              + String.format(Locale.KOREA, "%.1f", rssi).replace('-', '−')
+              + " dBm · "
+              + (rssi >= near
+                  ? "해제 신호 기준 충족"
+                  : rssi <= far ? "잠금 신호 기준 충족" : "두 기준 사이 · 신호 기준 미충족");
+    }
+    livePreview[i].setText(preview);
+  }
+
+  private void refreshBle() {
+    boolean beaconOn = controller.beaconConfigured();
+    bleBeaconEmpty.setVisibility(beaconOn ? View.GONE : View.VISIBLE);
+    bleBeaconSet.setVisibility(beaconOn ? View.VISIBLE : View.GONE);
+    beaconName.setText(controller.settings.getString("beaconName", "등록된 비콘"));
+    for (int i = 0; i < 2; i++) {
+      double rssi = i == 0 ? controller.averageRssi : controller.beaconRssi;
+      boolean receiving = controller.monitoring && !Double.isNaN(rssi);
+      liveValue[i].setText(receiving ? RangeSlider.dbm((int) Math.round(rssi)) : "—");
+      SignalBand band =
+          SignalBand.of(receiving ? rssi : Double.NaN, range[i].near(), range[i].far());
+      liveChip[i].setText(
+          !controller.monitoring ? "● 감지 꺼짐" : receiving ? "● " + band.label : "● 끊김");
+      liveChip[i].setTextColor(
+          band == SignalBand.LOST ? SUBTLE : band == SignalBand.MIDDLE ? ACCENT : band.color);
+      liveChip[i].setBackground(
+          background(
+              band == SignalBand.OPEN
+                  ? OPEN_SOFT
+                  : band == SignalBand.LOCK
+                      ? LOCK_SOFT
+                      : band == SignalBand.MIDDLE ? ACCENT_SOFT : IDLE_SOFT,
+              14));
+      refreshPreview(i);
+    }
+  }
+
+  private void selectBleTab(boolean beacon) {
+    bleBeaconTab = beacon;
+    for (int i = 0; i < 2; i++) {
+      boolean on = (i == 1) == beacon;
+      bleSection[i].setVisibility(on ? View.VISIBLE : View.GONE);
+      bleTabs[i].setBackground(on ? background(CARD, 16) : null);
+      bleTabs[i].setTextColor(on ? TEXT : SUBTLE);
+      bleTabs[i].setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
+      bleTabs[i].setSelected(on);
+    }
+  }
+
+  /** Opens BLE 신호 설정 on one tab, with drafts freshly loaded from the saved settings. */
+  private void openBle(boolean beacon) {
+    if (!page.equals("ble")) bleReturn = page;
+    loadBleDrafts();
+    selectBleTab(beacon);
+    showPage("ble");
+    bleScroll.scrollTo(0, 0);
+    refreshBle();
+  }
+
+  /** Drafts start from the saved settings; the history bars also colour against them. */
+  private void loadBleDrafts() {
+    range[0].set(
+        controller.settings.getInt("far", Controller.DEFAULT_FAR),
+        controller.settings.getInt("near", Controller.DEFAULT_NEAR));
+    range[1].set(
+        controller.settings.getInt("beaconFar", Controller.DEFAULT_BEACON_FAR),
+        controller.settings.getInt("beaconNear", Controller.DEFAULT_BEACON_NEAR));
+    nearWait.setProgress(controller.settings.getInt("nearWaitSeconds", Controller.DEFAULT_NEAR_WAIT));
+    farWait.setProgress(controller.settings.getInt("farWaitSeconds", Controller.DEFAULT_FAR_WAIT));
+    lossWait.setProgress(controller.settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS) - 5);
+    showThresholds(0);
+    showThresholds(1);
+    bleDirty[0] = bleDirty[1] = false; // Loading the drafts is not an edit.
+  }
+
+  /** Saves only the tabs that were edited, so an untouched car BLE does not restart scanning. */
+  private void saveBle() {
+    try {
+      if (bleDirty[0])
+        controller.thresholds(
+            range[0].near(),
+            range[0].far(),
+            nearWait.getProgress(),
+            farWait.getProgress(),
+            lossWait.getProgress() + 5);
+    } catch (Exception e) {
+      Toast.makeText(this, "감도와 대기 시간 범위를 확인하세요", Toast.LENGTH_SHORT).show();
       return;
     }
-    LinearLayout f = form();
-    text(
-        f,
-        "보조 BLE(비콘)의 접근·이탈 신호 기준입니다. 위치마다 세기가 다르니 메인의 '보조 신호'를 보며 맞추세요."
-            + " '보조 비콘으로 열기·잠금'이 켜져 있으면 이 기준이 열림(둘 중 하나 가까움)·잠금(둘 다 멀어짐)에 함께 쓰입니다."
-            + " 접근 기준을 낮추면(예: -78) 트렁크·조수석 쪽에서도 더 일찍 열립니다. 두 기준은 5 dBm 이상 간격을 둡니다.",
-        13,
-        MUTED);
-    text(
-        f,
-        "현재 보조 평균 "
-            + (Double.isNaN(controller.beaconRssi)
-                ? "— (수신 대기)"
-                : Math.round(controller.beaconRssi) + " dBm"),
-        15,
-        MINT);
-    SeekBar[] s = new SeekBar[2];
-    s[0] =
-        settingSlider(
-            f,
-            "보조 접근 · 해제 기준",
-            "beaconNear",
-            -92,
-            -30,
-            controller.settings.getInt("beaconNear", Controller.DEFAULT_BEACON_NEAR),
-            " dBm 이상",
-            "멀리서도 해제 ← → 가까워야 해제",
-            value -> {
-              if (s[1] != null
-                  && value < s[1].getProgress() - 100 + ProximityEngine.MIN_GAP_DB)
-                s[1].setProgress(value - ProximityEngine.MIN_GAP_DB + 100);
-            });
-    s[1] =
-        settingSlider(
-            f,
-            "보조 이탈 · 잠금 기준",
-            "beaconFar",
-            -100,
-            -38,
-            controller.settings.getInt("beaconFar", Controller.DEFAULT_BEACON_FAR),
-            " dBm 이하",
-            "더 멀어져야 잠금 ← → 가까운 곳부터 잠금",
-            value -> {
-              if (value > s[0].getProgress() - 92 - ProximityEngine.MIN_GAP_DB)
-                s[0].setProgress(value + ProximityEngine.MIN_GAP_DB + 92);
-            });
-    ScrollView scroll = new ScrollView(this);
-    scroll.addView(f);
-    AlertDialog d =
-        new AlertDialog.Builder(this)
-            .setTitle("보조 BLE 작동 거리")
-            .setView(scroll)
-            .setNegativeButton("취소", null)
-            .setPositiveButton("저장", null)
-            .create();
-    d.setOnShowListener(
-        x ->
-            d.getButton(-1)
-                .setOnClickListener(
-                    v -> {
-                      try {
-                        controller.beaconThresholds(
-                            s[0].getProgress() - 92, s[1].getProgress() - 100);
-                        d.dismiss();
-                      } catch (Exception e) {
-                        Toast.makeText(
-                                this, "접근·이탈 기준은 5 dBm 이상 간격이 필요합니다", Toast.LENGTH_SHORT)
-                            .show();
-                      }
-                    }));
-    d.show();
+    bleDirty[0] = false;
+    try {
+      if (bleDirty[1] && controller.beaconConfigured())
+        controller.beaconThresholds(range[1].near(), range[1].far());
+    } catch (Exception e) {
+      Toast.makeText(this, "접근·이탈 기준은 5 dBm 이상 간격이 필요합니다", Toast.LENGTH_SHORT).show();
+      return;
+    }
+    bleDirty[1] = false;
+    navigateBack();
   }
 
   private SeekBar settingSlider(
@@ -2069,8 +2564,8 @@ public final class MainActivity extends Activity {
     bar.setMax(max - min);
     bar.setProgress(value - min);
     bar.setMinimumHeight(dp(48));
-    bar.setProgressTintList(android.content.res.ColorStateList.valueOf(MINT));
-    bar.setThumbTintList(android.content.res.ColorStateList.valueOf(MINT));
+    bar.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+    bar.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
     bar.setContentDescription(caption.getText());
     bar.setOnSeekBarChangeListener(
         new SeekBar.OnSeekBarChangeListener() {

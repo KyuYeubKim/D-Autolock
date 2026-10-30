@@ -32,7 +32,7 @@
             android:foregroundServiceType="connectedDevice|location" />
         <service android:name=".VehicleLinkService" android:exported="false"
             android:foregroundServiceType="connectedDevice" />
-        <activity android:name=".BridgeQrActivity" android:exported="false" android:screenOrientation="fullSensor" />
+        <activity android:name=".BridgeQrActivity" android:exported="false" android:screenOrientation="fullSensor" android:theme="@style/ScannerTheme" />
         <receiver android:name=".DoorActionReceiver" android:exported="false" />
     </application>
 </manifest>

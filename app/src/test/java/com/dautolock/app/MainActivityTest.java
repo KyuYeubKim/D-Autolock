@@ -81,7 +81,7 @@ public class MainActivityTest {
       View settings = root.findViewWithTag("settingsPage");
       String[] moved = {
         "차량 보조 앱 연결 / QR",
-        "자동 도어",
+        "자동 도어 · 거리 관찰",
         "자동 동작 설정",
         "앱 업데이트",
         "01  BYD AUTO 계정",
@@ -212,7 +212,7 @@ public class MainActivityTest {
   }
 
   @Test
-  public void livePreviewComparesAverageWithDraftThresholdsAndPresetSavesOnlyOnApply()
+  public void livePreviewComparesAverageWithDraftThresholdsAndPresetSavesOnlyOnSave()
       throws Exception {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {
@@ -220,17 +220,18 @@ public class MainActivityTest {
       AccountPersistenceTest.await(c);
       c.monitoring = true;
       c.averageRssi = -59.6;
-      a.get().getWindow().getDecorView().findViewWithTag("thresholdEdit").performClick();
+      View root = a.get().getWindow().getDecorView();
+      root.findViewWithTag("thresholdEdit").performClick(); // The car BLE badge on the car.
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
-      AlertDialog d = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
-      View decor = d.getWindow().getDecorView();
-      TextView preview = decor.findViewWithTag("thresholdPreview");
-      SeekBar near = decor.findViewWithTag("near");
-      near.setProgress(-40 + 92);
+      assertEquals(View.VISIBLE, root.findViewWithTag("blePage").getVisibility());
+      assertEquals(View.GONE, root.findViewWithTag("homePage").getVisibility());
+      TextView preview = root.findViewWithTag("thresholdPreview");
+      RangeSlider range = root.findViewWithTag("thresholdRange");
+      range.moveNear(-40);
       assertTrue(preview.getText().toString().contains("기준 미충족"));
-      find(decor, "추천값 적용 · −78 / −83 dBm").performClick();
+      find(root, "추천값 적용 · −78 / −83 dBm").performClick();
       assertTrue(preview.getText().toString().contains("해제 신호 기준 충족"));
-      assertTrue(preview.getText().toString().contains("-59.6 dBm"));
+      assertTrue(preview.getText().toString().contains("−59.6 dBm"));
       assertFalse(c.settings.contains("near"));
       c.averageRssi = -88;
       c.changed();
@@ -240,7 +241,7 @@ public class MainActivityTest {
       c.changed();
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
       assertTrue(preview.getText().toString().contains("현재 평균 —"));
-      d.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
+      root.findViewWithTag("bleSave").performClick();
       assertEquals(-78, c.settings.getInt("near", 0));
       assertEquals(-83, c.settings.getInt("far", 0));
       assertEquals(1, c.settings.getInt("nearWaitSeconds", 0));
@@ -248,32 +249,42 @@ public class MainActivityTest {
       assertEquals(10, c.settings.getInt("lossLockSeconds", 0));
       assertFalse(c.monitoring);
       assertFalse(c.autoEnabled);
+      assertEquals(View.GONE, root.findViewWithTag("blePage").getVisibility());
     }
   }
 
   @Test
-  public void sensitivitySlidersKeepGapAndSaveTimesUsedByEngine() throws Exception {
+  public void thresholdHandlesKeepGapAndSaveTimesUsedByEngine() throws Exception {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {
       Controller c = ((DApplication) a.get().getApplication()).controller();
       AccountPersistenceTest.await(c);
-      a.get().getWindow().getDecorView().findViewWithTag("thresholdEdit").performClick();
+      View root = a.get().getWindow().getDecorView();
+      root.findViewWithTag("thresholdEdit").performClick();
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
-      AlertDialog dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
-      View decor = dialog.getWindow().getDecorView();
+      View page = root.findViewWithTag("blePage");
       java.util.List<EditText> inputs = new java.util.ArrayList<>();
-      fields(decor, inputs);
-      assertTrue(inputs.isEmpty());
-      SeekBar near = decor.findViewWithTag("near"), far = decor.findViewWithTag("far");
-      near.setProgress(0); // -92; far is pushed to -97 (5 dB gap).
-      assertEquals(3, far.getProgress());
-      far.setProgress(62); // -38; near moves to -33 (5 dB gap).
-      assertEquals(59, near.getProgress());
-      dialog.getButton(DialogInterface.BUTTON_NEUTRAL).performClick();
-      ((SeekBar) decor.findViewWithTag("nearWait")).setProgress(1);
-      ((SeekBar) decor.findViewWithTag("farWait")).setProgress(4);
-      ((SeekBar) decor.findViewWithTag("lossWait")).setProgress(15); // 20 seconds.
-      dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
+      fields(page, inputs);
+      assertTrue(inputs.isEmpty()); // Handles and steppers only, no typing.
+      RangeSlider range = page.findViewWithTag("thresholdRange");
+      range.moveNear(-92); // The lock handle is pushed to -97 (5 dB gap).
+      assertEquals(-97, range.far());
+      assertEquals("−97", ((TextView) page.findViewWithTag("farValue")).getText().toString());
+      range.moveFar(-45); // The unlock handle moves to -40, the strong end of the track.
+      assertEquals(-40, range.near());
+      page.findViewWithTag("nearPlus").performClick(); // Already at the end: stays.
+      assertEquals(-40, range.near());
+      page.findViewWithTag("farMinus").performClick();
+      assertEquals(-46, range.far());
+      assertTrue(
+          ((TextView) page.findViewWithTag("gapInfo")).getText().toString().contains("6 dB 구간"));
+      find(page, "추천값 적용 · −78 / −83 dBm").performClick();
+      assertEquals(-78, range.near());
+      assertEquals(-83, range.far());
+      ((SeekBar) page.findViewWithTag("nearWait")).setProgress(1);
+      ((SeekBar) page.findViewWithTag("farWait")).setProgress(4);
+      ((SeekBar) page.findViewWithTag("lossWait")).setProgress(15); // 20 seconds.
+      page.findViewWithTag("bleSave").performClick();
       assertEquals(-78, c.settings.getInt("near", 0));
       assertEquals(-83, c.settings.getInt("far", 0));
       assertEquals(1, c.settings.getInt("nearWaitSeconds", 0));
@@ -290,18 +301,95 @@ public class MainActivityTest {
   }
 
   @Test
-  public void cancellingSliderDialogDoesNotChangeSettings() throws Exception {
+  public void leavingBlePageWithoutSavingDropsTheDraft() throws Exception {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {
       Controller c = ((DApplication) a.get().getApplication()).controller();
       AccountPersistenceTest.await(c);
-      a.get().getWindow().getDecorView().findViewWithTag("thresholdEdit").performClick();
+      View root = a.get().getWindow().getDecorView();
+      root.findViewWithTag("thresholdEdit").performClick();
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
-      AlertDialog dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
-      ((SeekBar) dialog.getWindow().getDecorView().findViewWithTag("nearWait")).setProgress(0);
-      dialog.getButton(DialogInterface.BUTTON_NEGATIVE).performClick();
+      ((SeekBar) root.findViewWithTag("nearWait")).setProgress(0);
+      RangeSlider range = root.findViewWithTag("thresholdRange");
+      range.moveNear(-60);
+      a.get().onBackPressed();
+      assertEquals(View.GONE, root.findViewWithTag("blePage").getVisibility());
       assertEquals(3, c.settings.getInt("nearWaitSeconds", 3));
       assertFalse(c.settings.contains("nearWaitSeconds"));
+      assertFalse(c.settings.contains("near"));
+      root.findViewWithTag("bleStatus").performClick(); // The header pill opens the same page.
+      assertEquals(View.VISIBLE, root.findViewWithTag("blePage").getVisibility());
+      assertEquals(Controller.DEFAULT_NEAR, range.near()); // Reloaded, not the dropped draft.
+    }
+  }
+
+  @Test
+  public void beaconTabOffersAddUntilConfiguredThenSavesOnlyTheBeacon() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      View root = a.get().getWindow().getDecorView();
+      assertEquals(View.VISIBLE, root.findViewWithTag("beaconAdd").getVisibility());
+      assertEquals(View.GONE, root.findViewWithTag("beaconThresholdEdit").getVisibility());
+      root.findViewWithTag("beaconAdd").performClick();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      View empty = (View) find(root, "보조 비콘이 없어요").getParent();
+      assertEquals(View.VISIBLE, empty.getVisibility());
+      assertNotNull(root.findViewWithTag("beaconAddDevice"));
+      c.settings
+          .edit()
+          .putString("beaconAddress", "AA:BB:CC:DD:EE:01")
+          .putString("beaconName", "Holy-IOT")
+          .commit();
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertEquals(View.GONE, empty.getVisibility());
+      assertNotNull(find(root, "Holy-IOT"));
+      RangeSlider beacon = root.findViewWithTag("beaconRange");
+      assertEquals(Controller.DEFAULT_BEACON_NEAR, beacon.near());
+      root.findViewWithTag("beaconNearMinus").performClick();
+      root.findViewWithTag("bleSave").performClick();
+      assertEquals(Controller.DEFAULT_BEACON_NEAR - 1, c.settings.getInt("beaconNear", 0));
+      assertFalse(c.settings.contains("near")); // The untouched car BLE tab is not re-saved.
+      // Saving closes the page (back to wherever it was opened from; the guide may be showing).
+      assertEquals(View.GONE, root.findViewWithTag("blePage").getVisibility());
+      assertEquals(View.VISIBLE, root.findViewWithTag("beaconThresholdEdit").getVisibility());
+      assertEquals(View.GONE, root.findViewWithTag("beaconAdd").getVisibility());
+    }
+  }
+
+  @Test
+  public void carBadgesAndStatusFollowSignalBands() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      View root = a.get().getWindow().getDecorView();
+      View badge = root.findViewWithTag("thresholdEdit"),
+          pill = root.findViewWithTag("bleStatus"),
+          state = root.findViewWithTag("signalMore");
+      assertNotNull(find(badge, "꺼짐"));
+      assertNotNull(find(pill, "BLE 꺼짐"));
+      assertNotNull(find(state, "감지 꺼짐"));
+      c.monitoring = true;
+      c.averageRssi = -60; // Above the -78 unlock threshold.
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertNotNull(find(badge, "−60 dBm"));
+      assertNotNull(find(pill, "BLE 수신 중"));
+      assertNotNull(find(state, "가까움 · 열림 구간"));
+      c.averageRssi = -90; // Below the -83 lock threshold.
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertNotNull(find(state, "멀어짐 · 잠금 구간"));
+      c.averageRssi = Double.NaN;
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertNotNull(find(badge, "끊김"));
+      assertNotNull(find(pill, "BLE 미연결"));
+      assertNotNull(find(state, "신호 없음 · 대기 중"));
+      c.monitoring = false;
     }
   }
 

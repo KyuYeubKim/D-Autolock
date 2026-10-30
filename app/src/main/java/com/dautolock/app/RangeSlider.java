@@ -28,7 +28,7 @@ final class RangeSlider extends View {
   RangeSlider(Context context) {
     super(context);
     density = context.getResources().getDisplayMetrics().density;
-    label.setTextSize(13 * context.getResources().getDisplayMetrics().scaledDensity);
+    label.setTextSize(11 * context.getResources().getDisplayMetrics().scaledDensity);
     setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
     describe();
   }
@@ -99,7 +99,7 @@ final class RangeSlider extends View {
 
   @Override
   protected void onMeasure(int widthSpec, int heightSpec) {
-    setMeasuredDimension(MeasureSpec.getSize(widthSpec), Math.round(76 * density));
+    setMeasuredDimension(MeasureSpec.getSize(widthSpec), Math.round(62 * density));
   }
 
   @Override
@@ -145,7 +145,7 @@ final class RangeSlider extends View {
   @Override
   protected void onDraw(Canvas canvas) {
     super.onDraw(canvas);
-    float y = 26 * density, r = 4 * density, left = pad(), right = getWidth() - pad();
+    float y = 22 * density, r = 3 * density, left = pad(), right = getWidth() - pad();
     float xf = x(far), xn = x(near);
     paint.setStyle(Paint.Style.FILL);
     paint.setColor(Palette.IDLE_SOFT);
@@ -186,14 +186,14 @@ final class RangeSlider extends View {
   }
 
   private void handle(Canvas canvas, float x, float y, int color, boolean active) {
-    // 24 dp wide: at the minimum 5 dB gap on a phone-width track the two handles still just clear.
-    float half = (active ? 13 : 12) * density, corner = 8 * density;
+    // 20 dp wide: at the minimum 5 dB gap on a phone-width track the two handles still clear.
+    float half = (active ? 11 : 10) * density, corner = 7 * density;
     rect.set(x - half, y - half, x + half, y + half);
     paint.setStyle(Paint.Style.FILL);
     paint.setColor(Palette.CARD);
     canvas.drawRoundRect(rect, corner, corner, paint);
     paint.setStyle(Paint.Style.STROKE);
-    paint.setStrokeWidth(3 * density);
+    paint.setStrokeWidth(2.5f * density);
     paint.setColor(color);
     canvas.drawRoundRect(rect, corner, corner, paint);
   }

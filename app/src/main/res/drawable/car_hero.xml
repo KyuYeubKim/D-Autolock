@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Side view of a compact hatchback facing left. CarHeroView marks the signal sources on it.
+<!-- Side view of a compact electric hatchback facing left, drawn like a product render: pearl
+     body with a horizon reflection, blacked-out glass, slim LED lights and aero wheels.
+     CarHeroView marks the signal sources on it.
      Larger than lint's icon guideline on purpose: it is one hero picture, redrawn only when a
      signal band changes, and VectorDrawable keeps the rendered bitmap between draws. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -10,111 +12,165 @@
     android:height="200dp"
     android:viewportWidth="480"
     android:viewportHeight="200">
-  <!-- Ground shadow -->
-  <path
-      android:fillColor="#FF1E2A3D"
-      android:fillAlpha="0.14"
-      android:pathData="M38,184a206,9 0,1 0,412 0a206,9 0,1 0,-412 0z" />
+  <!-- Soft floor shadow: a circle with a radial fade, squashed flat. -->
+  <group android:pivotX="240" android:pivotY="186" android:scaleY="0.07">
+    <path android:pathData="M10,186a230,230 0,1 0,460 0a230,230 0,1 0,-460 0z">
+      <aapt:attr name="android:fillColor">
+        <gradient
+            android:type="radial"
+            android:centerX="240"
+            android:centerY="186"
+            android:gradientRadius="230">
+          <item android:offset="0" android:color="#47101826" />
+          <item android:offset="0.7" android:color="#1F101826" />
+          <item android:offset="1" android:color="#00101826" />
+        </gradient>
+      </aapt:attr>
+    </path>
+  </group>
   <!-- Wheel wells -->
   <path
-      android:fillColor="#FF20252E"
-      android:pathData="M82,165A38,38 0,1 1,156 165Z M326,165A38,38 0,1 1,400 165Z" />
+      android:fillColor="#FF151A22"
+      android:pathData="M79.4,168A37,37 0,1 1,148.6 168Z M329.4,168A37,37 0,1 1,398.6 168Z" />
   <!-- Body -->
-  <path android:pathData="M44,164C36,162 32,152 33,142C34,130 40,122 54,117C90,106 128,100 168,97C190,86 210,72 232,64C262,56 330,54 366,58C392,62 412,74 428,90C440,100 448,112 450,126C452,138 450,150 446,158C444,163 438,165 430,165L400,165A38,38 0,1 0,326 165L156,165A38,38 0,1 0,82 165L44,164Z">
+  <path android:pathData="M44,168C36,168 30,162 29,152C28,142 30,132 36,126C62,114 110,108 158,105C182,92 206,74 234,66C264,59 320,57 348,61C376,64 400,70 418,79L421,84C430,94 437,106 441,118C446,132 448,148 444,160C442,166 437,168 430,168L398.6,168A37,37 0,1 0,329.4 168L148.6,168A37,37 0,1 0,79.4 168Z">
     <aapt:attr name="android:fillColor">
       <gradient
           android:type="linear"
           android:startX="0"
-          android:startY="56"
+          android:startY="58"
           android:endX="0"
-          android:endY="166">
-        <item android:offset="0" android:color="#FFFAFBFD" />
-        <item android:offset="0.5" android:color="#FFE7EBF1" />
-        <item android:offset="1" android:color="#FFC3CBD6" />
+          android:endY="168">
+        <item android:offset="0" android:color="#FFFBFCFE" />
+        <item android:offset="0.44" android:color="#FFEEF1F5" />
+        <item android:offset="0.6" android:color="#FFCED5DE" />
+        <item android:offset="0.76" android:color="#FFE6EAEF" />
+        <item android:offset="1" android:color="#FFA8B1BD" />
       </gradient>
     </aapt:attr>
   </path>
-  <!-- Windshield and side glass -->
-  <path android:pathData="M172,98C194,88 212,76 236,68C266,61 330,60 362,64C386,67 404,78 418,92L412,100C340,101 250,102 178,104Z">
+  <!-- Glass: one blacked-out band from windshield to hatch -->
+  <path android:pathData="M166,104C188,92 208,77 236,70C266,64 320,62 346,65C370,68 392,73 408,80C412,84 414,87 414,90C360,95 260,100 170,106Z">
     <aapt:attr name="android:fillColor">
       <gradient
           android:type="linear"
           android:startX="0"
-          android:startY="60"
+          android:startY="64"
           android:endX="0"
-          android:endY="104">
-        <item android:offset="0" android:color="#FF3D4A66" />
-        <item android:offset="1" android:color="#FF1A2131" />
+          android:endY="106">
+        <item android:offset="0" android:color="#FF3A4558" />
+        <item android:offset="0.55" android:color="#FF1A212E" />
+        <item android:offset="1" android:color="#FF0C1119" />
       </gradient>
     </aapt:attr>
   </path>
-  <!-- Pillars -->
-  <path
-      android:fillColor="#FFDDE2E9"
-      android:pathData="M290,61L298,61L301,103L293,103Z M368,64L374,65L386,99L379,99Z" />
-  <!-- Glass reflection -->
+  <!-- Sky reflections on the glass, and a barely visible B-pillar -->
   <path
       android:fillColor="#FFFFFFFF"
-      android:fillAlpha="0.16"
-      android:pathData="M204,92L230,73L246,72L216,95Z M312,66L330,65L318,101L302,101Z" />
-  <!-- Door seams and the body line -->
+      android:fillAlpha="0.09"
+      android:pathData="M226,72L262,66L224,103L190,104Z M318,63L336,63L304,101L290,101Z" />
   <path
-      android:strokeColor="#FFB4BDC9"
-      android:strokeWidth="1.4"
-      android:strokeLineCap="round"
-      android:pathData="M178,106C176,124 176,144 170,162 M297,104L300,163 M386,100C393,120 397,140 395,160" />
+      android:fillColor="#FF05080E"
+      android:fillAlpha="0.7"
+      android:pathData="M294,65L299,65L301,100L296,100Z" />
+  <!-- Shoulder highlight and lower-door sculpting -->
   <path
       android:strokeColor="#FFFFFFFF"
+      android:strokeAlpha="0.85"
+      android:strokeWidth="1.6"
+      android:strokeLineCap="round"
+      android:pathData="M60,120C160,113 300,108 436,106" />
+  <path
+      android:strokeColor="#FF1E2A3D"
+      android:strokeAlpha="0.06"
+      android:strokeWidth="7"
+      android:strokeLineCap="round"
+      android:pathData="M160,147C220,145 280,143 326,141" />
+  <!-- Door seams and flush handles -->
+  <path
+      android:strokeColor="#FFA9B2BE"
       android:strokeAlpha="0.8"
-      android:strokeWidth="1.6"
+      android:strokeWidth="1"
       android:strokeLineCap="round"
-      android:pathData="M56,125C160,119 320,116 446,117" />
+      android:pathData="M176,108C174,128 174,148 170,163 M300,102L302,164" />
   <path
-      android:strokeColor="#FFB4BDC9"
-      android:strokeWidth="1.2"
+      android:strokeColor="#FF97A1AE"
+      android:strokeWidth="2"
       android:strokeLineCap="round"
-      android:pathData="M58,129C160,123 320,120 446,121" />
-  <!-- Handles and mirror -->
+      android:pathData="M232,116h20 M330,113h20" />
+  <!-- Camera-style mirror -->
   <path
-      android:fillColor="#FFAEB7C4"
-      android:pathData="M236,116h22a2.5,2.5 0,0 1,0 5h-22a2.5,2.5 0,0 1,0 -5z M342,114h22a2.5,2.5 0,0 1,0 5h-22a2.5,2.5 0,0 1,0 -5z" />
+      android:fillColor="#FF1B222D"
+      android:pathData="M178,103C172,100 164,101 159,105L173,108Z" />
+  <!-- Dark side skirt and arch trims -->
   <path
-      android:fillColor="#FF2A3346"
-      android:pathData="M184,99C177,97 170,99 167,104L181,106Z" />
-  <!-- Front light strip and lower intake -->
+      android:fillColor="#FF2A313C"
+      android:pathData="M152,160L326,158L328,168L150,168Z" />
   <path
-      android:fillColor="#FF2563EB"
-      android:pathData="M40,124C50,118 64,115 84,113L86,117C66,119 52,122 42,129Z" />
+      android:strokeColor="#FF39414D"
+      android:strokeWidth="3.2"
+      android:pathData="M79.4,168A37,37 0,1 1,148.6 168 M329.4,168A37,37 0,1 1,398.6 168" />
+  <!-- Front: slim LED strip and lower intake line -->
+  <path android:pathData="M37,124C52,118 70,114 92,112L93,115C72,117 54,121 39,128Z">
+    <aapt:attr name="android:fillColor">
+      <gradient
+          android:type="linear"
+          android:startX="37"
+          android:startY="120"
+          android:endX="93"
+          android:endY="113">
+        <item android:offset="0" android:color="#FF8DB8FF" />
+        <item android:offset="1" android:color="#FFEAF3FF" />
+      </gradient>
+    </aapt:attr>
+  </path>
   <path
-      android:strokeColor="#FF9AA4B2"
-      android:strokeWidth="1.6"
+      android:strokeColor="#FF3A424E"
+      android:strokeWidth="2"
       android:strokeLineCap="round"
-      android:pathData="M40,148C50,150 64,150 76,149" />
-  <!-- Tail light and rear bumper line -->
+      android:pathData="M34,156C46,160 62,161 76,160" />
+  <!-- Rear: slim LED tail and bumper line -->
   <path
       android:fillColor="#FFE5484D"
-      android:pathData="M443,103C448,110 451,118 451,127L445,127C445,119 443,112 439,106Z" />
+      android:pathData="M436,110C441,114 444,120 445,127L441,128C440,121 437,116 433,113Z" />
   <path
-      android:strokeColor="#FFAAB3BF"
-      android:strokeWidth="1.4"
+      android:strokeColor="#FFA3ACB8"
+      android:strokeWidth="1.2"
       android:strokeLineCap="round"
-      android:pathData="M430,150C439,150 445,148 448,144" />
-  <!-- Wheels -->
+      android:pathData="M426,152C435,152 441,150 445,146" />
+  <!-- Low-profile tyres -->
   <path
-      android:fillColor="#FF272B33"
-      android:pathData="M90,156a29,29 0,1 0,58 0a29,29 0,1 0,-58 0z M334,156a29,29 0,1 0,58 0a29,29 0,1 0,-58 0z" />
+      android:fillColor="#FF1B1F26"
+      android:pathData="M83,155a31,31 0,1 0,62 0a31,31 0,1 0,-62 0z M333,155a31,31 0,1 0,62 0a31,31 0,1 0,-62 0z" />
   <path
-      android:fillColor="#FFCDD3DB"
-      android:pathData="M100,156a19,19 0,1 0,38 0a19,19 0,1 0,-38 0z M344,156a19,19 0,1 0,38 0a19,19 0,1 0,-38 0z" />
+      android:strokeColor="#FF2E343E"
+      android:strokeWidth="1"
+      android:pathData="M87,155a27,27 0,1 0,54 0a27,27 0,1 0,-54 0z M337,155a27,27 0,1 0,54 0a27,27 0,1 0,-54 0z" />
+  <!-- Aero rims: gunmetal disc, machined blades, bright lip -->
+  <path android:pathData="M91,155a23,23 0,1 0,46 0a23,23 0,1 0,-46 0z M341,155a23,23 0,1 0,46 0a23,23 0,1 0,-46 0z">
+    <aapt:attr name="android:fillColor">
+      <gradient
+          android:type="linear"
+          android:startX="0"
+          android:startY="132"
+          android:endX="0"
+          android:endY="178">
+        <item android:offset="0" android:color="#FF4C5462" />
+        <item android:offset="1" android:color="#FF2B313B" />
+      </gradient>
+    </aapt:attr>
+  </path>
   <path
-      android:fillColor="#FF8E97A4"
-      android:pathData="M105,156a14,14 0,1 0,28 0a14,14 0,1 0,-28 0z M349,156a14,14 0,1 0,28 0a14,14 0,1 0,-28 0z" />
+      android:fillColor="#FFC6CCD4"
+      android:pathData="M112.4,148.7L110.8,134.8L116.1,134.6L115.6,148.7ZM119.5,151.6L132.3,145.7L134.1,150.7L120.5,154.5ZM119.0,159.2L128.5,169.5L124.2,172.8L116.4,161.0ZM111.6,161.0L104.7,173.3L100.3,170.2L109.0,159.2ZM107.5,154.5L93.8,151.8L95.3,146.7L108.5,151.6Z M362.4,148.7L360.8,134.8L366.1,134.6L365.6,148.7ZM369.5,151.6L382.3,145.7L384.1,150.7L370.5,154.5ZM369.0,159.2L378.5,169.5L374.2,172.8L366.4,161.0ZM361.6,161.0L354.7,173.3L350.3,170.2L359.0,159.2ZM357.5,154.5L343.8,151.8L345.3,146.7L358.5,151.6Z" />
   <path
-      android:strokeColor="#FFD7DCE3"
-      android:strokeWidth="3.2"
-      android:strokeLineCap="round"
-      android:pathData="M119,156L119,142M119,156L132.3,151.7M119,156L127.2,167.3M119,156L110.8,167.3M119,156L105.7,151.7 M363,156L363,142M363,156L376.3,151.7M363,156L371.2,167.3M363,156L354.8,167.3M363,156L349.7,151.7" />
+      android:strokeColor="#FFB8BFC9"
+      android:strokeWidth="1.6"
+      android:pathData="M91,155a23,23 0,1 0,46 0a23,23 0,1 0,-46 0z M341,155a23,23 0,1 0,46 0a23,23 0,1 0,-46 0z" />
   <path
-      android:fillColor="#FFE9ECF0"
-      android:pathData="M114,156a5,5 0,1 0,10 0a5,5 0,1 0,-10 0z M358,156a5,5 0,1 0,10 0a5,5 0,1 0,-10 0z" />
+      android:fillColor="#FFD9DDE3"
+      android:pathData="M108.5,155a5.5,5.5 0,1 0,11 0a5.5,5.5 0,1 0,-11 0z M358.5,155a5.5,5.5 0,1 0,11 0a5.5,5.5 0,1 0,-11 0z" />
+  <path
+      android:fillColor="#FF5B6472"
+      android:pathData="M112,155a2,2 0,1 0,4 0a2,2 0,1 0,-4 0z M362,155a2,2 0,1 0,4 0a2,2 0,1 0,-4 0z" />
 </vector>

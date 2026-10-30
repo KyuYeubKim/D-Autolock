@@ -233,13 +233,13 @@ public final class MainActivity extends Activity {
   private LinearLayout card(LinearLayout parent, String title) {
     LinearLayout box = new LinearLayout(this);
     box.setOrientation(LinearLayout.VERTICAL);
-    box.setPadding(dp(18), dp(16), dp(18), dp(16));
-    box.setBackground(surface(22));
+    box.setPadding(dp(16), dp(14), dp(16), dp(14));
+    box.setBackground(surface(20));
     lift(box, 1.5f);
     LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
-    p.setMargins(0, dp(14), 0, 0);
+    p.setMargins(0, dp(12), 0, 0);
     parent.addView(box, p);
-    if (title != null) text(box, title, 17, TEXT).setTypeface(null, Typeface.BOLD);
+    if (title != null) text(box, title, 15, TEXT).setTypeface(null, Typeface.BOLD);
     return box;
   }
 
@@ -248,13 +248,13 @@ public final class MainActivity extends Activity {
     b.setText(title);
     b.setTextColor(TEXT);
     b.setAllCaps(false);
-    b.setTextSize(14);
+    b.setTextSize(13);
     b.setBackgroundTintList(null);
     b.setStateListAnimator(null); // Flat light theme: no raised press shadow.
-    b.setBackground(pressable(background(FIELD, 14)));
+    b.setBackground(pressable(background(FIELD, 12)));
     b.setPadding(dp(8), dp(4), dp(8), dp(4));
     b.setOnClickListener(listener);
-    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(50));
+    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(46));
     params.topMargin = dp(6);
     box.addView(b, params);
     return b;
@@ -263,9 +263,9 @@ public final class MainActivity extends Activity {
   private Button primaryButton(LinearLayout box, String title, View.OnClickListener listener) {
     Button b = button(box, title, listener);
     b.setTextColor(0xffffffff);
-    b.setTextSize(17);
+    b.setTextSize(15);
     b.setTypeface(null, Typeface.BOLD);
-    b.setBackground(pressable(background(ACCENT, 18)));
+    b.setBackground(pressable(background(ACCENT, 16)));
     return b;
   }
 
@@ -277,8 +277,8 @@ public final class MainActivity extends Activity {
             GradientDrawable.Orientation.TOP_BOTTOM, new int[] {BG_TOP, BG, BG}));
     LinearLayout bar = new LinearLayout(this);
     bar.setGravity(Gravity.CENTER_VERTICAL);
-    bar.setPadding(dp(20), dp(10), dp(20), dp(6));
-    shell.addView(bar, new LinearLayout.LayoutParams(-1, dp(72)));
+    bar.setPadding(dp(20), dp(8), dp(20), dp(4));
+    shell.addView(bar, new LinearLayout.LayoutParams(-1, dp(60)));
     back = new ImageView(this);
     back.setImageResource(R.drawable.ic_back);
     back.setColorFilter(TEXT);
@@ -287,36 +287,36 @@ public final class MainActivity extends Activity {
     back.setBackground(pressable(oval(0x00000000)));
     back.setOnClickListener(v -> navigateBack());
     back.setVisibility(View.GONE);
-    bar.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
+    bar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
     LinearLayout brand = new LinearLayout(this);
     brand.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
     bar.addView(brand, new LinearLayout.LayoutParams(0, -1, 1));
     logoTile = new FrameLayout(this);
-    logoTile.setBackground(background(ACCENT, 12));
+    logoTile.setBackground(background(ACCENT, 10));
     ImageView logo = new ImageView(this);
     logo.setImageResource(R.drawable.ic_logo);
     logo.setColorFilter(0xffffffff);
     logo.setContentDescription(null);
-    logoTile.addView(logo, new FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER));
-    brand.addView(logoTile, new LinearLayout.LayoutParams(dp(42), dp(42)));
-    title = bold(brand, "D-Autolock", 24, TEXT);
+    logoTile.addView(logo, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+    brand.addView(logoTile, new LinearLayout.LayoutParams(dp(34), dp(34)));
+    title = bold(brand, "D-Autolock", 19, TEXT);
     title.setMaxLines(1); // Not setSingleLine: that scrolls horizontally and disables autosize.
-    title.setPadding(dp(12), 0, 0, 0);
+    title.setPadding(dp(10), 0, 0, 0);
     title.setGravity(Gravity.CENTER_VERTICAL);
     title.setLayoutParams(new LinearLayout.LayoutParams(0, -1, 1));
     // Narrow phones: shrink the name rather than cut it next to the BLE pill and menu.
-    title.setAutoSizeTextTypeUniformWithConfiguration(15, 24, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+    title.setAutoSizeTextTypeUniformWithConfiguration(14, 19, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
     bleStatusPill = new LinearLayout(this);
     bleStatusPill.setTag("bleStatus");
     bleStatusPill.setGravity(Gravity.CENTER_VERTICAL);
-    bleStatusPill.setPadding(dp(12), 0, dp(14), 0);
-    bleStatusPill.setBackground(pressable(surface(22)));
+    bleStatusPill.setPadding(dp(10), 0, dp(12), 0);
+    bleStatusPill.setBackground(pressable(surface(18)));
     bleStatusPill.setOnClickListener(v -> openBle(false));
-    bleStatusIcon = icon(bleStatusPill, R.drawable.ic_bluetooth, SUBTLE, 18);
-    bleStatusText = bold(bleStatusPill, "BLE 미연결", 14, SUBTLE);
-    bleStatusText.setPadding(dp(4), 0, 0, 0);
-    LinearLayout.LayoutParams pill = new LinearLayout.LayoutParams(-2, dp(44));
-    pill.setMargins(dp(8), 0, dp(10), 0);
+    bleStatusIcon = icon(bleStatusPill, R.drawable.ic_bluetooth, SUBTLE, 14);
+    bleStatusText = bold(bleStatusPill, "BLE 미연결", 12, SUBTLE);
+    bleStatusText.setPadding(dp(3), 0, 0, 0);
+    LinearLayout.LayoutParams pill = new LinearLayout.LayoutParams(-2, dp(34));
+    pill.setMargins(dp(8), 0, dp(8), 0);
     bar.addView(bleStatusPill, pill);
     menu =
         button(
@@ -338,13 +338,13 @@ public final class MainActivity extends Activity {
             });
     menu.setTag("overflowMenu");
     menu.setContentDescription("메뉴");
-    menu.setTextSize(22);
+    menu.setTextSize(18);
     menu.setPadding(0, 0, 0, 0);
-    menu.setBackground(pressable(surface(14)));
-    menu.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
+    menu.setBackground(pressable(surface(12)));
+    menu.setLayoutParams(new LinearLayout.LayoutParams(dp(38), dp(38)));
     // Balances the back arrow on sub pages so their title sits in the middle.
     titleSpacer = new View(this);
-    bar.addView(titleSpacer, new LinearLayout.LayoutParams(dp(44), dp(44)));
+    bar.addView(titleSpacer, new LinearLayout.LayoutParams(dp(40), dp(40)));
     titleSpacer.setVisibility(View.GONE);
     FrameLayout pages = new FrameLayout(this);
     shell.addView(pages, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -748,7 +748,7 @@ public final class MainActivity extends Activity {
     banner.topMargin = dp(10);
     body.addView(setupBanner, banner);
     setupBanner.setVisibility(View.GONE);
-    TextView foot = text(body, "BLE 신호는 차량 주변 환경에 따라 달라질 수 있어요", 12, MUTED);
+    TextView foot = text(body, "BLE 신호는 차량 주변 환경에 따라 달라질 수 있어요", 11, MUTED);
     foot.setGravity(Gravity.CENTER);
     foot.setPadding(0, dp(18), 0, 0);
     buildSetup();
@@ -876,8 +876,8 @@ public final class MainActivity extends Activity {
       v.setContentDescription(armedDescription + ". 3초 안에 한 번 더 누르면 실행합니다");
       GradientDrawable mark = new GradientDrawable();
       if (round) mark.setShape(GradientDrawable.OVAL);
-      else mark.setCornerRadius(dp(22));
-      mark.setStroke(dp(3), TEXT);
+      else mark.setCornerRadius(dp(18));
+      mark.setStroke(dp(2), TEXT);
       ring.setForeground(mark);
       v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
       handler.postDelayed(disarmCommand, 3000);
@@ -915,8 +915,8 @@ public final class MainActivity extends Activity {
     ImageView image = new ImageView(this);
     image.setImageResource(drawable);
     image.setColorFilter(SUBTLE);
-    image.setScaleType(ImageView.ScaleType.CENTER);
-    image.setPadding(dp(8), dp(8), dp(8), dp(8));
+    image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+    image.setPadding(dp(10), dp(10), dp(10), dp(10)); // An 18 dp glyph, 38 dp touch target.
     image.setContentDescription(description);
     image.setTag(tag);
     image.setOnClickListener(click);
@@ -956,19 +956,19 @@ public final class MainActivity extends Activity {
     LinearLayout root = new LinearLayout(this);
     root.setTag(tag);
     root.setGravity(Gravity.CENTER_VERTICAL);
-    root.setPadding(dp(12), dp(8), dp(6), dp(8));
-    root.setBackground(pressable(surface(16)));
-    lift(root, 3);
+    root.setPadding(dp(10), dp(6), dp(4), dp(6));
+    root.setBackground(pressable(surface(14)));
+    lift(root, 2);
     root.setOnClickListener(click);
     View dot = new View(this);
-    root.addView(dot, new LinearLayout.LayoutParams(dp(9), dp(9)));
+    root.addView(dot, new LinearLayout.LayoutParams(dp(7), dp(7)));
     LinearLayout texts = new LinearLayout(this);
     texts.setOrientation(LinearLayout.VERTICAL);
-    texts.setPadding(dp(8), 0, dp(2), 0);
+    texts.setPadding(dp(7), 0, dp(1), 0);
     root.addView(texts);
-    text(texts, name, 12, SUBTLE).setPadding(0, 0, 0, 0);
-    TextView value = bold(texts, "끊김", 16, IDLE);
-    icon(root, R.drawable.ic_back, MUTED, 16).setRotation(180); // A "›" hint that it opens.
+    text(texts, name, 10, SUBTLE).setPadding(0, 0, 0, 0);
+    TextView value = bold(texts, "끊김", 13, IDLE);
+    icon(root, R.drawable.ic_back, MUTED, 14).setRotation(180); // A "›" hint that it opens.
     FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(-2, -2, gravity);
     p.topMargin = dp(2);
     parent.addView(root, p);
@@ -980,27 +980,27 @@ public final class MainActivity extends Activity {
     LinearLayout card = new LinearLayout(this);
     card.setOrientation(LinearLayout.VERTICAL);
     card.setTag(tag);
-    card.setPadding(dp(14), dp(12), dp(12), dp(14));
-    card.setBackground(pressable(surface(18)));
+    card.setPadding(dp(12), dp(10), dp(10), dp(12));
+    card.setBackground(pressable(surface(16)));
     lift(card, 1.5f);
     card.setOnClickListener(v -> showVehicleDetails());
     LinearLayout head = new LinearLayout(this);
     head.setGravity(Gravity.CENTER_VERTICAL);
     card.addView(head);
-    TextView label = text(head, name, 14, SUBTLE);
+    TextView label = text(head, name, 12, SUBTLE);
     label.setPadding(0, 0, 0, 0);
     label.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
-    icon(head, drawable, SUBTLE, 20).setTag(tag + "Icon");
+    icon(head, drawable, SUBTLE, 16).setTag(tag + "Icon");
     LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -1, 1);
-    p.setMargins(row.getChildCount() == 0 ? 0 : dp(10), 0, 0, 0);
+    p.setMargins(row.getChildCount() == 0 ? 0 : dp(8), 0, 0, 0);
     row.addView(card, p);
     return card;
   }
 
   private TextView statusValue(LinearLayout card, String value) {
-    TextView t = bold(card, value, 24, TEXT);
+    TextView t = bold(card, value, 19, TEXT);
     t.setSingleLine(true);
-    t.setPadding(0, dp(8), 0, 0);
+    t.setPadding(0, dp(6), 0, 0);
     return t;
   }
 
@@ -1015,25 +1015,26 @@ public final class MainActivity extends Activity {
     status.addView(row);
     lockTile = new FrameLayout(this);
     lockTile.setTag("doorTile");
-    lift(lockTile, 3);
+    lift(lockTile, 2);
     lockIcon = new ImageView(this);
     lockIcon.setColorFilter(0xffffffff);
-    lockTile.addView(lockIcon, new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
-    row.addView(lockTile, new LinearLayout.LayoutParams(dp(56), dp(56)));
-    doorTitle = bold(row, "도어 미확인", 32, TEXT);
+    lockTile.addView(lockIcon, new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
+    row.addView(lockTile, new LinearLayout.LayoutParams(dp(44), dp(44)));
+    doorTitle = bold(row, "도어 미확인", 24, TEXT);
     doorTitle.setTag("doorTitle");
     doorTitle.setSingleLine(true);
-    doorTitle.setPadding(dp(16), 0, dp(8), 0);
+    doorTitle.setPadding(dp(12), 0, dp(8), 0);
     doorTitle.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
     // The icon spins while reading, so the card shape lives on a still container behind it.
     FrameLayout refreshBox = new FrameLayout(this);
-    refreshBox.setBackground(surface(16));
-    lift(refreshBox, 2);
+    refreshBox.setBackground(surface(14));
+    lift(refreshBox, 1.5f);
     refreshIcon = new ImageView(this);
     refreshIcon.setTag("statusRefresh");
     refreshIcon.setImageResource(R.drawable.ic_refresh);
     refreshIcon.setColorFilter(ACCENT);
-    refreshIcon.setScaleType(ImageView.ScaleType.CENTER);
+    refreshIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+    refreshIcon.setPadding(dp(10), dp(10), dp(10), dp(10)); // A 20 dp glyph in the 40 dp box.
     refreshIcon.setBackground(pressable(oval(0x00000000)));
     refreshIcon.setContentDescription("차량 상태 새로고침");
     refreshIcon.setOnClickListener(
@@ -1043,10 +1044,10 @@ public final class MainActivity extends Activity {
           update();
         });
     refreshBox.addView(refreshIcon, new FrameLayout.LayoutParams(-1, -1));
-    row.addView(refreshBox, new LinearLayout.LayoutParams(dp(56), dp(56)));
-    checkedTime = text(status, "업데이트 대기", 15, MUTED);
+    row.addView(refreshBox, new LinearLayout.LayoutParams(dp(40), dp(40)));
+    checkedTime = text(status, "업데이트 대기", 12, MUTED);
     checkedTime.setTag("statusCheckedTime");
-    checkedTime.setPadding(dp(2), dp(10), 0, 0);
+    checkedTime.setPadding(dp(1), dp(8), 0, 0);
     checkedTime.setMaxLines(2); // Never cut the time off; wrap on narrow phones.
     message = text(status, "", 12, MUTED); // Recent alert text lives in the activity log now.
     message.setVisibility(View.GONE);
@@ -1091,7 +1092,7 @@ public final class MainActivity extends Activity {
     hero.setTag("signalCard");
     hero.setClipChildren(false);
     carHero = new CarHeroView(this);
-    carHero.setPadding(0, dp(14), 0, 0);
+    carHero.setPadding(0, dp(12), 0, 0);
     hero.addView(carHero, new FrameLayout.LayoutParams(-1, -2));
     primaryBadge =
         badge(hero, "차량 BLE", "thresholdEdit", Gravity.TOP | Gravity.START, v -> openBle(false));
@@ -1100,11 +1101,11 @@ public final class MainActivity extends Activity {
     TextView add = new TextView(this);
     add.setTag("beaconAdd");
     add.setText("+ 보조 비콘");
-    add.setTextSize(13);
+    add.setTextSize(11);
     add.setTextColor(ACCENT);
     add.setTypeface(null, Typeface.BOLD);
-    add.setPadding(dp(12), dp(8), dp(12), dp(8));
-    GradientDrawable dashed = background(0xccffffff, 16);
+    add.setPadding(dp(10), dp(6), dp(10), dp(6));
+    GradientDrawable dashed = background(0xccffffff, 14);
     dashed.setStroke(dp(1), ACCENT, dp(4), dp(3));
     add.setBackground(pressable(dashed));
     add.setContentDescription("보조 비콘 추가 · BLE 신호 설정 열기");
@@ -1115,14 +1116,14 @@ public final class MainActivity extends Activity {
     hero.addView(add, addParams);
     beaconAdd = add;
     LinearLayout.LayoutParams heroParams = new LinearLayout.LayoutParams(-1, -2);
-    heroParams.topMargin = dp(16);
+    heroParams.topMargin = dp(12);
     body.addView(hero, heroParams);
 
     LinearLayout cards = new LinearLayout(this);
     cards.setTag("statusRow");
     cards.setBaselineAligned(false);
     LinearLayout.LayoutParams cardsParams = new LinearLayout.LayoutParams(-1, -2);
-    cardsParams.topMargin = dp(14);
+    cardsParams.topMargin = dp(12);
     body.addView(cards, cardsParams);
     LinearLayout battery = statusCard(cards, "배터리", R.drawable.ic_battery, "batteryItem");
     batteryIcon = battery.findViewWithTag("batteryItemIcon");
@@ -1130,18 +1131,18 @@ public final class MainActivity extends Activity {
     batteryBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
     batteryBar.setMax(100);
     batteryBar.setProgressBackgroundTintList(ColorStateList.valueOf(IDLE_SOFT));
-    LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(-1, dp(5));
-    barParams.topMargin = dp(10);
+    LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(-1, dp(4));
+    barParams.topMargin = dp(8);
     battery.addView(batteryBar, barParams);
     LinearLayout power = statusCard(cards, "시동", R.drawable.ic_power, "powerItem");
     powerIcon = power.findViewWithTag("powerItemIcon");
     powerText = statusValue(power, "미확인");
-    powerSub = text(power, "", 12, MUTED);
+    powerSub = text(power, "", 11, MUTED);
     powerSub.setPadding(0, dp(2), 0, 0);
     LinearLayout window = statusCard(cards, "창문", R.drawable.ic_window, "windowItem");
     windowIcon = window.findViewWithTag("windowItemIcon");
     windowText = statusValue(window, "미확인");
-    windowSub = text(window, "", 12, MUTED);
+    windowSub = text(window, "", 11, MUTED);
     windowSub.setPadding(0, dp(2), 0, 0);
   }
 
@@ -1152,23 +1153,23 @@ public final class MainActivity extends Activity {
     LinearLayout tile = new LinearLayout(this);
     tile.setTag(tag);
     tile.setGravity(Gravity.CENTER_VERTICAL);
-    tile.setPadding(dp(16), dp(8), dp(10), dp(8));
-    tile.setBackground(pressable(filled ? background(ACCENT, 22) : surface(22)));
-    lift(tile, filled ? 4 : 1.5f);
+    tile.setPadding(dp(14), dp(6), dp(8), dp(6));
+    tile.setBackground(pressable(filled ? background(ACCENT, 18) : surface(18)));
+    lift(tile, filled ? 3 : 1.5f);
     tile.setClickable(true);
     tile.setContentDescription(title + " · " + sub);
-    icon(tile, drawable, filled ? 0xffffffff : TEXT, 30);
+    icon(tile, drawable, filled ? 0xffffffff : TEXT, 22);
     LinearLayout texts = new LinearLayout(this);
     texts.setOrientation(LinearLayout.VERTICAL);
-    texts.setPadding(dp(12), 0, 0, 0);
+    texts.setPadding(dp(10), 0, 0, 0);
     tile.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
-    TextView name = bold(texts, title, 17, filled ? 0xffffffff : TEXT);
+    TextView name = bold(texts, title, 14, filled ? 0xffffffff : TEXT);
     name.setMaxLines(1);
-    TextView detail = text(texts, sub, 13, filled ? 0xe6ffffff : SUBTLE);
+    TextView detail = text(texts, sub, 11, filled ? 0xe6ffffff : SUBTLE);
     detail.setPadding(0, dp(2), 0, 0);
     tile.setOnClickListener(doubleTap(detail, "한 번 더 누르세요", tile, false, action));
-    LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(84), 1);
-    p.setMargins(row.getChildCount() == 0 ? 0 : dp(6), 0, row.getChildCount() == 0 ? dp(6) : 0, 0);
+    LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(64), 1);
+    p.setMargins(row.getChildCount() == 0 ? 0 : dp(5), 0, row.getChildCount() == 0 ? dp(5) : 0, 0);
     row.addView(tile, p);
     commands.add(tile);
     commandNeeds.add(needs);
@@ -1190,14 +1191,14 @@ public final class MainActivity extends Activity {
     face.setStroke(dp(1), STROKE);
     circle.setBackground(pressable(face));
     circle.setDuplicateParentStateEnabled(true); // The ripple follows a press on the column.
-    lift(circle, 3);
+    lift(circle, 2);
     ImageView image = new ImageView(this);
     image.setImageResource(drawable);
     image.setColorFilter(color);
-    circle.addView(image, new FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER));
-    column.addView(circle, new LinearLayout.LayoutParams(dp(70), dp(70)));
-    TextView name = text(column, label, 14, TEXT);
-    name.setPadding(0, dp(10), 0, 0);
+    circle.addView(image, new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
+    column.addView(circle, new LinearLayout.LayoutParams(dp(54), dp(54)));
+    TextView name = text(column, label, 12, TEXT);
+    name.setPadding(0, dp(7), 0, 0);
     name.setMaxLines(1); // setSingleLine + centered gravity scrolls the text out of view.
     name.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
     column.setOnClickListener(doubleTap(name, "한 번 더", circle, true, action));
@@ -1235,18 +1236,18 @@ public final class MainActivity extends Activity {
     controls.setOrientation(LinearLayout.VERTICAL);
     controls.setTag("controlsCard");
     LinearLayout.LayoutParams controlsParams = new LinearLayout.LayoutParams(-1, -2);
-    controlsParams.topMargin = dp(24);
+    controlsParams.topMargin = dp(20);
     body.addView(controls, controlsParams);
     LinearLayout head = new LinearLayout(this);
     head.setGravity(Gravity.CENTER_VERTICAL);
     controls.addView(head);
-    bold(head, "차량 제어", 20, TEXT).setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
-    text(head, "3초 안에 두 번 탭하면 실행", 13, MUTED).setPadding(dp(8), 0, 0, 0);
+    bold(head, "차량 제어", 16, TEXT).setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    text(head, "3초 안에 두 번 탭하면 실행", 11, MUTED).setPadding(dp(8), 0, 0, 0);
     LinearLayout roundRow = new LinearLayout(this);
     roundRow.setBaselineAligned(false);
     roundRow.setClipChildren(false);
     LinearLayout.LayoutParams roundParams = new LinearLayout.LayoutParams(-1, -2);
-    roundParams.topMargin = dp(16);
+    roundParams.topMargin = dp(12);
     controls.addView(roundRow, roundParams);
     roundButton(
         roundRow, R.drawable.ic_lock_open, "도어 열기", TEXT, "control_unlock",
@@ -1268,7 +1269,7 @@ public final class MainActivity extends Activity {
     bigRow.setBaselineAligned(false);
     bigRow.setClipChildren(false);
     LinearLayout.LayoutParams bigParams = new LinearLayout.LayoutParams(-1, -2);
-    bigParams.topMargin = dp(20);
+    bigParams.topMargin = dp(16);
     controls.addView(bigRow, bigParams);
     bigTile(
         bigRow, R.drawable.ic_car, "원격 Ready", "문 열고 예열", true, "control_prepare",
@@ -1292,18 +1293,18 @@ public final class MainActivity extends Activity {
     row.setGravity(Gravity.CENTER_VERTICAL);
     automationCard.addView(row);
     FrameLayout bolt = new FrameLayout(this);
-    bolt.setBackground(background(ACCENT_SOFT, 16));
+    bolt.setBackground(background(ACCENT_SOFT, 12));
     ImageView boltIcon = new ImageView(this);
     boltIcon.setImageResource(R.drawable.ic_bolt);
     boltIcon.setColorFilter(ACCENT);
-    bolt.addView(boltIcon, new FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER));
-    row.addView(bolt, new LinearLayout.LayoutParams(dp(50), dp(50)));
+    bolt.addView(boltIcon, new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
+    row.addView(bolt, new LinearLayout.LayoutParams(dp(40), dp(40)));
     LinearLayout texts = new LinearLayout(this);
     texts.setOrientation(LinearLayout.VERTICAL);
-    texts.setPadding(dp(14), 0, dp(8), 0);
+    texts.setPadding(dp(12), 0, dp(8), 0);
     row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
-    bold(texts, "자동 도어", 19, TEXT);
-    text(texts, keepWords("가까워지면 열고 · 멀어지면 잠가요"), 13, SUBTLE).setPadding(0, dp(3), 0, 0);
+    bold(texts, "자동 도어", 15, TEXT);
+    text(texts, keepWords("가까워지면 열고 · 멀어지면 잠가요"), 12, SUBTLE).setPadding(0, dp(2), 0, 0);
     automation = new Switch(this);
     automation.setTag("automationSwitch");
     automation.setContentDescription("자동 도어 켜기");
@@ -1313,19 +1314,19 @@ public final class MainActivity extends Activity {
     LinearLayout state = new LinearLayout(this);
     state.setTag("signalMore");
     state.setGravity(Gravity.CENTER_VERTICAL);
-    state.setPadding(dp(16), dp(14), dp(12), dp(14));
-    state.setBackground(pressable(background(FIELD, 16)));
+    state.setPadding(dp(14), dp(11), dp(10), dp(11));
+    state.setBackground(pressable(background(FIELD, 14)));
     state.setOnClickListener(v -> setSignalExpanded(!signalExpanded));
     LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(-1, -2);
-    stateParams.topMargin = dp(16);
+    stateParams.topMargin = dp(12);
     automationCard.addView(state, stateParams);
-    text(state, "현재 상태", 15, SUBTLE)
+    text(state, "현재 상태", 13, SUBTLE)
         .setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
     stateDot = new View(this);
-    state.addView(stateDot, new LinearLayout.LayoutParams(dp(9), dp(9)));
-    autoDetails = bold(state, "신호 없음 · 대기 중", 15, TEXT);
-    autoDetails.setPadding(dp(8), 0, dp(4), 0);
-    stateChevron = icon(state, R.drawable.ic_back, MUTED, 18);
+    state.addView(stateDot, new LinearLayout.LayoutParams(dp(7), dp(7)));
+    autoDetails = bold(state, "신호 없음 · 대기 중", 13, TEXT);
+    autoDetails.setPadding(dp(7), 0, dp(4), 0);
+    stateChevron = icon(state, R.drawable.ic_back, MUTED, 16);
     signalMore = state;
     signalExtra = new LinearLayout(this);
     signalExtra.setTag("signalExtra");
@@ -1341,9 +1342,9 @@ public final class MainActivity extends Activity {
     controlDetails = text(signalExtra, "", 12, MUTED);
     readyDetails = text(signalExtra, "", 12, MUTED);
     setSignalExpanded(false);
-    automationReason = text(automationCard, "", 12, MUTED);
+    automationReason = text(automationCard, "", 11, MUTED);
     automationReason.setTag("automationReason");
-    automationReason.setPadding(dp(4), dp(10), dp(4), 0);
+    automationReason.setPadding(dp(4), dp(8), dp(4), 0);
     automation.setOnCheckedChangeListener(
         (b, on) -> {
           if (updating) return;
@@ -1424,14 +1425,14 @@ public final class MainActivity extends Activity {
     row.setPadding(0, dp(7), 0, dp(7));
     TextView badge = new TextView(this);
     badge.setText(kind.label);
-    badge.setTextSize(11);
+    badge.setTextSize(10);
     badge.setTextColor(color);
     badge.setTypeface(null, Typeface.BOLD);
     badge.setGravity(Gravity.CENTER);
     GradientDrawable pill = background((color & 0x00ffffff) | 0x1f000000, 10);
     badge.setBackground(pill);
     badge.setPadding(dp(6), dp(3), dp(6), dp(3));
-    LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(dp(42), -2);
+    LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(dp(38), -2);
     badgeParams.setMargins(0, dp(2), dp(10), 0);
     row.addView(badge, badgeParams);
     LinearLayout lines = new LinearLayout(this);
@@ -1440,12 +1441,12 @@ public final class MainActivity extends Activity {
     TextView what = new TextView(this);
     what.setText(ActivityFeed.friendly(e.text) + (e.count > 1 ? "  (×" + e.count + ")" : ""));
     what.setTextColor(TEXT);
-    what.setTextSize(13);
+    what.setTextSize(12);
     lines.addView(what);
     TextView when = new TextView(this);
     when.setText(ActivityFeed.time(e.time, now));
     when.setTextColor(MUTED);
-    when.setTextSize(11);
+    when.setTextSize(10);
     lines.addView(when);
     parent.addView(row);
   }
@@ -1526,8 +1527,8 @@ public final class MainActivity extends Activity {
     menu.setVisibility(home ? View.VISIBLE : View.GONE);
     title.setGravity(home ? Gravity.CENTER_VERTICAL | Gravity.START : Gravity.CENTER);
     title.setAutoSizeTextTypeUniformWithConfiguration(
-        15, home ? 24 : 19, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
-    title.setPadding(home ? dp(12) : 0, 0, 0, 0);
+        14, home ? 19 : 16, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+    title.setPadding(home ? dp(10) : 0, 0, 0, 0);
     title.setText(
         home
             ? "D-Autolock"
@@ -1747,16 +1748,16 @@ public final class MainActivity extends Activity {
   private void styleSwitches(View view) {
     if (view instanceof Switch) {
       Switch toggle = (Switch) view;
-      toggle.setTextSize(14);
+      toggle.setTextSize(13);
       // Solid pill track with a white knob inside it, instead of Material's translucent track.
       // The track's padding keeps the knob 3 dp from the ends; the knob's own vertical inset
       // keeps it round, since Switch stretches the thumb to the full track height.
       GradientDrawable knob = oval(0xffffffff);
-      knob.setSize(dp(22), dp(22));
+      knob.setSize(dp(18), dp(18));
       toggle.setThumbDrawable(new android.graphics.drawable.InsetDrawable(knob, 0, dp(3), 0, dp(3)));
       toggle.setThumbTintList(ColorStateList.valueOf(0xffffffff));
-      GradientDrawable pill = background(0xffffffff, 14);
-      pill.setSize(dp(50), dp(28));
+      GradientDrawable pill = background(0xffffffff, 12);
+      pill.setSize(dp(42), dp(24));
       android.graphics.drawable.LayerDrawable track =
           new android.graphics.drawable.LayerDrawable(new Drawable[] {pill});
       track.setPadding(dp(3), dp(3), dp(3), dp(3));
@@ -1790,7 +1791,7 @@ public final class MainActivity extends Activity {
     doorTitle.setText(door);
     boolean open = door.equals("도어 열림"), closed = door.equals("도어 잠김");
     lockIcon.setImageResource(open ? R.drawable.ic_lock_open : R.drawable.ic_lock);
-    lockTile.setBackground(background(open ? LOCK : closed ? ACCENT : IDLE, 16));
+    lockTile.setBackground(background(open ? LOCK : closed ? ACCENT : IDLE, 12));
     lockTile.setContentDescription(labels[0]);
     showStatusCards(shown, shownAt, labels);
     bridgeStatus.setText(controller.vehicleLink.describe());
@@ -2211,15 +2212,15 @@ public final class MainActivity extends Activity {
     pages.addView(bleScroll);
     bleScroll.setVisibility(View.GONE);
     LinearLayout tabs = new LinearLayout(this);
-    tabs.setPadding(dp(5), dp(5), dp(5), dp(5));
-    tabs.setBackground(background(0xffe2e8f2, 20));
-    content.addView(tabs, new LinearLayout.LayoutParams(-1, dp(58)));
+    tabs.setPadding(dp(4), dp(4), dp(4), dp(4));
+    tabs.setBackground(background(0xffe2e8f2, 16));
+    content.addView(tabs, new LinearLayout.LayoutParams(-1, dp(46)));
     for (int i = 0; i < 2; i++) {
       boolean beacon = i == 1;
       TextView tab = new TextView(this);
       tab.setTag(beacon ? "bleTabBeacon" : "bleTabPrimary");
       tab.setText(beacon ? "보조 비콘" : "차량 BLE");
-      tab.setTextSize(16);
+      tab.setTextSize(13);
       tab.setGravity(Gravity.CENTER);
       tab.setOnClickListener(v -> selectBleTab(beacon));
       tabs.addView(tab, new LinearLayout.LayoutParams(0, -1, 1));
@@ -2255,7 +2256,7 @@ public final class MainActivity extends Activity {
         bleBeaconEmpty,
         "트렁크 등 차 뒤쪽에 BLE 비콘을 두면 뒤·옆에서 다가갈 때도 더 빨리 열 수 있어요. 차량 BLE와 비콘 중 하나만 가까워도 열리고,"
             + " 둘 다 멀어져야 잠깁니다.",
-        13,
+        12,
         SUBTLE);
     Button addDevice = button(bleBeaconEmpty, "+  신호 기기 추가", v -> pickDevice(true));
     addDevice.setTag("beaconAddDevice");
@@ -2265,15 +2266,15 @@ public final class MainActivity extends Activity {
     dashed.setStroke(dp(1), 0xffb9c6dd, dp(5), dp(4));
     addDevice.setBackground(pressable(dashed));
     LinearLayout.LayoutParams addParams = (LinearLayout.LayoutParams) addDevice.getLayoutParams();
-    addParams.height = dp(56);
-    addParams.topMargin = dp(12);
+    addParams.height = dp(48);
+    addParams.topMargin = dp(10);
     bleBeaconSet = new LinearLayout(this);
     bleBeaconSet.setOrientation(LinearLayout.VERTICAL);
     bleSection[1].addView(bleBeaconSet);
     liveCard(bleBeaconSet, 1);
     thresholdCard(bleBeaconSet, 1, Controller.DEFAULT_BEACON_NEAR, Controller.DEFAULT_BEACON_FAR);
     LinearLayout device = card(bleBeaconSet, "보조 비콘 기기");
-    beaconName = text(device, "", 15, TEXT);
+    beaconName = text(device, "", 13, TEXT);
     bleCombine = combineToggle(device, "bleBeaconCombine");
     text(
         device,
@@ -2294,8 +2295,8 @@ public final class MainActivity extends Activity {
     Button save = primaryButton(content, "저장", v -> saveBle());
     save.setTag("bleSave");
     LinearLayout.LayoutParams saveParams = (LinearLayout.LayoutParams) save.getLayoutParams();
-    saveParams.height = dp(58);
-    saveParams.topMargin = dp(24);
+    saveParams.height = dp(50);
+    saveParams.topMargin = dp(20);
     loadBleDrafts();
     selectBleTab(false);
   }
@@ -2305,20 +2306,22 @@ public final class MainActivity extends Activity {
     LinearLayout head = new LinearLayout(this);
     head.setGravity(Gravity.CENTER_VERTICAL);
     card.addView(head);
-    text(head, "실시간 신호 세기", 16, SUBTLE).setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
-    liveChip[i] = bold(head, "● 끊김", 13, SUBTLE);
-    liveChip[i].setPadding(dp(12), dp(5), dp(12), dp(5));
+    text(head, "실시간 신호 세기", 13, SUBTLE).setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    liveChip[i] = bold(head, "● 끊김", 11, SUBTLE);
+    liveChip[i].setPadding(dp(10), dp(4), dp(10), dp(4));
     LinearLayout reading = new LinearLayout(this); // Baseline-aligned: big number, small unit.
-    card.addView(reading);
-    liveValue[i] = bold(reading, "—", 44, TEXT);
-    text(reading, "dBm", 22, MUTED).setPadding(dp(8), 0, 0, 0);
+    LinearLayout.LayoutParams readingParams = new LinearLayout.LayoutParams(-2, -2);
+    readingParams.topMargin = dp(6);
+    card.addView(reading, readingParams);
+    liveValue[i] = bold(reading, "—", 32, TEXT);
+    text(reading, "dBm", 15, MUTED).setPadding(dp(6), 0, 0, 0);
     history[i] = new SignalHistory(this);
     LinearLayout.LayoutParams barsParams = new LinearLayout.LayoutParams(-1, -2);
     barsParams.topMargin = dp(10);
     card.addView(history[i], barsParams);
-    livePreview[i] = text(card, "", 13, MUTED);
+    livePreview[i] = text(card, "", 12, MUTED);
     livePreview[i].setTag(i == 0 ? "thresholdPreview" : "beaconPreview");
-    livePreview[i].setPadding(0, dp(12), 0, 0);
+    livePreview[i].setPadding(0, dp(10), 0, 0);
   }
 
   private void thresholdCard(LinearLayout parent, int i, int nearDefault, int farDefault) {
@@ -2346,13 +2349,13 @@ public final class MainActivity extends Activity {
             () -> slider.moveNear(slider.near() - 1), () -> slider.moveNear(slider.near() + 1));
     LinearLayout info = new LinearLayout(this);
     info.setGravity(Gravity.CENTER_VERTICAL);
-    info.setPadding(dp(14), dp(12), dp(14), dp(12));
-    info.setBackground(background(FIELD, 14));
+    info.setPadding(dp(12), dp(10), dp(12), dp(10));
+    info.setBackground(background(FIELD, 12));
     LinearLayout.LayoutParams infoParams = new LinearLayout.LayoutParams(-1, -2);
-    infoParams.topMargin = dp(18);
+    infoParams.topMargin = dp(14);
     card.addView(info, infoParams);
-    icon(info, R.drawable.ic_info, ACCENT, 20);
-    gapInfo[i] = text(info, "", 13, SUBTLE);
+    icon(info, R.drawable.ic_info, ACCENT, 16);
+    gapInfo[i] = text(info, "", 11, SUBTLE);
     gapInfo[i].setTag(i == 0 ? "gapInfo" : "beaconGapInfo");
     gapInfo[i].setPadding(dp(10), 0, 0, 0);
     gapInfo[i].setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
@@ -2382,30 +2385,30 @@ public final class MainActivity extends Activity {
     LinearLayout row = new LinearLayout(this);
     row.setGravity(Gravity.CENTER_VERTICAL);
     LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
-    rowParams.topMargin = dp(16);
+    rowParams.topMargin = dp(12);
     card.addView(row, rowParams);
     View dot = new View(this);
     dot.setBackground(oval(color));
-    LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(10), dp(10));
-    dotParams.rightMargin = dp(12);
+    LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(8), dp(8));
+    dotParams.rightMargin = dp(10);
     row.addView(dot, dotParams);
     LinearLayout texts = new LinearLayout(this);
     texts.setOrientation(LinearLayout.VERTICAL);
     row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
-    bold(texts, name, 16, TEXT);
-    text(texts, hint, 13, SUBTLE).setPadding(0, dp(3), dp(6), 0);
+    bold(texts, name, 13, TEXT);
+    text(texts, hint, 11, SUBTLE).setPadding(0, dp(2), dp(6), 0);
     LinearLayout box = new LinearLayout(this);
-    GradientDrawable frame = background(FIELD, 16);
+    GradientDrawable frame = background(FIELD, 12);
     frame.setStroke(dp(1), STROKE);
     box.setBackground(frame);
     box.setPadding(dp(1), dp(1), dp(1), dp(1)); // Keep the white middle inside the outline.
-    row.addView(box, new LinearLayout.LayoutParams(dp(128), dp(52)));
+    row.addView(box, new LinearLayout.LayoutParams(dp(108), dp(40)));
     step(box, "−", name + " 1 dB 낮추기", tag + "Minus", minus);
-    TextView value = bold(box, "", 20, TEXT);
+    TextView value = bold(box, "", 15, TEXT);
     value.setTag(tag + "Value");
     value.setGravity(Gravity.CENTER);
     value.setBackgroundColor(CARD);
-    value.setLayoutParams(new LinearLayout.LayoutParams(dp(50), -1));
+    value.setLayoutParams(new LinearLayout.LayoutParams(dp(42), -1));
     step(box, "+", name + " 1 dB 높이기", tag + "Plus", plus);
     return value;
   }
@@ -2413,7 +2416,7 @@ public final class MainActivity extends Activity {
   private void step(LinearLayout box, String sign, String description, String tag, Runnable action) {
     TextView b = new TextView(this);
     b.setText(sign);
-    b.setTextSize(22);
+    b.setTextSize(17);
     b.setTextColor(TEXT);
     b.setGravity(Gravity.CENTER);
     b.setTag(tag);
@@ -2489,7 +2492,7 @@ public final class MainActivity extends Activity {
     for (int i = 0; i < 2; i++) {
       boolean on = (i == 1) == beacon;
       bleSection[i].setVisibility(on ? View.VISIBLE : View.GONE);
-      bleTabs[i].setBackground(on ? background(CARD, 16) : null);
+      bleTabs[i].setBackground(on ? background(CARD, 12) : null);
       bleTabs[i].setTextColor(on ? TEXT : SUBTLE);
       bleTabs[i].setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
       bleTabs[i].setSelected(on);
@@ -2558,7 +2561,7 @@ public final class MainActivity extends Activity {
       String suffix,
       String direction,
       java.util.function.IntConsumer changed) {
-    TextView caption = text(parent, title + " · " + value + suffix, 15, TEXT);
+    TextView caption = text(parent, title + " · " + value + suffix, 13, TEXT);
     SeekBar bar = new SeekBar(this);
     bar.setTag(tag);
     bar.setMax(max - min);
@@ -2579,8 +2582,8 @@ public final class MainActivity extends Activity {
             changed.accept(min + progress);
           }
         });
-    parent.addView(bar, new LinearLayout.LayoutParams(-1, dp(48)));
-    text(parent, direction, 12, MUTED);
+    parent.addView(bar, new LinearLayout.LayoutParams(-1, dp(44)));
+    text(parent, direction, 11, MUTED);
     return bar;
   }
 

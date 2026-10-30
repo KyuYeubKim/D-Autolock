@@ -31,14 +31,14 @@ final class SignalHistory extends View {
 
   @Override
   protected void onMeasure(int widthSpec, int heightSpec) {
-    setMeasuredDimension(MeasureSpec.getSize(widthSpec), Math.round(52 * density));
+    setMeasuredDimension(MeasureSpec.getSize(widthSpec), Math.round(40 * density));
   }
 
   @Override
   protected void onDraw(Canvas canvas) {
     super.onDraw(canvas);
-    float gap = 5 * density, width = (getWidth() - gap * (SIZE - 1)) / SIZE;
-    float floor = 4 * density, top = getHeight(), radius = 4 * density;
+    float gap = 6 * density, width = (getWidth() - gap * (SIZE - 1)) / SIZE;
+    float floor = 3 * density, top = getHeight(), radius = 3 * density;
     for (int i = 0; i < SIZE; i++) {
       double v = values[(head + i) % SIZE];
       float fraction =

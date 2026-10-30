@@ -12,7 +12,7 @@ import android.view.View;
 final class CarHeroView extends View {
   private static final float VIEW_W = 480, VIEW_H = 200;
   // Viewport points: the car's own BLE near the dashboard, the auxiliary beacon in the boot.
-  private static final float FRONT_X = 196, FRONT_Y = 92, REAR_X = 424, REAR_Y = 104;
+  private static final float FRONT_X = 192, FRONT_Y = 95, REAR_X = 416, REAR_Y = 99;
   private final Drawable car;
   private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final RectF arc = new RectF();
@@ -59,19 +59,19 @@ final class CarHeroView extends View {
     int color = band == SignalBand.MIDDLE ? Palette.ACCENT : band.color;
     paint.setStyle(Paint.Style.STROKE);
     paint.setPathEffect(band == SignalBand.LOST ? dashed : null);
-    paint.setStrokeWidth(2.4f * scale);
+    paint.setStrokeWidth(1.7f * scale);
     for (int i = 0; i < 3; i++) {
-      float r = (11 + 9 * i) * scale;
+      float r = (9 + 7 * i) * scale;
       paint.setColor(color);
-      paint.setAlpha(230 - 60 * i);
+      paint.setAlpha(220 - 65 * i);
       arc.set(x - r, y - r, x + r, y + r);
-      canvas.drawArc(arc, 215, 110, false, paint);
+      canvas.drawArc(arc, 220, 100, false, paint);
     }
     paint.setPathEffect(null);
     paint.setStyle(Paint.Style.FILL);
     paint.setColor(0xffffffff);
-    canvas.drawCircle(x, y, 5.2f * scale, paint);
+    canvas.drawCircle(x, y, 4f * scale, paint);
     paint.setColor(color);
-    canvas.drawCircle(x, y, 3.6f * scale, paint);
+    canvas.drawCircle(x, y, 2.7f * scale, paint);
   }
 }

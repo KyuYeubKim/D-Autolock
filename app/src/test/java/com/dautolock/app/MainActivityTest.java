@@ -73,25 +73,30 @@ public class MainActivityTest {
   }
 
   @Test
-  public void overflowSettingsMovesAllRequestedSectionsAndBackReturnsHome() {
+  public void settingsMenuGroupsSectionsIntoPagesAndBackWalksUp() {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {
       View root = a.get().getWindow().getDecorView();
       ViewGroup home = root.findViewWithTag("homePage");
       View settings = root.findViewWithTag("settingsPage");
-      String[] moved = {
-        "차량 보조 앱 연결 / QR",
-        "자동 도어 · 거리 관찰",
-        "자동 동작 설정",
-        "앱 업데이트",
-        "01  BYD AUTO 계정",
-        "02  차량 블루투스",
-        "알림 · 진단 로그 관리"
+      String[][] rows = {
+        {"account", "BYD AUTO 계정"},
+        {"bluetooth", "차량 블루투스"},
+        {"bridge", "차량 보조 앱 연결 / QR"},
+        {"auto", "자동 도어 · 거리 관찰"},
+        {"trip", "탑승·하차 동작"},
+        {"notify", "알림 및 백그라운드"},
+        {"logs", "진단 로그"},
+        {"update", "앱 업데이트"}
       };
-      for (String label : moved) {
-        assertNull(find(home, label));
-        assertNotNull(find(settings, label));
+      for (String[] row : rows) {
+        View page = root.findViewWithTag("settings_" + row[0]);
+        assertNull(row[1], find(home, row[1]));
+        assertNotNull(row[1], find(page, row[1]));
+        assertNotNull(row[0], settings.findViewWithTag("menu_" + row[0]));
       }
+      for (String group : new String[] {"연결", "자동화", "앱 관리"})
+        assertNotNull(group, find(settings, group));
       assertNotNull(home.findViewWithTag("statusRefresh"));
       assertNotNull(find(home, "활동 로그"));
       assertNull(find(settings, "활동 로그"));
@@ -103,7 +108,15 @@ public class MainActivityTest {
           .onMenuItemClick(popup.getMenu().findItem(1));
       assertEquals(View.VISIBLE, settings.getVisibility());
       assertEquals(View.GONE, home.getVisibility());
-      a.get().onBackPressed();
+      settings.findViewWithTag("menu_account").performClick();
+      View account = root.findViewWithTag("settings_account");
+      assertEquals(View.VISIBLE, account.getVisibility());
+      assertEquals(View.GONE, settings.getVisibility());
+      assertNotNull(find(account, "Sub 계정 로그인 / 변경"));
+      a.get().onBackPressed(); // Sub-page → settings menu.
+      assertEquals(View.VISIBLE, settings.getVisibility());
+      assertEquals(View.GONE, account.getVisibility());
+      a.get().onBackPressed(); // Settings → home.
       assertEquals(View.VISIBLE, home.getVisibility());
       assertEquals(View.GONE, settings.getVisibility());
     }

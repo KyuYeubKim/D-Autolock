@@ -90,6 +90,12 @@ public final class MainActivity extends Activity {
   private boolean bleBeaconTab;
   private String bleReturn = "home";
   private long lastHistoryAt;
+  // Settings: the grouped menu page and one sub-page per row ("settings/account" …).
+  private FrameLayout pageFrame;
+  private final Map<String, ScrollView> detailPages = new LinkedHashMap<>();
+  private final Map<String, String> detailTitles = new HashMap<>();
+  private final Map<String, TextView> menuSubs = new HashMap<>();
+  private String appVersion = "";
   private final Handler refreshHandler = new Handler(Looper.getMainLooper());
   private final Runnable refreshTick =
       new Runnable() {
@@ -347,6 +353,7 @@ public final class MainActivity extends Activity {
     bar.addView(titleSpacer, new LinearLayout.LayoutParams(dp(40), dp(40)));
     titleSpacer.setVisibility(View.GONE);
     FrameLayout pages = new FrameLayout(this);
+    pageFrame = pages;
     shell.addView(pages, new LinearLayout.LayoutParams(-1, 0, 1));
     homeScroll = new ScrollView(this);
     homeScroll.setTag("homePage");
@@ -409,6 +416,7 @@ public final class MainActivity extends Activity {
     auto.setMinHeight(dp(48));
     proximity.addView(auto);
     autoReason = text(proximity, "거리 관찰을 먼저 시작하세요", 13, MUTED);
+    button(proximity, "거리 감도 · 대기 시간 (BLE 신호 설정)", v -> openBle(false));
     auto.setOnCheckedChangeListener(
         (b, on) -> {
           if (updating) return;
@@ -432,13 +440,13 @@ public final class MainActivity extends Activity {
         });
     capabilities = text(bridgeCard, "차량 기능 확인 전", 12, MUTED);
     buildControlsAutomationLog();
-    LinearLayout options = card("자동 동작 설정");
+    LinearLayout options = card("탑승·하차 동작");
     Switch startSwitch = new Switch(this);
     startSwitch.setText("앱 실행·감도 저장 시 자동 제어 시작");
     startSwitch.setTextColor(TEXT);
     startSwitch.setMinHeight(dp(56));
     startSwitch.setChecked(controller.settings.getBoolean("autoStart", true));
-    options.addView(startSwitch);
+    proximity.addView(startSwitch); // An automation setting, so it lives with 자동 도어와 감도.
     startSwitch.setOnCheckedChangeListener(
         (b, on) -> {
           controller.settings.edit().putBoolean("autoStart", on).apply();
@@ -592,7 +600,7 @@ public final class MainActivity extends Activity {
             + " 미확인으로 표시합니다.",
         13,
         MUTED);
-    LinearLayout link = card("01  BYD AUTO 계정");
+    LinearLayout link = card("BYD AUTO 계정");
     account = text(link, "연결 전", 15, TEXT);
     text(
         link,
@@ -612,9 +620,10 @@ public final class MainActivity extends Activity {
                     .setNegativeButton("취소", null)
                     .setPositiveButton("삭제", (d, w) -> controller.logout())
                     .show());
-    LinearLayout bluetooth = card("02  차량 블루투스");
+    LinearLayout bluetooth = card("차량 블루투스");
     device = text(bluetooth, "기기 선택 전", 15, TEXT);
     button(bluetooth, "블루투스 기기 검색 / 선택", v -> pickDevice(false));
+    button(bluetooth, "차량 BLE 작동 거리", v -> openBle(false));
     beaconDevice = text(bluetooth, "보조 BLE(비콘): 없음", 13, MUTED);
     button(bluetooth, "보조 BLE(비콘) 검색 / 선택", v -> pickDevice(true));
     button(bluetooth, "보조 BLE 작동 거리", v -> openBle(true));
@@ -645,22 +654,14 @@ public final class MainActivity extends Activity {
             tryAutoResume();
           }
         });
-    button(
-        bluetooth,
-        "배터리 · 백그라운드 설정",
-        v ->
-            startActivity(
-                new Intent(
-                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    android.net.Uri.parse("package:" + getPackageName()))));
     text(
         bluetooth,
         "블루투스는 거리 감지용입니다. 도어 제어에는 휴대폰과 차량의 인터넷 연결이 필요합니다. 전원을 끄면 신호가 사라지는 오디오 기기는 사용할 수 없습니다.",
         13,
         MUTED);
-    LinearLayout events = card("알림 · 진단 로그 관리");
+    LinearLayout notify = card("알림 및 백그라운드");
     button(
-        events,
+        notify,
         "휴대폰 알림 설정",
         v -> {
           if (Build.VERSION.SDK_INT >= 33
@@ -672,6 +673,21 @@ public final class MainActivity extends Activity {
                 new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                     .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName()));
         });
+    button(
+        notify,
+        "배터리 · 백그라운드 설정",
+        v ->
+            startActivity(
+                new Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.parse("package:" + getPackageName()))));
+    text(
+        notify,
+        "알림을 허용하고 앱 배터리를 ‘제한 없음’으로 두면 화면을 꺼도 자동 도어가 계속 동작하고, 열기·잠금 결과를 알림으로 받을 수 있습니다.",
+        12,
+        MUTED);
+    LinearLayout events = card("진단 로그");
+    button(events, "활동 전체 보기", v -> showActivity());
     button(events, "진단 로그 보기", v -> showDiagnostics());
     button(
         events,
@@ -722,25 +738,39 @@ public final class MainActivity extends Activity {
         "앱을 열 때 GitHub 새 버전을 확인합니다(5분 간격). 다운로드·서명 검증이 끝나면 Android 설치 화면을 바로 엽니다. 계정과 설정은 유지됩니다.",
         12,
         MUTED);
-    for (LinearLayout section :
-        new LinearLayout[] {
-          bridgeCard, proximity, options, updates, link, bluetooth, events
-        }) {
-      body.removeView(section);
-      settingsBody.addView(section);
-    }
-    button(settingsBody, "처음 설정 안내", v -> showSetup());
-    button(settingsBody, "사용 안내 · 오픈소스", v -> about());
-    String version = null;
     try {
-      version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+      appVersion = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
     } catch (PackageManager.NameNotFoundException ignored) {
     }
-    text(
-        settingsBody,
-        "D-Autolock" + (version == null ? "" : " " + version) + " · 비공식 개인용 앱",
-        12,
-        MUTED);
+    text(updates, "D-Autolock " + appVersion + " · 비공식 개인용 앱", 12, MUTED);
+    // Settings: a grouped menu; each row opens a page holding the cards built above.
+    detail("account", "계정과 차량", link);
+    detail("bluetooth", "블루투스와 비콘", bluetooth);
+    detail("bridge", "차량 보조 앱", bridgeCard);
+    detail("auto", "자동 도어와 감도", proximity);
+    detail("trip", "탑승과 하차", options);
+    detail("notify", "알림 및 백그라운드", notify);
+    detail("logs", "로그 및 진단", events);
+    detail("update", "앱 업데이트", updates);
+    LinearLayout connection = menuGroup("연결");
+    menuRow(connection, R.drawable.ic_person, "account");
+    menuRow(connection, R.drawable.ic_bluetooth, "bluetooth");
+    menuRow(connection, R.drawable.ic_qr, "bridge");
+    LinearLayout automatic = menuGroup("자동화");
+    menuRow(automatic, R.drawable.ic_bolt, "auto");
+    menuRow(automatic, R.drawable.ic_car_outline, "trip");
+    LinearLayout manage = menuGroup("앱 관리");
+    menuRow(manage, R.drawable.ic_bell, "notify");
+    menuRow(manage, R.drawable.ic_checklist, "logs");
+    menuRow(manage, R.drawable.ic_download, "update");
+    LinearLayout links = new LinearLayout(this);
+    links.setGravity(Gravity.CENTER);
+    LinearLayout.LayoutParams linksParams = new LinearLayout.LayoutParams(-1, -2);
+    linksParams.topMargin = dp(18);
+    settingsBody.addView(links, linksParams);
+    footLink(links, "처음 설정 안내", v -> showSetup());
+    text(links, "·", 12, MUTED).setPadding(dp(4), 0, dp(4), 0);
+    footLink(links, "앱 정보", v -> about());
     setupBanner = new LinearLayout(this);
     setupBanner.setOrientation(LinearLayout.VERTICAL);
     primaryButton(setupBanner, "처음 설정 이어하기", v -> showSetup());
@@ -753,6 +783,118 @@ public final class MainActivity extends Activity {
     foot.setPadding(0, dp(18), 0, 0);
     buildSetup();
     styleSwitches(shell);
+  }
+
+  /** A settings sub-page ("settings/" + key) that takes over the given cards from the home body. */
+  private void detail(String key, String title, LinearLayout... cards) {
+    ScrollView scroll = new ScrollView(this);
+    scroll.setTag("settings_" + key);
+    LinearLayout column = new LinearLayout(this);
+    column.setOrientation(LinearLayout.VERTICAL);
+    column.setPadding(dp(20), 0, dp(20), dp(28));
+    column.setClipToPadding(false);
+    scroll.addView(column);
+    pageFrame.addView(scroll);
+    scroll.setVisibility(View.GONE);
+    for (LinearLayout card : cards) {
+      body.removeView(card);
+      column.addView(card); // Keeps the card's own margins.
+    }
+    detailPages.put("settings/" + key, scroll);
+    detailTitles.put("settings/" + key, title);
+  }
+
+  /** A grey section label and the white rounded group its rows go into. */
+  private LinearLayout menuGroup(String label) {
+    TextView header = text(settingsBody, label, 12, MUTED);
+    header.setPadding(dp(4), dp(16), 0, dp(8));
+    LinearLayout group = new LinearLayout(this);
+    group.setOrientation(LinearLayout.VERTICAL);
+    group.setBackground(surface(18));
+    group.setClipToOutline(true); // Row ripples follow the rounded corners.
+    lift(group, 1.5f);
+    settingsBody.addView(group, new LinearLayout.LayoutParams(-1, -2));
+    return group;
+  }
+
+  /** One menu row: icon, title, a live summary line (see update()) and a chevron. */
+  private void menuRow(LinearLayout group, int drawable, String key) {
+    String page = "settings/" + key;
+    if (group.getChildCount() > 0) {
+      View divider = new View(this);
+      divider.setBackgroundColor(STROKE);
+      LinearLayout.LayoutParams line = new LinearLayout.LayoutParams(-1, dp(1));
+      line.leftMargin = dp(50);
+      group.addView(divider, line);
+    }
+    LinearLayout row = new LinearLayout(this);
+    row.setTag("menu_" + key);
+    row.setGravity(Gravity.CENTER_VERTICAL);
+    row.setPadding(dp(16), dp(13), dp(10), dp(13));
+    row.setBackground(pressable(background(0x00000000, 0)));
+    row.setOnClickListener(
+        v -> {
+          showPage(page);
+          detailPages.get(page).scrollTo(0, 0);
+        });
+    icon(row, drawable, SUBTLE, 18);
+    LinearLayout texts = new LinearLayout(this);
+    texts.setOrientation(LinearLayout.VERTICAL);
+    texts.setPadding(dp(16), 0, dp(8), 0);
+    row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
+    bold(texts, detailTitles.get(page), 14, TEXT);
+    TextView sub = text(texts, "", 11, MUTED);
+    sub.setPadding(0, dp(2), 0, 0);
+    sub.setMaxLines(1);
+    sub.setEllipsize(android.text.TextUtils.TruncateAt.END);
+    menuSubs.put(key, sub);
+    icon(row, R.drawable.ic_back, MUTED, 16).setRotation(180);
+    group.addView(row);
+  }
+
+  private void footLink(LinearLayout parent, String label, View.OnClickListener click) {
+    TextView link = text(parent, label, 12, SUBTLE);
+    link.setPadding(dp(8), dp(8), dp(8), dp(8));
+    link.setBackground(pressable(background(0x00000000, 10)));
+    link.setOnClickListener(click);
+  }
+
+  /** Each settings row's summary, kept current by update(). */
+  private void showMenuSummaries(boolean beaconOn) {
+    menuSubs.get("account").setText(
+        (controller.cloud.protocol.isLoggedIn()
+                ? "계정 연결됨"
+                : controller.hasSavedLogin() ? "계정 저장됨" : "계정 연결 전")
+            + " · "
+            + (controller.vin.isEmpty() ? "차량 선택 전" : controller.vehicleName));
+    menuSubs.get("bluetooth").setText(
+        (BluetoothAdapter.checkBluetoothAddress(controller.settings.getString("address", ""))
+                ? "차량 BLE"
+                : "차량 BLE 선택 전")
+            + " · "
+            + (beaconOn ? "보조 비콘 1개" : "보조 비콘 없음"));
+    menuSubs.get("bridge").setText(
+        "Bridge · "
+            + (!controller.vehicleLink.configured()
+                ? "미등록"
+                : controller.vehicleLink.connected() ? "연결됨" : "등록됨 · 연결 대기"));
+    menuSubs.get("auto").setText(
+        (controller.monitoring && controller.autoEnabled ? "켜짐" : "꺼짐")
+            + " · 접근 "
+            + RangeSlider.dbm(controller.settings.getInt("near", Controller.DEFAULT_NEAR))
+            + " / 이탈 "
+            + RangeSlider.dbm(controller.settings.getInt("far", Controller.DEFAULT_FAR)));
+    List<String> trip = new ArrayList<>();
+    if (controller.settings.getBoolean("autoReady", false)) trip.add("공조 시작");
+    if (controller.settings.getBoolean("closeWindows", true)) trip.add("창문 닫기");
+    if (controller.settings.getBoolean("autoStop", true) && !controller.sharedVehicle())
+      trip.add("자동 종료");
+    if (controller.settings.getBoolean("unlockOnPark", false)) trip.add("주차 시 열기");
+    menuSubs.get("trip").setText(trip.isEmpty() ? "모두 꺼짐" : String.join(" · ", trip));
+    menuSubs.get("notify").setText(
+        (DoorNotifications.enabled(this) ? "알림 허용" : "알림 꺼짐") + " · 배터리 설정");
+    menuSubs.get("logs").setText("활동 보기 · 진단 파일 저장");
+    menuSubs.get("update").setText("현재 버전 " + appVersion);
   }
 
   /** The beacon OR/AND combine switch. It appears in settings and on the BLE page; update() syncs both. */
@@ -1550,24 +1692,33 @@ public final class MainActivity extends Activity {
     settingsScroll.setVisibility(page.equals("settings") ? View.VISIBLE : View.GONE);
     setupScroll.setVisibility(page.equals("setup") ? View.VISIBLE : View.GONE);
     bleScroll.setVisibility(page.equals("ble") ? View.VISIBLE : View.GONE);
-    // Home shows the brand, BLE pill and menu; sub pages a back arrow and a centred title.
+    for (Map.Entry<String, ScrollView> detail : detailPages.entrySet())
+      detail.getValue().setVisibility(page.equals(detail.getKey()) ? View.VISIBLE : View.GONE);
+    // Home shows the brand, BLE pill and menu; sub pages a back arrow and their title — centred
+    // on the BLE page, beside the arrow in settings (as in the two designs).
+    boolean centred = page.equals("ble");
     back.setVisibility(home ? View.GONE : View.VISIBLE);
-    titleSpacer.setVisibility(home ? View.GONE : View.VISIBLE);
+    titleSpacer.setVisibility(centred ? View.VISIBLE : View.GONE);
     logoTile.setVisibility(home ? View.VISIBLE : View.GONE);
     bleStatusPill.setVisibility(home ? View.VISIBLE : View.GONE);
     menu.setVisibility(home ? View.VISIBLE : View.GONE);
-    title.setGravity(home ? Gravity.CENTER_VERTICAL | Gravity.START : Gravity.CENTER);
+    title.setGravity(centred ? Gravity.CENTER : Gravity.CENTER_VERTICAL | Gravity.START);
     title.setAutoSizeTextTypeUniformWithConfiguration(
-        14, home ? 19 : 16, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
-    title.setPadding(home ? dp(10) : 0, 0, 0, 0);
+        14, home ? 19 : centred ? 16 : 18, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+    title.setPadding(home ? dp(10) : centred ? 0 : dp(4), 0, 0, 0);
     title.setText(
         home
             ? "D-Autolock"
-            : page.equals("settings") ? "설정" : page.equals("setup") ? "처음 설정" : "BLE 신호 설정");
+            : page.equals("settings")
+                ? "설정"
+                : page.equals("setup")
+                    ? "처음 설정"
+                    : centred ? "BLE 신호 설정" : detailTitles.getOrDefault(page, "설정"));
   }
 
   private void navigateBack() {
     if (page.equals("ble")) showPage(bleReturn); // Unsaved threshold drafts are dropped.
+    else if (page.startsWith("settings/")) showPage("settings");
     else if (!page.equals("home")) showPage("home");
   }
 
@@ -1845,6 +1996,7 @@ public final class MainActivity extends Activity {
     beaconDevice.setText(
         "보조 BLE(비콘): "
             + (beaconOn ? controller.settings.getString("beaconName", "등록됨") : "없음"));
+    showMenuSummaries(beaconOn);
     // update() runs about once a second while monitoring; that sets the history bar pace.
     if (now - lastHistoryAt >= 900) {
       lastHistoryAt = now;

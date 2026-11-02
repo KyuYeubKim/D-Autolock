@@ -7,6 +7,8 @@ import org.json.JSONObject;
 public final class VehicleSnapshot {
   public final Integer power, epb, okLight;
   public final Double speed, battery, range;
+  /** Odometer, km (realtime totalMileage; pyBYD total_mileage). 0 or negative is missing. */
+  public final Double odometer;
   /** Realtime charge state (pyBYD: chargeState authoritative, chargingState fallback; 1=charging). */
   public final Integer chargeState, chargeMinutes;
   public final boolean chargeUnderOneMinute;
@@ -30,6 +32,8 @@ public final class VehicleSnapshot {
     speed = number(data, "speed");
     battery = number(data, "soc") != null ? number(data, "soc") : number(data, "elecPercent");
     range = number(data, "enduranceMileage");
+    Double odo = number(data, "totalMileage");
+    odometer = odo == null || odo <= 0 ? null : odo;
     // Negative values (-1 after wake/deep sleep) are already treated as missing by number().
     chargeState =
         data.has("chargeState") && !data.isNull("chargeState")

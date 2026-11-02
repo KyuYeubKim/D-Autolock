@@ -112,7 +112,7 @@ public class CommandFlowTest {
     Object epb = "--";
     boolean doorOpen, openOnUnlock, rejectClimate, rejectHvac, windowOpen;
     Object okLight = JSONObject.NULL;
-    int statusRequests, hvacRequests;
+    int statusRequests, hvacRequests, configRequests;
     Runnable beforeStatus = () -> {};
     final List<String> commands = new ArrayList<>();
 
@@ -150,6 +150,12 @@ public class CommandFlowTest {
                 .put(side + "Window", windowOpen && side.equals("leftFront") ? 2 : 1);
           }
           cb.onSuccess(s);
+        } else if (endpoint.endsWith("getLatestConfig")) {
+          configRequests++;
+          JSONArray items = new JSONArray();
+          for (String f : new String[] {"1005", "1006", "1001", "1026", "1031"})
+            items.put(new JSONObject().put("functionNo", f));
+          cb.onSuccess(new JSONObject().put("test-car", new JSONObject().put("items", items)));
         } else if (endpoint.endsWith("remoteControl")) {
           String command = String.valueOf(data.get("commandType"));
           commands.add(command);
@@ -166,6 +172,8 @@ public class CommandFlowTest {
             }
           }
           if (command.equals("TURNOFFENGINE")) power = 1;
+          if (command.equals("OPENWINDOW")) windowOpen = true;
+          if (command.equals("CLOSEWINDOW")) windowOpen = false;
           cb.onSuccess(new JSONObject().put("controlState", 1));
         } else throw new AssertionError("Unexpected endpoint " + endpoint);
       } catch (Exception e) {
@@ -1186,5 +1194,92 @@ public class CommandFlowTest {
     complete(c);
     assertTrue(p.commands.isEmpty());
     assertTrue(c.stopStatus.contains("이미 전원 OFF"));
+  }
+
+  private void addFunction(Controller c, String functionNo) throws Exception {
+    c.capabilities.getJSONArray("items").put(new JSONObject().put("functionNo", functionNo));
+  }
+
+  private void learnInfo(Controller c, JSONObject learn) throws Exception {
+    JSONObject vehicle = new JSONObject().put("vin", c.vin);
+    if (learn != null) vehicle.put("vehicleFunLearnInfo", learn);
+    c.vehicles = new JSONArray().put(vehicle);
+  }
+
+  @Test
+  public void findCarSendsOnceWithoutStatusReads() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    addFunction(c, "1007");
+    c.accessory(CloudClient.Command.FIND_CAR);
+    complete(c);
+    assertEquals(Collections.singletonList("FINDCAR"), p.commands);
+    assertEquals(0, p.statusRequests);
+    assertTrue(c.lastControl.contains("차량 찾기 요청 완료"));
+  }
+
+  @Test
+  public void findCarIsRefusedWhenTheCarDoesNotListIt() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = create(p); // Lists 1005/1006/1001/1026/1031, not 1007.
+    c.accessory(CloudClient.Command.FIND_CAR);
+    complete(c);
+    assertEquals(1, p.configRequests); // Refreshed once, still without 1007.
+    assertTrue(p.commands.isEmpty());
+    assertTrue(c.lastControl.contains("지원을 확인하지 못했습니다"));
+  }
+
+  @Test
+  public void openWindowsChecksStateSendsOnceAndReadsBackOpen() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    learnInfo(c, new JSONObject().put("openWindowLearnInfo", 1));
+    c.accessory(CloudClient.Command.OPEN_WINDOWS);
+    complete(c);
+    assertEquals(Collections.singletonList("OPENWINDOW"), p.commands);
+    assertEquals(2, p.statusRequests); // Preflight and readback.
+    assertTrue(c.windowsStatus.contains("창문 열기 완료"));
+  }
+
+  @Test
+  public void openWindowsBlockedWhenByDLearnInfoSaysTheCarCannotOpen() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    learnInfo(c, new JSONObject().put("openWindowLearnInfo", 0).put("openWindow499LearnInfo", 0));
+    assertEquals(Boolean.FALSE, c.windowOpenSupported());
+    c.accessory(CloudClient.Command.OPEN_WINDOWS);
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertTrue(c.lastControl.contains("지원하지 않습니다"));
+    learnInfo(c, null); // No learn info: 1026 decides, as in pyBYD.
+    assertNull(c.windowOpenSupported());
+  }
+
+  @Test
+  public void closeWindowsReadsBackClosedAndSkipsWhenAlreadyClosed() throws Exception {
+    Protocol p = new Protocol();
+    p.windowOpen = true;
+    Controller c = create(p);
+    c.accessory(CloudClient.Command.CLOSE_WINDOWS);
+    complete(c);
+    assertEquals(Collections.singletonList("CLOSEWINDOW"), p.commands);
+    assertTrue(c.windowsStatus.contains("창문 닫기 완료"));
+    c.accessory(CloudClient.Command.CLOSE_WINDOWS);
+    complete(c);
+    assertEquals(Collections.singletonList("CLOSEWINDOW"), p.commands); // Not sent again.
+    assertTrue(c.windowsStatus.contains("이미"));
+  }
+
+  @Test
+  public void climateScaleLearnedFromHvacSetsTheNextStartTemperature() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    assertEquals(9, c.cloud.climateParams().getInt("mainSettingTemp")); // 23 °C, default scale.
+    c.learnClimateScale(
+        new com.dautolock.app.core.HvacSnapshot(
+            new JSONObject().put("vdeTempRangeMin", 17).put("vdeTempRangeMax", 33),
+            System.currentTimeMillis()));
+    assertEquals(7, c.cloud.climateParams().getInt("mainSettingTemp")); // 23 °C on 17–33 °C.
+    assertEquals(16f, c.settings.getFloat("climateTempOffset", 0), 0);
   }
 }

@@ -5,6 +5,8 @@ import org.json.JSONObject;
 /** Whitelisted diagnostic fields only; a server response may have no measurement time. */
 public final class HvacSnapshot {
   public final Integer status, acSwitch, windPosition;
+  /** Driver set temperature in °C, its 1–17 scale value, and the car's settable °C range. */
+  public final Double setTemp, setScale, rangeMin, rangeMax;
   public final long measuredAt, receivedAt;
 
   public HvacSnapshot(JSONObject data, long receivedAt) {
@@ -12,11 +14,37 @@ public final class HvacSnapshot {
     status = value(data, "status");
     acSwitch = value(data, "acSwitch");
     windPosition = value(data, "windPosition");
+    setTemp = celsius(data, "mainSettingTempNew");
+    setScale = celsius(data, "mainSettingTemp");
+    rangeMin = celsius(data, "vdeTempRangeMin");
+    rangeMax = celsius(data, "vdeTempRangeMax");
     measuredAt =
         VehicleSnapshot.timestamp(
             data.has("timeStamp")
                 ? data.opt("timeStamp")
                 : data.has("timestamp") ? data.opt("timestamp") : data.opt("time"));
+  }
+
+  /** A plausible cabin temperature or scale value; sentinels like -129 are missing. */
+  private static Double celsius(JSONObject data, String key) {
+    Object raw = data.opt(key);
+    if (raw == null || raw == JSONObject.NULL || raw instanceof Boolean) return null;
+    try {
+      double n = Double.parseDouble(String.valueOf(raw));
+      return Double.isFinite(n) && n > 0 && n <= 60 ? n : null;
+    } catch (Exception ignored) {
+      return null;
+    }
+  }
+
+  /**
+   * °C offset of the car's 1–17 climate scale from its reported range (pyBYD
+   * temp_offset_from_range): min − 1, or null when the range is missing or does not fit.
+   */
+  public Double tempOffset() {
+    if (rangeMin == null || rangeMax == null) return null;
+    double span = rangeMax - rangeMin;
+    return span > 0 && span <= 16 ? rangeMin - 1 : null;
   }
 
   private static Integer value(JSONObject data, String key) {
@@ -51,6 +79,14 @@ public final class HvacSnapshot {
         + acSwitch
         + " windPosition="
         + windPosition
+        + " setTemp="
+        + setTemp
+        + " setScale="
+        + setScale
+        + " range="
+        + rangeMin
+        + "~"
+        + rangeMax
         + " measuredAt="
         + measuredAt
         + " receivedAt="

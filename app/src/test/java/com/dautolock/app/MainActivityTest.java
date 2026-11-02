@@ -471,6 +471,12 @@ public class MainActivityTest {
       assertFalse(find(decor, "도어 열기").isEnabled());
       assertFalse(decor.findViewWithTag("control_power_off").isEnabled());
       assertFalse(decor.findViewWithTag("control_prepare").isEnabled());
+      for (String tag :
+          new String[] {"control_window_open", "control_window_close", "control_find_car"})
+        assertFalse(tag, decor.findViewWithTag(tag).isEnabled());
+      assertNotNull(find(decor, "창문 열기"));
+      assertNotNull(find(decor, "창문 닫기"));
+      assertNotNull(find(decor, "차량 찾기"));
       assertFalse(((Switch) find(decor, "실제 자동 도어 제어")).isChecked());
       assertNotNull(find(decor, "탑승 공조 · READY 상태 진단"));
       assertNotNull(find(decor, "진단 로그 파일 저장"));
@@ -759,6 +765,28 @@ public class MainActivityTest {
       unlock.performClick();
       unlock.performClick();
       assertNull(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog());
+    }
+  }
+
+  @Test
+  public void odometerSitsRightOfTheUpdateTimeOnceReported() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = ((DApplication) a.get().getApplication()).controller();
+      AccountPersistenceTest.await(c);
+      View root = a.get().getWindow().getDecorView();
+      TextView odometer = root.findViewWithTag("odometer");
+      assertEquals(View.GONE, odometer.getVisibility());
+      long now = System.currentTimeMillis();
+      c.snapshot =
+          new com.dautolock.app.core.VehicleSnapshot(
+              new org.json.JSONObject().put("time", now).put("totalMileage", 13042), now);
+      c.changed();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
+      assertEquals(View.VISIBLE, odometer.getVisibility());
+      assertEquals("총 주행거리 13,042 km", odometer.getText().toString());
+      TextView checked = root.findViewWithTag("statusCheckedTime");
+      assertSame(checked.getParent(), odometer.getParent()); // Same line as the update time.
     }
   }
 }

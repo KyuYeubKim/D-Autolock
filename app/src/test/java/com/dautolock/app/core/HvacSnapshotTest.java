@@ -42,4 +42,29 @@ public class HvacSnapshotTest {
     assertTrue(s.label(now).contains("최근 측정"));
     assertFalse(s.diagnostic(now).contains("private"));
   }
+
+  @Test
+  public void climateScaleOffsetComesFromTheCarsRangeLikePyByd() throws Exception {
+    HvacSnapshot usual =
+        new HvacSnapshot(
+            new JSONObject()
+                .put("vdeTempRangeMin", 15)
+                .put("vdeTempRangeMax", 31)
+                .put("mainSettingTemp", 9)
+                .put("mainSettingTempNew", 23.0),
+            now);
+    assertEquals(14.0, usual.tempOffset(), 0);
+    assertEquals(23.0, usual.setTemp, 0);
+    assertTrue(usual.diagnostic(now).contains("setTemp=23.0"));
+    HvacSnapshot han =
+        new HvacSnapshot(
+            new JSONObject().put("vdeTempRangeMin", "17").put("vdeTempRangeMax", "33"), now);
+    assertEquals(16.0, han.tempOffset(), 0);
+    assertNull(new HvacSnapshot(new JSONObject(), now).tempOffset());
+    assertNull( // A range wider than the 1–17 scale cannot be mapped.
+        new HvacSnapshot(
+                new JSONObject().put("vdeTempRangeMin", 10).put("vdeTempRangeMax", 40), now)
+            .tempOffset());
+    assertNull(new HvacSnapshot(new JSONObject().put("mainSettingTempNew", -129), now).setTemp);
+  }
 }

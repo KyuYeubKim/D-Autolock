@@ -54,6 +54,15 @@ public final class DashboardStatus {
         + (s.fresh(now) ? "" : " · 오래됨");
   }
 
+  /**
+   * Odometer for the header line, e.g. "총 주행거리 12,345 km". The last reading stays valid as it
+   * only grows; the update time beside it says how old it is. Null until a reading arrives.
+   */
+  public static String odometer(VehicleSnapshot s) {
+    if (s == null || s.odometer == null || s.receivedAt <= 0) return null;
+    return String.format(java.util.Locale.KOREA, "총 주행거리 %,d km", Math.round(s.odometer));
+  }
+
   /** Big door title; stale/unknown never reads as locked. */
   public static String doorTitle(VehicleSnapshot s, long now) {
     String door = vehicle(s, now)[0];

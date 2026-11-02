@@ -15,7 +15,11 @@ public final class CloudClient {
     STOP("TURNOFFENGINE", "1031", "차량 종료"),
     CLIMATE_ON("OPENAIR", "1001", "공조 ON"),
     CLIMATE_OFF("CLOSEAIR", "1001", "공조 OFF"),
-    CLOSE_WINDOWS("CLOSEWINDOW", "1026", "전체 창문 닫기");
+    CLOSE_WINDOWS("CLOSEWINDOW", "1026", "전체 창문 닫기"),
+    // pyBYD (live on Sealion 7): opens to a ~10 % vent crack, never a full drop. Some cars list
+    // 1026 yet ignore it; vehicleFunLearnInfo tells which (Controller.windowOpenSupported).
+    OPEN_WINDOWS("OPENWINDOW", "1026", "창문 열기"),
+    FIND_CAR("FINDCAR", "1007", "차량 찾기"); // Horn and lights; nothing to read back.
     public final String wire, feature, label;
 
     Command(String wire, String feature, String label) {
@@ -348,13 +352,28 @@ public final class CloudClient {
     throw new Exception("명령 결과 미확인. 재전송하지 않았습니다. 차량에서 직접 확인하세요");
   }
 
-  public static JSONObject climateParams() throws Exception {
+  /** Remote climate (시동 켜기) target, °C. */
+  public static final int CLIMATE_TEMP_C = 23;
+
+  /**
+   * °C offset of this car's 1–17 climate scale. pyBYD: most models 15–31 °C (offset 14), HAN
+   * 17–33 °C (16), read from getStatusNow vdeTempRangeMin. Controller keeps it current.
+   */
+  public volatile double climateTempOffset = 14;
+
+  public JSONObject climateParams() throws Exception {
+    return climateParams(climateTempOffset);
+  }
+
+  /** The OPENAIR payload. The temperature goes on the 1–17 scale (it used to send 13 = 27 °C). */
+  public static JSONObject climateParams(double offset) throws Exception {
+    int scale = (int) Math.max(1, Math.min(17, Math.round(CLIMATE_TEMP_C - offset)));
     return new JSONObject()
         .put("airSet", JSONObject.NULL)
         .put("remoteMode", 4)
         .put("timeSpan", 1)
-        .put("mainSettingTemp", 13)
-        .put("copilotSettingTemp", 13)
+        .put("mainSettingTemp", scale)
+        .put("copilotSettingTemp", scale)
         .put("cycleMode", 1)
         .put("airAccuracy", 2)
         .put("airConditioningMode", 1);

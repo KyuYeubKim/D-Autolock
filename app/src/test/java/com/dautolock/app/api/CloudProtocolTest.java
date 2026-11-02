@@ -9,11 +9,22 @@ import org.junit.Test;
 public class CloudProtocolTest {
   @Test
   public void climatePulseUsesKoreanParameters() throws Exception {
-    org.json.JSONObject p = CloudClient.climateParams();
-    assertEquals(13, p.getInt("mainSettingTemp"));
+    org.json.JSONObject p = CloudClient.climateParams(14);
+    assertEquals(9, p.getInt("mainSettingTemp")); // 23 °C on the 15–31 °C scale (offset 14).
+    assertEquals(9, p.getInt("copilotSettingTemp"));
     assertEquals(1, p.getInt("timeSpan"));
     assertEquals(2, p.getInt("airAccuracy"));
     assertEquals("CLOSEWINDOW", CloudClient.Command.CLOSE_WINDOWS.wire);
+    assertEquals("OPENWINDOW", CloudClient.Command.OPEN_WINDOWS.wire);
+    assertEquals("FINDCAR", CloudClient.Command.FIND_CAR.wire);
+    assertEquals("1007", CloudClient.Command.FIND_CAR.feature);
+  }
+
+  @Test
+  public void climateTemperatureFollowsTheCarsScale() throws Exception {
+    assertEquals(7, CloudClient.climateParams(16).getInt("mainSettingTemp")); // HAN 17–33 °C.
+    assertEquals(17, CloudClient.climateParams(0).getInt("mainSettingTemp")); // Clamped to 1–17.
+    assertEquals(1, CloudClient.climateParams(30).getInt("mainSettingTemp"));
   }
 
   @Test

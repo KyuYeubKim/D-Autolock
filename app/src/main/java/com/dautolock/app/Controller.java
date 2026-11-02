@@ -167,8 +167,13 @@ final class Controller {
     diagnostics = new DiagnosticLog(new java.io.File(context.getFilesDir(), "diagnostics"));
     vehicleLink = new VehicleLink(this);
     cloud = configure(clients.get());
+    String version = "?";
+    try {
+      version = context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName;
+    } catch (Exception ignored) {
+    }
     diagnostics.record(
-        "APP_START", "version=0.3.17 sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
+        "APP_START", "version=" + version + " sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL);
     worker.execute(
         () -> {
           try {
@@ -212,6 +217,7 @@ final class Controller {
 
   private CloudClient configure(CloudClient client) {
     client.setDiagnostics(diagnostics::record);
+    client.climateTempOffset = settings.getFloat("climateTempOffset", 14f);
     client.setSessionRecovery(
         () -> {
           if (client != cloud || !hasSavedLogin())
@@ -395,8 +401,12 @@ final class Controller {
                 .remove("beaconName")
                 .remove("beaconNear")
                 .remove("beaconFar")
+                .remove("climateTempOffset")
                 .apply();
-          if (!same) vehicleLink.forget();
+          if (!same) {
+            vehicleLink.forget();
+            cloud.climateTempOffset = 14; // Relearned from the next car's climate range.
+          }
           snapshot = null;
           capabilities = new JSONObject();
           vehicles = new JSONArray();
@@ -434,7 +444,9 @@ final class Controller {
                 .remove("beaconName")
                 .remove("beaconNear")
                 .remove("beaconFar")
+                .remove("climateTempOffset")
                 .apply();
+            cloud.climateTempOffset = 14; // Relearned from the next car's climate range.
           }
           vin = selectedVin;
           vehicleName =
@@ -632,6 +644,7 @@ final class Controller {
               .remove("beaconName")
               .remove("beaconNear")
               .remove("beaconFar")
+              .remove("climateTempOffset")
               .apply();
           note("저장된 ID·비밀번호·PIN과 차량 연결 정보를 삭제했습니다");
         });
@@ -1592,6 +1605,138 @@ final class Controller {
     }
   }
 
+  /** Keeps 시동 켜기 at 23 °C on this car: its 1–17 scale offset comes from the HVAC range. */
+  void learnClimateScale(HvacSnapshot hvac) {
+    Double offset = hvac.tempOffset();
+    if (offset == null || offset == cloud.climateTempOffset) return;
+    cloud.climateTempOffset = offset;
+    settings.edit().putFloat("climateTempOffset", offset.floatValue()).apply();
+    diagnostics.record(
+        "CLIMATE_TEMP_SCALE",
+        "offset=" + offset + " range=" + hvac.rangeMin + "~" + hvac.rangeMax + " setTemp=" + hvac.setTemp);
+  }
+
+  /**
+   * Whether BYD says this car can open its windows remotely. pyBYD: function 1026 alone is not
+   * enough — vehicleFunLearnInfo openWindowLearnInfo or openWindow499LearnInfo must be 1 (some
+   * cars list 1026 and ignore OPENWINDOW). Null when the vehicle list has no learn info, and then
+   * 1026 decides, as in pyBYD.
+   */
+  Boolean windowOpenSupported() {
+    JSONArray list = vehicles;
+    for (int i = 0; i < list.length(); i++) {
+      JSONObject o = list.optJSONObject(i);
+      if (o == null || !vin.equals(o.optString("vin"))) continue;
+      Object raw = o.opt("vehicleFunLearnInfo");
+      JSONObject learn = raw instanceof JSONObject ? (JSONObject) raw : null;
+      if (learn == null && raw instanceof String)
+        try {
+          learn = new JSONObject((String) raw);
+        } catch (Exception ignored) {
+        }
+      if (learn == null) return null;
+      return learn.optInt("openWindowLearnInfo") > 0 || learn.optInt("openWindow499LearnInfo") > 0;
+    }
+    return null;
+  }
+
+  /**
+   * 창문 열기·닫기 and 차량 찾기 from the main screen. Sent once; an unconfirmed result is never
+   * resent. Windows first need a fresh stationary state and are read back afterwards; 차량 찾기
+   * (horn and lights) has no state to read back.
+   */
+  void accessory(CloudClient.Command command) {
+    int ticket = generation.get();
+    String target = vin;
+    boolean window = command != CloudClient.Command.FIND_CAR;
+    boolean open = command == CloudClient.Command.OPEN_WINDOWS;
+    run(
+        () -> {
+          try {
+            requireVehicle();
+            if (pinHash.isEmpty()) throw new Exception("제어 PIN이 없습니다. 다시 로그인하세요");
+            if (!CloudClient.hasFeature(capabilities, command.feature))
+              capabilities = cloud.capabilities(target);
+            if (!CloudClient.hasFeature(capabilities, command.feature))
+              throw new Exception("이 차량의 " + command.label + " 지원을 확인하지 못했습니다");
+            if (open && vehicles.length() == 0)
+              try {
+                vehicles = cloud.vehicles(); // Only to read the window-open learn flags.
+              } catch (Exception e) {
+                diagnostics.record("WINDOW_OPEN_LEARN_INFO_ERROR", e.getMessage());
+              }
+            if (open && Boolean.FALSE.equals(windowOpenSupported()))
+              throw new Exception("BYD 정보상 이 차량은 원격 창문 열기를 지원하지 않습니다 (닫기만 가능)");
+            long sentAt = System.currentTimeMillis();
+            if (window) {
+              note(command.label + " 전 차량 상태 확인 중…");
+              observeSnapshot(cloud.snapshot(target), true);
+              VehicleSnapshot checked = snapshot;
+              long now = System.currentTimeMillis();
+              diagnostics.record("PREFLIGHT", "MANUAL " + command + " " + checked.diagnostic(now));
+              if (!checked.fresh(now) || checked.speed == null || checked.speed != 0d)
+                throw new Exception("제어 보류: 최신 정차 상태를 확인하지 못했습니다");
+              if (!open && Boolean.TRUE.equals(checked.windowsClosed)) {
+                windowsStatus = "BYD 조회상 이미 모든 창문 닫힘 · 명령 생략";
+                lastControl = windowsStatus;
+                diagnostics.record("CONTROL_SKIP_STATE", "MANUAL " + command + " source=cloud");
+                note(lastControl);
+                DoorNotifications.result(context, lastControl, "BYD에서 조회한 현재 상태입니다");
+                return;
+              }
+              sentAt = System.currentTimeMillis();
+            }
+            lastControl = command.label + " · 전송 중";
+            changed();
+            cloud.command(
+                target,
+                pinHash,
+                command,
+                () -> {
+                  if (!validSession(ticket, target)) return false;
+                  diagnostics.record("CONTROL_SEND", "MANUAL " + command);
+                  return true;
+                });
+            if (!window) {
+              lastControl = "차량 찾기 요청 완료 · 경적과 라이트로 위치를 알립니다";
+              note(lastControl);
+              DoorNotifications.result(context, "차량 찾기 요청", "수동 제어 · " + lastControl);
+              return;
+            }
+            VehicleSnapshot after = cloud.snapshot(target);
+            observeSnapshot(after, false);
+            long now = System.currentTimeMillis();
+            diagnostics.record("READBACK", command + " " + after.diagnostic(now));
+            boolean verified =
+                after.fresh(now)
+                    && after.measuredAt >= sentAt
+                    && (open
+                        ? Boolean.FALSE.equals(after.windowsClosed)
+                        : Boolean.TRUE.equals(after.windowsClosed));
+            windowsStatus =
+                verified
+                    ? open
+                        ? "창문 열기 완료 · BYD 조회상 열림 (환기 정도로 조금 열립니다)"
+                        : "창문 닫기 완료 · BYD 조회상 모두 닫힘"
+                    : open
+                        ? "창문 열기 응답 수신 · 창문 변화 미확인. 일부 차량은 명령을 받아도 열리지 않습니다"
+                        : "창문 닫기 응답 수신 · 실제 창문 상태 미확인";
+            lastControl = windowsStatus;
+            note(lastControl);
+            DoorNotifications.result(
+                context,
+                verified ? command.label + " 확인" : command.label + " 결과 미확인",
+                "수동 제어 · " + lastControl);
+          } catch (Exception e) {
+            lastControl = command.label + " · " + e.getMessage();
+            if (window) windowsStatus = command.label + " 미완료 · " + e.getMessage();
+            diagnostics.record("CONTROL_BLOCK_OR_ERROR", "MANUAL " + lastControl);
+            DoorNotifications.result(context, command.label + " 미완료", lastControl);
+            throw e;
+          }
+        });
+  }
+
   private void closeWindowsAfterLock(BooleanSupplier valid) {
     if (!settings.getBoolean("closeWindows", true)) {
       windowsStatus = "창문 닫기 · 설정 꺼짐";
@@ -1975,6 +2120,7 @@ final class Controller {
                     HvacSnapshot hvac = cloud.hvacSnapshot(target);
                     if (!current()) return;
                     hvacLabel = hvac.label(System.currentTimeMillis());
+                    learnClimateScale(hvac);
                     diagnostics.record(
                         "CLIMATE_OBSERVATION",
                         "sample="

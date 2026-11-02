@@ -36,7 +36,7 @@ public final class MainActivity extends Activity {
   private static final int QR_REQUEST = 52;
   private Controller controller;
   private LinearLayout body;
-  private TextView message, account, device, capabilities, checkedTime;
+  private TextView message, account, device, capabilities, checkedTime, odometerText;
   private ImageView refreshIcon;
   private LinearLayout chargeCard;
   private TextView chargeHeadline, chargeDetail;
@@ -1045,10 +1045,21 @@ public final class MainActivity extends Activity {
         });
     refreshBox.addView(refreshIcon, new FrameLayout.LayoutParams(-1, -1));
     row.addView(refreshBox, new LinearLayout.LayoutParams(dp(40), dp(40)));
-    checkedTime = text(status, "업데이트 대기", 12, MUTED);
+    // Update time on the left, the odometer right-aligned on the same line.
+    LinearLayout meta = new LinearLayout(this);
+    meta.setGravity(Gravity.CENTER_VERTICAL);
+    meta.setPadding(dp(1), dp(8), 0, 0);
+    status.addView(meta);
+    checkedTime = text(meta, "업데이트 대기", 12, MUTED);
     checkedTime.setTag("statusCheckedTime");
-    checkedTime.setPadding(dp(1), dp(8), 0, 0);
+    checkedTime.setPadding(0, 0, dp(8), 0);
     checkedTime.setMaxLines(2); // Never cut the time off; wrap on narrow phones.
+    checkedTime.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    odometerText = text(meta, "", 12, SUBTLE);
+    odometerText.setTag("odometer");
+    odometerText.setPadding(0, 0, 0, 0);
+    odometerText.setSingleLine(true);
+    odometerText.setGravity(Gravity.END);
     message = text(status, "", 12, MUTED); // Recent alert text lives in the activity log now.
     message.setVisibility(View.GONE);
     status.setOnClickListener(v -> showVehicleDetails());
@@ -1265,6 +1276,26 @@ public final class MainActivity extends Activity {
         roundRow, R.drawable.ic_power, "시동 끄기", LOCK, "control_power_off",
         new CloudClient.Command[] {CloudClient.Command.STOP},
         () -> confirm(CloudClient.Command.STOP));
+    LinearLayout extraRow = new LinearLayout(this);
+    extraRow.setBaselineAligned(false);
+    extraRow.setClipChildren(false);
+    LinearLayout.LayoutParams extraParams = new LinearLayout.LayoutParams(-1, -2);
+    extraParams.topMargin = dp(12);
+    controls.addView(extraRow, extraParams);
+    roundButton(
+        extraRow, R.drawable.ic_window_open, "창문 열기", TEXT, "control_window_open",
+        new CloudClient.Command[] {CloudClient.Command.OPEN_WINDOWS},
+        () -> controller.accessory(CloudClient.Command.OPEN_WINDOWS));
+    roundButton(
+        extraRow, R.drawable.ic_window_close, "창문 닫기", TEXT, "control_window_close",
+        new CloudClient.Command[] {CloudClient.Command.CLOSE_WINDOWS},
+        () -> controller.accessory(CloudClient.Command.CLOSE_WINDOWS));
+    roundButton(
+        extraRow, R.drawable.ic_find_car, "차량 찾기", ACCENT, "control_find_car",
+        new CloudClient.Command[] {CloudClient.Command.FIND_CAR},
+        () -> controller.accessory(CloudClient.Command.FIND_CAR));
+    // An empty fourth cell keeps these under the same four columns as the row above.
+    extraRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
     LinearLayout bigRow = new LinearLayout(this);
     bigRow.setBaselineAligned(false);
     bigRow.setClipChildren(false);
@@ -1808,6 +1839,9 @@ public final class MainActivity extends Activity {
     long now = System.currentTimeMillis();
     String checked = DashboardStatus.updated(controller.snapshot, now);
     checkedTime.setText(controller.statusReading ? "확인 중… · " + checked : checked);
+    String odometer = DashboardStatus.odometer(controller.snapshot);
+    odometerText.setText(odometer == null ? "" : odometer);
+    odometerText.setVisibility(odometer == null ? View.GONE : View.VISIBLE);
     beaconDevice.setText(
         "보조 BLE(비콘): "
             + (beaconOn ? controller.settings.getString("beaconName", "등록됨") : "없음"));
@@ -1903,7 +1937,10 @@ public final class MainActivity extends Activity {
         enabled &=
             need == CloudClient.Command.CLIMATE_ON
                 ? CloudClient.hasClimate(controller.capabilities)
-                : CloudClient.hasFeature(controller.capabilities, need.feature);
+                : CloudClient.hasFeature(controller.capabilities, need.feature)
+                    // Some cars list 1026 but cannot open remotely; BYD's learn info says so.
+                    && (need != CloudClient.Command.OPEN_WINDOWS
+                        || !Boolean.FALSE.equals(controller.windowOpenSupported()));
       setTreeEnabled(commands.get(i), enabled);
       commands.get(i).setAlpha(enabled ? 1f : .45f);
     }
@@ -2186,6 +2223,7 @@ public final class MainActivity extends Activity {
                 ? "차량이 P단이며 주차브레이크가 체결됐고, 주변과 탑승자가 안전한지 직접 확인하세요. 최신 정차 상태를 조회한 뒤 종료를 한 번 요청합니다."
                     + " BYD가 주차브레이크 정보를 제공하지 않으면 이번 직접 확인을 사용합니다. 해제·유효하지 않은 값이 오면 차단합니다."
                     + " 확인은 이번 요청에만 30초간 유효하며 자동 종료에는 적용되지 않습니다. 종료 후 계기판 전원 OFF를 확인하세요."
+                    + " 도어가 잠긴 상태에서 보내면 차량이 경적을 한 번 울릴 수 있습니다."
                 : "선택한 차량에 " + cmd.label + " 명령을 전송합니다.")
         .setNegativeButton("취소", null)
         .setPositiveButton(

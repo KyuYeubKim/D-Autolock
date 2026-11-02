@@ -111,4 +111,23 @@ public class DashboardStatusTest {
     assertEquals("감도 저장 · 상태 갱신 중", DashboardStatus.brief("감도·대기 시간 저장 · 새 기준으로 관찰을 다시 시작합니다"));
     assertTrue(DashboardStatus.brief("제어 보류: 정차 상태를 확인하지 못했습니다").contains("정차"));
   }
+
+  @Test
+  public void odometerShowsGroupedKilometresOnlyWhenReported() throws Exception {
+    long now = System.currentTimeMillis();
+    assertEquals(
+        "총 주행거리 12,346 km",
+        DashboardStatus.odometer(
+            new VehicleSnapshot(
+                new org.json.JSONObject().put("time", now).put("totalMileage", 12345.6), now)));
+    assertNull(DashboardStatus.odometer(null));
+    assertNull(
+        DashboardStatus.odometer(
+            new VehicleSnapshot(new org.json.JSONObject().put("time", now), now)));
+    for (Object missing : new Object[] {0, -1, "--"})
+      assertNull(
+          DashboardStatus.odometer(
+              new VehicleSnapshot(
+                  new org.json.JSONObject().put("time", now).put("totalMileage", missing), now)));
+  }
 }

@@ -1221,6 +1221,28 @@ final class Controller {
         settings.getInt("lossLockSeconds", Controller.DEFAULT_LOSS) * 1000L);
   }
 
+  /**
+   * Saves the thresholds found by the position measurement for both signals at once, so scanning
+   * restarts a single time. Both pairs are validated before anything is written.
+   */
+  void calibratedThresholds(int near, int far, Integer beaconNear, Integer beaconFar) {
+    new ProximityEngine(near, far, 1000, 2000, 10000); // Validates the near/far gap; throws if bad.
+    boolean beacon = beaconNear != null && beaconFar != null;
+    if (beacon) new ProximityEngine(beaconNear, beaconFar, 1000, 2000, 10000);
+    if (beacon) {
+      settings.edit().putInt("beaconNear", beaconNear).putInt("beaconFar", beaconFar).apply();
+      diagnostics.record("BEACON_SETTINGS", "near=" + beaconNear + " far=" + beaconFar + " source=calibration");
+    }
+    diagnostics.record("PROXIMITY_CALIBRATED", "near=" + near + " far=" + far + " beacon=" + beacon);
+    // The restart inside picks up the beacon values written above.
+    thresholds(
+        near,
+        far,
+        settings.getInt("nearWaitSeconds", DEFAULT_NEAR_WAIT),
+        settings.getInt("farWaitSeconds", DEFAULT_FAR_WAIT),
+        settings.getInt("lossLockSeconds", DEFAULT_LOSS));
+  }
+
   boolean beaconConfigured() {
     return android.bluetooth.BluetoothAdapter.checkBluetoothAddress(
         settings.getString("beaconAddress", ""));

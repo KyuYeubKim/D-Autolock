@@ -28,6 +28,7 @@ import com.dautolock.app.core.ActivityFeed;
 import com.dautolock.app.core.DashboardStatus;
 import com.dautolock.app.core.LogDisplay;
 import com.dautolock.app.core.ProximityEngine;
+import com.dautolock.app.core.ThresholdCalibrator;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import org.json.*;
@@ -96,6 +97,36 @@ public final class MainActivity extends Activity {
   private final Map<String, String> detailTitles = new HashMap<>();
   private final Map<String, TextView> menuSubs = new HashMap<>();
   private String appVersion = "";
+  // 위치로 자동 설정 wizard: step 0 intro, 1..6 open spots, 7..12 lock spots, 13 result.
+  private static final int CAL_SPOTS = 6, CAL_RESULT = 1 + 2 * CAL_SPOTS;
+  private static final String[][] CAL_OPEN_PLACES = {
+    {"운전석 문 앞", "운전석 문손잡이 앞, 문을 열 때 서는 자리에 서세요."},
+    {"운전석 뒷문 앞", "뒷좌석에 짐을 싣거나 탈 때 서는 자리예요."},
+    {"트렁크 뒤", "트렁크를 열 때 서는 자리, 범퍼 바로 뒤에 서세요."},
+    {"조수석 뒷문 앞", "반대편 뒷문손잡이 앞에 서세요."},
+    {"조수석 문 앞", "조수석 문손잡이 앞에 서세요."},
+    {"차 앞", "보닛 앞, 차를 마주 보고 서세요."}
+  };
+  private static final String[][] CAL_LOCK_PLACES = {
+    {"운전석 쪽, 몇 걸음 떨어진 곳", "운전석 문에서 3~5 m쯤 걸어 나간 자리예요. 여기서부터 잠겼으면 하는 곳에 서세요."},
+    {"트렁크 뒤, 몇 걸음 떨어진 곳", "트렁크에서 뒤로 3~5 m쯤 떨어진 자리예요."},
+    {"조수석 쪽, 몇 걸음 떨어진 곳", "조수석 문에서 3~5 m쯤 떨어진 자리예요."},
+    {"차 앞, 몇 걸음 떨어진 곳", "보닛 앞에서 3~5 m쯤 떨어진 자리예요."},
+    {"평소 걸어 나가는 방향", "현관이나 엘리베이터 쪽 등, 주차 후 늘 걸어가는 방향의 잠겼으면 하는 지점이에요."},
+    {"그보다 조금 더 먼 곳", "바로 앞 위치에서 몇 걸음 더 간 자리예요. 여기서는 꼭 잠겨 있어야 해요."}
+  };
+  private ScrollView calScroll;
+  private ProgressBar calProgress;
+  private TextView calStepLabel, calStepTitle, calStepBody, calLive, calMeasured, calNotice, calResult;
+  private Button calPrimary, calBack, calSkip;
+  private final ThresholdCalibrator.Spot[] calOpen = new ThresholdCalibrator.Spot[CAL_SPOTS],
+      calLock = new ThresholdCalibrator.Spot[CAL_SPOTS];
+  private int calStep;
+  private ThresholdCalibrator.Result calResultValue;
+  private String calReturn = "ble";
+  private boolean calPausedAuto, calStartedWatch;
+  private Runnable calMeasure; // Non-null while a 4-second measurement runs.
+  private long calMeasureUntil;
   private final Handler refreshHandler = new Handler(Looper.getMainLooper());
   private final Runnable refreshTick =
       new Runnable() {
@@ -134,7 +165,7 @@ public final class MainActivity extends Activity {
       signalExpanded = saved.getBoolean("signalExpanded");
       setSignalExpanded(signalExpanded);
       String restored = saved.getString("page", "home");
-      if (restored.equals("ble")) openBle(saved.getBoolean("bleBeacon"));
+      if (restored.equals("ble") || restored.equals("calibrate")) openBle(saved.getBoolean("bleBeacon"));
       else showPage(restored);
     }
   }
@@ -146,6 +177,7 @@ public final class MainActivity extends Activity {
     resumePending = true;
     bridgeResumePending = true;
     controller.observe(observer);
+    if (page.equals("calibrate")) pauseForCalibration();
     update();
     controller.updater.foreground(true);
     refreshHandler.postDelayed(refreshTick, 750);
@@ -161,6 +193,8 @@ public final class MainActivity extends Activity {
     refreshIcon.animate().cancel();
     refreshIcon.setRotation(0);
     controller.updater.foreground(false);
+    // Never leave automation paused behind the user's back.
+    if (page.equals("calibrate")) resumeAfterCalibration();
     controller.remove(observer);
     stopPicker();
     super.onStop();
@@ -378,6 +412,7 @@ public final class MainActivity extends Activity {
     pages.addView(setupScroll);
     setupScroll.setVisibility(View.GONE);
     buildBlePage(pages);
+    buildCalibratePage(pages);
     setContentView(shell);
     buildStatusAndSignal();
     LinearLayout bridgeCard = card("차량 보조 앱 연결 / QR");
@@ -417,6 +452,7 @@ public final class MainActivity extends Activity {
     proximity.addView(auto);
     autoReason = text(proximity, "거리 관찰을 먼저 시작하세요", 13, MUTED);
     button(proximity, "거리 감도 · 대기 시간 (BLE 신호 설정)", v -> openBle(false));
+    button(proximity, "위치로 자동 설정 (열림·잠금 위치 측정)", v -> openCalibrate());
     auto.setOnCheckedChangeListener(
         (b, on) -> {
           if (updating) return;
@@ -639,7 +675,7 @@ public final class MainActivity extends Activity {
     combineSwitch = combineToggle(bluetooth, "beaconCombine");
     text(
         bluetooth,
-        "보조 BLE 결합을 켜면 주 BLE 또는 비콘 중 하나만 가까워도 열리고(OR), 둘 다 멀어져야 잠깁니다(AND)."
+        "보조 BLE 결합을 켜면 주 BLE 또는 비콘 중 하나만 가까워도 열리고, 하나만 멀어져도 잠깁니다(둘 다 OR). 단 다른 쪽이 아직 가까우면 잠그지 않습니다."
             + " 비콘이 한동안 안 잡히면 자동으로 주 BLE 단독 잠금으로 넘어갑니다(죽은 비콘 안전장치). 끄면 비콘은 관찰 전용입니다.",
         12,
         MUTED);
@@ -897,11 +933,11 @@ public final class MainActivity extends Activity {
     menuSubs.get("update").setText("현재 버전 " + appVersion);
   }
 
-  /** The beacon OR/AND combine switch. It appears in settings and on the BLE page; update() syncs both. */
+  /** The beacon OR/OR combine switch. It appears in settings and on the BLE page; update() syncs both. */
   private Switch combineToggle(LinearLayout parent, String tag) {
     Switch toggle = new Switch(this);
     toggle.setTag(tag);
-    toggle.setText("보조 비콘으로 열기·잠금 (열림 OR · 잠김 AND)");
+    toggle.setText("보조 비콘으로 열기·잠금 (둘 중 하나라도)");
     toggle.setTextColor(TEXT);
     toggle.setMinHeight(dp(56));
     toggle.setChecked(controller.settings.getBoolean("beaconCombine", true));
@@ -910,7 +946,7 @@ public final class MainActivity extends Activity {
         (b, on) -> {
           if (updating) return;
           controller.settings.edit().putBoolean("beaconCombine", on).apply();
-          controller.note(on ? "보조 비콘 결합 켜짐 · 열림 OR / 잠김 AND" : "보조 비콘 결합 꺼짐 · 관찰 전용");
+          controller.note(on ? "보조 비콘 결합 켜짐 · 둘 중 하나라도 가까우면 열림 · 멀어지면 잠금" : "보조 비콘 결합 꺼짐 · 관찰 전용");
           update();
         });
     return toggle;
@@ -1692,6 +1728,7 @@ public final class MainActivity extends Activity {
     settingsScroll.setVisibility(page.equals("settings") ? View.VISIBLE : View.GONE);
     setupScroll.setVisibility(page.equals("setup") ? View.VISIBLE : View.GONE);
     bleScroll.setVisibility(page.equals("ble") ? View.VISIBLE : View.GONE);
+    calScroll.setVisibility(page.equals("calibrate") ? View.VISIBLE : View.GONE);
     for (Map.Entry<String, ScrollView> detail : detailPages.entrySet())
       detail.getValue().setVisibility(page.equals(detail.getKey()) ? View.VISIBLE : View.GONE);
     // Home shows the brand, BLE pill and menu; sub pages a back arrow and their title — centred
@@ -1713,11 +1750,18 @@ public final class MainActivity extends Activity {
                 ? "설정"
                 : page.equals("setup")
                     ? "처음 설정"
-                    : centred ? "BLE 신호 설정" : detailTitles.getOrDefault(page, "설정"));
+                    : centred
+                        ? "BLE 신호 설정"
+                        : page.equals("calibrate")
+                            ? "위치로 자동 설정"
+                            : detailTitles.getOrDefault(page, "설정"));
   }
 
   private void navigateBack() {
-    if (page.equals("ble")) showPage(bleReturn); // Unsaved threshold drafts are dropped.
+    if (page.equals("calibrate")) {
+      resumeAfterCalibration(); // Measured spots are dropped; automation comes back.
+      showPage(calReturn);
+    } else if (page.equals("ble")) showPage(bleReturn); // Unsaved threshold drafts are dropped.
     else if (page.startsWith("settings/")) showPage("settings");
     else if (!page.equals("home")) showPage("home");
   }
@@ -2004,6 +2048,7 @@ public final class MainActivity extends Activity {
       history[1].push(controller.beaconRssi, range[1].near(), range[1].far());
     }
     if (page.equals("ble")) refreshBle();
+    if (page.equals("calibrate")) refreshCalibrate();
     updating = true;
     automation.setChecked(controller.monitoring && controller.autoEnabled);
     boolean combine = controller.settings.getBoolean("beaconCombine", true);
@@ -2184,9 +2229,11 @@ public final class MainActivity extends Activity {
     } else if (primary == SignalBand.OPEN || beacon == SignalBand.OPEN) {
       state = "가까움 · 열림 구간"; // Either signal opens (beacon OR-unlock).
       dot = OPEN;
-    } else if ((primary == SignalBand.LOCK || primary == SignalBand.LOST)
-        && (beacon == null || beacon == SignalBand.LOCK || beacon == SignalBand.LOST)) {
-      state = "멀어짐 · 잠금 구간"; // Both clear (beacon AND-lock).
+    } else if (primary == SignalBand.LOCK
+        || primary == SignalBand.LOST
+        || beacon == SignalBand.LOCK) {
+      // Neither near and either far (a lost beacon alone never locks; a lost vehicle BLE does).
+      state = "멀어짐 · 잠금 구간";
       dot = LOCK;
     } else {
       state = "중간 거리 · 대기 중";
@@ -2404,6 +2451,25 @@ public final class MainActivity extends Activity {
     LinearLayout tabs = new LinearLayout(this);
     tabs.setPadding(dp(4), dp(4), dp(4), dp(4));
     tabs.setBackground(background(0xffe2e8f2, 16));
+    // Measure the spots instead of tuning numbers: sets both signals at once.
+    LinearLayout auto = new LinearLayout(this);
+    auto.setTag("calibrateOpen");
+    auto.setGravity(Gravity.CENTER_VERTICAL);
+    auto.setPadding(dp(14), dp(12), dp(10), dp(12));
+    auto.setBackground(pressable(background(ACCENT_SOFT, 14)));
+    auto.setOnClickListener(v -> openCalibrate());
+    icon(auto, R.drawable.ic_find_car, ACCENT, 18);
+    LinearLayout autoTexts = new LinearLayout(this);
+    autoTexts.setOrientation(LinearLayout.VERTICAL);
+    autoTexts.setPadding(dp(12), 0, dp(6), 0);
+    auto.addView(autoTexts, new LinearLayout.LayoutParams(0, -2, 1));
+    bold(autoTexts, "위치로 자동 설정", 13, ACCENT);
+    text(autoTexts, "열림·잠금 위치를 몇 곳 측정하면 두 신호의 기준을 자동으로 정해요", 11, SUBTLE)
+        .setPadding(0, dp(2), 0, 0);
+    icon(auto, R.drawable.ic_back, ACCENT, 14).setRotation(180);
+    LinearLayout.LayoutParams autoParams = new LinearLayout.LayoutParams(-1, -2);
+    autoParams.bottomMargin = dp(10);
+    content.addView(auto, autoParams);
     content.addView(tabs, new LinearLayout.LayoutParams(-1, dp(46)));
     for (int i = 0; i < 2; i++) {
       boolean beacon = i == 1;
@@ -2445,7 +2511,7 @@ public final class MainActivity extends Activity {
     text(
         bleBeaconEmpty,
         "트렁크 등 차 뒤쪽에 BLE 비콘을 두면 뒤·옆에서 다가갈 때도 더 빨리 열 수 있어요. 차량 BLE와 비콘 중 하나만 가까워도 열리고,"
-            + " 둘 다 멀어져야 잠깁니다.",
+            + " 하나만 멀어져도 잠깁니다(다른 쪽이 아직 가까우면 기다림).",
         12,
         SUBTLE);
     Button addDevice = button(bleBeaconEmpty, "+  신호 기기 추가", v -> pickDevice(true));
@@ -2468,7 +2534,7 @@ public final class MainActivity extends Activity {
     bleCombine = combineToggle(device, "bleBeaconCombine");
     text(
         device,
-        "켜면 차량 BLE 또는 비콘 중 하나만 가까워도 열리고, 둘 다 멀어져야 잠깁니다. 비콘이 한동안 안 잡히면 차량 BLE만으로 잠급니다.",
+        "켜면 차량 BLE 또는 비콘 중 하나만 가까워도 열리고, 하나만 멀어져도 잠깁니다. 다른 쪽이 아직 가까우면 잠그지 않습니다. 비콘이 안 잡히는 것만으로는 잠그지 않고, 그때는 차량 BLE만으로 판단합니다.",
         12,
         MUTED);
     button(device, "다른 비콘 선택", v -> pickDevice(true));
@@ -2739,6 +2805,343 @@ public final class MainActivity extends Activity {
     }
     bleDirty[1] = false;
     navigateBack();
+  }
+
+  // 위치로 자동 설정, step by step: the user stands at six spots where the doors should open, then
+  // at six where they should lock, measuring each; ThresholdCalibrator turns the readings into
+  // both signals' thresholds. Automatic open/lock pauses while this page is up.
+
+  private void buildCalibratePage(FrameLayout pages) {
+    calScroll = new ScrollView(this);
+    calScroll.setTag("calibratePage");
+    calScroll.setFillViewport(true);
+    LinearLayout content = new LinearLayout(this);
+    content.setOrientation(LinearLayout.VERTICAL);
+    content.setPadding(dp(20), dp(4), dp(20), dp(28));
+    content.setClipToPadding(false);
+    calScroll.addView(content);
+    pages.addView(calScroll);
+    calScroll.setVisibility(View.GONE);
+    calStepLabel = bold(content, "", 12, ACCENT);
+    calStepLabel.setTag("calStepLabel");
+    calProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+    calProgress.setMax(CAL_RESULT);
+    calProgress.setProgressTintList(ColorStateList.valueOf(ACCENT));
+    calProgress.setProgressBackgroundTintList(ColorStateList.valueOf(IDLE_SOFT));
+    LinearLayout.LayoutParams bar = new LinearLayout.LayoutParams(-1, dp(4));
+    bar.topMargin = dp(8);
+    content.addView(calProgress, bar);
+    LinearLayout card = card(content, null);
+    calStepTitle = bold(card, "", 18, TEXT);
+    calStepTitle.setTag("calStepTitle");
+    calStepBody = text(card, "", 13, SUBTLE);
+    calStepBody.setPadding(0, dp(6), 0, 0);
+    calLive = bold(card, "", 14, TEXT);
+    calLive.setTag("calLive");
+    calLive.setPadding(0, dp(14), 0, 0);
+    calMeasured = text(card, "", 12, OPEN);
+    calMeasured.setTag("calMeasured");
+    calNotice = text(card, "", 12, LOCK);
+    calResult = text(card, "", 13, TEXT);
+    calResult.setTag("calResult");
+    calPrimary = primaryButton(content, "", v -> calPrimaryAction());
+    calPrimary.setTag("calPrimary");
+    LinearLayout.LayoutParams primary = (LinearLayout.LayoutParams) calPrimary.getLayoutParams();
+    primary.topMargin = dp(16);
+    primary.height = dp(50);
+    LinearLayout nav = new LinearLayout(this);
+    content.addView(nav, new LinearLayout.LayoutParams(-1, -2));
+    calBack = button(nav, "이전", v -> calGo(calStep - 1));
+    calBack.setTag("calBack");
+    calSkip = button(nav, "건너뛰기", v -> calSkipAction());
+    calSkip.setTag("calSkip");
+    for (Button b : new Button[] {calBack, calSkip}) {
+      LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0, dp(44), 1);
+      half.topMargin = dp(8);
+      half.leftMargin = b == calSkip ? dp(8) : 0;
+      b.setLayoutParams(half);
+    }
+  }
+
+  private void openCalibrate() {
+    if (!page.equals("calibrate")) calReturn = page;
+    Arrays.fill(calOpen, null);
+    Arrays.fill(calLock, null);
+    calStep = 0;
+    pauseForCalibration();
+    showPage("calibrate");
+    calGo(0);
+  }
+
+  /** Keeps scanning (it is what gets measured) but stops automatic door commands meanwhile. */
+  private void pauseForCalibration() {
+    if (controller.monitoring && controller.autoEnabled) {
+      controller.auto(false);
+      calPausedAuto = true;
+      controller.note("위치 측정 중 · 자동 열기·잠금 잠시 멈춤");
+    } else if (!controller.monitoring && controller.setupReady() && permissions(false)) {
+      controller.startMonitoring(false, false); // Observe only.
+      calStartedWatch = true;
+    }
+  }
+
+  /** Puts automation back the way it was; also run when the app goes to the background. */
+  private void resumeAfterCalibration() {
+    cancelMeasure();
+    if (calPausedAuto) {
+      calPausedAuto = false;
+      if (controller.monitoring) controller.auto(true);
+    }
+    if (calStartedWatch) {
+      calStartedWatch = false;
+      controller.stop();
+    }
+  }
+
+  private void cancelMeasure() {
+    if (calMeasure != null) handler.removeCallbacks(calMeasure);
+    calMeasure = null;
+  }
+
+  private static boolean calSpotStep(int step) {
+    return step >= 1 && step <= 2 * CAL_SPOTS;
+  }
+
+  private void calGo(int step) {
+    cancelMeasure();
+    calStep = Math.max(0, Math.min(CAL_RESULT, step));
+    calNotice.setText("");
+    refreshCalibrate();
+    calScroll.scrollTo(0, 0);
+  }
+
+  private void calPrimaryAction() {
+    if (calStep == 0) calGo(1);
+    else if (calStep == CAL_RESULT) applyCalibration();
+    else measure();
+  }
+
+  /** On a spot: skip it (or move on once measured). On the result: start over. */
+  private void calSkipAction() {
+    if (calStep == CAL_RESULT) {
+      Arrays.fill(calOpen, null);
+      Arrays.fill(calLock, null);
+      calGo(1);
+    } else calGo(calStep + 1);
+  }
+
+  /** Samples both smoothed signals for 4 s, keeps the medians for this step, then moves on. */
+  private void measure() {
+    if (calMeasure != null || !calSpotStep(calStep)) return;
+    if (!controller.monitoring) {
+      calNotice.setText("거리 감지가 켜져 있어야 측정할 수 있어요");
+      refreshCalibrate();
+      return;
+    }
+    int step = calStep;
+    boolean open = step <= CAL_SPOTS;
+    List<Double> primary = new ArrayList<>(), beacon = new ArrayList<>();
+    calMeasureUntil = SystemClock.elapsedRealtime() + 4000;
+    calNotice.setText("");
+    calMeasure =
+        new Runnable() {
+          public void run() {
+            if (!Double.isNaN(controller.averageRssi)) primary.add(controller.averageRssi);
+            if (!Double.isNaN(controller.beaconRssi)) beacon.add(controller.beaconRssi);
+            if (SystemClock.elapsedRealtime() < calMeasureUntil) {
+              refreshCalibrate(); // Countdown.
+              handler.postDelayed(this, 250);
+              return;
+            }
+            calMeasure = null;
+            ThresholdCalibrator.Spot spot =
+                new ThresholdCalibrator.Spot(median(primary), median(beacon));
+            if (open && Double.isNaN(spot.primary) && Double.isNaN(spot.beacon)) {
+              // Nothing heard where it should open: this spot would teach nothing.
+              calNotice.setText("이 위치에서 신호를 받지 못했어요. 다시 측정하거나 건너뛰세요.");
+              refreshCalibrate();
+              return;
+            }
+            (open ? calOpen : calLock)[open ? step - 1 : step - 1 - CAL_SPOTS] = spot;
+            calGo(step + 1);
+          }
+        };
+    handler.post(calMeasure);
+    refreshCalibrate();
+  }
+
+  private static double median(List<Double> values) {
+    if (values.isEmpty()) return Double.NaN;
+    List<Double> sorted = new ArrayList<>(values);
+    Collections.sort(sorted);
+    return sorted.get(sorted.size() / 2);
+  }
+
+  private static String reading(double rssi) {
+    return Double.isNaN(rssi) ? "끊김" : RangeSlider.dbm((int) Math.round(rssi)) + " dBm";
+  }
+
+  private static List<ThresholdCalibrator.Spot> measured(ThresholdCalibrator.Spot[] spots) {
+    List<ThresholdCalibrator.Spot> out = new ArrayList<>();
+    for (ThresholdCalibrator.Spot s : spots) if (s != null) out.add(s);
+    return out;
+  }
+
+  private String spotText(ThresholdCalibrator.Spot s, boolean beaconOn) {
+    return "차량 BLE " + reading(s.primary) + (beaconOn ? " · 보조 비콘 " + reading(s.beacon) : "");
+  }
+
+  private void refreshCalibrate() {
+    if (calScroll == null) return;
+    boolean beaconOn = controller.beaconConfigured(), measuring = calMeasure != null;
+    boolean spotStep = calSpotStep(calStep), result = calStep == CAL_RESULT;
+    calProgress.setProgress(calStep);
+    calLive.setText(
+        "지금 "
+            + spotText(
+                new ThresholdCalibrator.Spot(
+                    controller.monitoring ? controller.averageRssi : Double.NaN,
+                    controller.monitoring ? controller.beaconRssi : Double.NaN),
+                beaconOn));
+    calLive.setVisibility(result ? View.GONE : View.VISIBLE);
+    String watchOff = "거리 감지가 꺼져 있어요. 감지가 시작되면 측정할 수 있어요.";
+    if (!controller.monitoring && !result && calNotice.getText().length() == 0)
+      calNotice.setText(watchOff);
+    if (controller.monitoring && watchOff.contentEquals(calNotice.getText())) calNotice.setText("");
+    calNotice.setVisibility(calNotice.getText().length() == 0 ? View.GONE : View.VISIBLE);
+    calBack.setVisibility(calStep == 0 ? View.INVISIBLE : View.VISIBLE);
+    calSkip.setVisibility(calStep == 0 ? View.INVISIBLE : View.VISIBLE);
+    calMeasured.setVisibility(View.GONE);
+    calResult.setVisibility(result ? View.VISIBLE : View.GONE);
+    calPrimary.setEnabled(!measuring && (!spotStep || controller.monitoring));
+    if (calStep == 0) {
+      calStepLabel.setText("준비");
+      calStepTitle.setText("위치로 자동 설정");
+      calStepBody.setText(
+          "문이 열렸으면 하는 위치 "
+              + CAL_SPOTS
+              + "곳, 잠겼으면 하는 위치 "
+              + CAL_SPOTS
+              + "곳에서 차례로 신호를 측정하면 차량 BLE와 보조 비콘의 기준을 자동으로 계산해요.\n\n"
+              + "· 차 주위를 한 바퀴 돌 수 있는, 사방이 트인 곳에서 하면 가장 정확해요.\n"
+              + "· 휴대폰은 평소처럼 주머니나 손에 두세요.\n"
+              + "· 위치마다 잠시 멈춘 뒤 측정을 누르면 4초간 측정하고 다음 단계로 넘어가요.\n"
+              + "· 측정하는 동안 자동 열기·잠금은 잠시 멈춰요.\n"
+              + "· 벽이나 다른 차가 많은 곳은 신호가 달라질 수 있어요. 평소 주차하는 곳에서 다르게 동작하면 그곳에서 한 번 더 해 보세요.");
+      calPrimary.setText("시작하기");
+    } else if (spotStep) {
+      boolean open = calStep <= CAL_SPOTS;
+      int index = open ? calStep - 1 : calStep - 1 - CAL_SPOTS;
+      String[] place = (open ? CAL_OPEN_PLACES : CAL_LOCK_PLACES)[index];
+      ThresholdCalibrator.Spot done = (open ? calOpen : calLock)[index];
+      calStepLabel.setText(
+          (open ? "도어 열림 위치 " : "도어 잠금 위치 ") + (index + 1) + " / " + CAL_SPOTS);
+      calStepTitle.setText(place[0]);
+      calStepBody.setText(
+          (!open && index == 0 ? "이제 문이 잠겼으면 하는 곳이에요. 차에서 걸어 나가며 측정해요.\n\n" : "")
+              + place[1]);
+      if (done != null) {
+        calMeasured.setText("측정됨 · " + spotText(done, beaconOn));
+        calMeasured.setVisibility(View.VISIBLE);
+      }
+      long left = Math.max(1, (calMeasureUntil - SystemClock.elapsedRealtime() + 999) / 1000);
+      calPrimary.setText(
+          measuring
+              ? "측정 중… 그대로 계세요 (" + left + ")"
+              : done == null ? "이 위치에서 측정" : "다시 측정");
+      calSkip.setText(done == null ? "건너뛰기" : "다음");
+    } else {
+      calStepLabel.setText("결과");
+      calStepTitle.setText("계산 결과");
+      calSkip.setText("처음부터 다시");
+      calPrimary.setText("이 기준으로 저장");
+      List<ThresholdCalibrator.Spot> open = measured(calOpen), lock = measured(calLock);
+      if (open.isEmpty() || lock.isEmpty()) {
+        calResultValue = null;
+        calStepBody.setText(
+            "열림 위치와 잠금 위치를 각각 1곳 이상 측정해야 계산할 수 있어요. 이전으로 돌아가 측정해 주세요.");
+        calResult.setText("");
+        calPrimary.setEnabled(false);
+      } else {
+        calStepBody.setText("측정한 위치를 바탕으로 계산한 기준이에요. 저장하면 바로 적용돼요.");
+        calResult.setText(resultText(open, lock, beaconOn));
+      }
+    }
+    calPrimary.setAlpha(calPrimary.isEnabled() ? 1f : .45f);
+  }
+
+  private String resultText(
+      List<ThresholdCalibrator.Spot> open, List<ThresholdCalibrator.Spot> lock, boolean beaconOn) {
+    ThresholdCalibrator.Pair current =
+        new ThresholdCalibrator.Pair(
+            controller.settings.getInt("near", Controller.DEFAULT_NEAR),
+            controller.settings.getInt("far", Controller.DEFAULT_FAR));
+    ThresholdCalibrator.Pair currentBeacon =
+        beaconOn
+            ? new ThresholdCalibrator.Pair(
+                controller.settings.getInt("beaconNear", Controller.DEFAULT_BEACON_NEAR),
+                controller.settings.getInt("beaconFar", Controller.DEFAULT_BEACON_FAR))
+            : null;
+    ThresholdCalibrator.Result r = ThresholdCalibrator.calibrate(open, lock, current, currentBeacon);
+    calResultValue = r;
+    StringBuilder out =
+        new StringBuilder()
+            .append("차량 BLE   열림 ")
+            .append(RangeSlider.dbm(r.primary.near))
+            .append(" 이상 · 잠금 ")
+            .append(RangeSlider.dbm(r.primary.far))
+            .append(" 이하")
+            .append(r.primaryMeasured ? "" : " (측정값 없음 · 지금 값 유지)");
+    if (r.beacon != null)
+      out.append("\n보조 비콘   열림 ")
+          .append(RangeSlider.dbm(r.beacon.near))
+          .append(" 이상 · 잠금 ")
+          .append(RangeSlider.dbm(r.beacon.far))
+          .append(" 이하")
+          .append(r.beaconMeasured ? "" : " (측정값 없음 · 지금 값 유지)");
+    out.append("\n\n도어 열림 위치 ")
+        .append(open.size())
+        .append("곳 중 ")
+        .append(r.openCovered)
+        .append("곳, 도어 잠금 위치 ")
+        .append(lock.size())
+        .append("곳 중 ")
+        .append(r.lockCovered)
+        .append("곳에서 동작해요.");
+    if (r.openCovered < open.size())
+      out.append(
+          "\n\n일부 열림 위치는 잠금 위치와 신호 차이가 작아 열리지 않을 수 있어요. 그 위치를 차에 조금 더 가깝게 다시 재 보세요.");
+    if (r.lockCovered < lock.size())
+      out.append("\n\n일부 잠금 위치는 신호가 아직 강해 잠기지 않을 수 있어요. 조금 더 멀리서 다시 재 보세요.");
+    return out.toString();
+  }
+
+  private void applyCalibration() {
+    ThresholdCalibrator.Result r = calResultValue;
+    if (r == null) return;
+    // Back to automatic first, so the restart that saving triggers comes up automatic again.
+    if (calPausedAuto) {
+      calPausedAuto = false;
+      if (controller.monitoring) controller.auto(true);
+    }
+    calStartedWatch = false; // Keep watching with the new values.
+    boolean beacon = r.beacon != null && r.beaconMeasured && controller.beaconConfigured();
+    try {
+      controller.calibratedThresholds(
+          r.primary.near,
+          r.primary.far,
+          beacon ? r.beacon.near : null,
+          beacon ? r.beacon.far : null);
+    } catch (Exception e) {
+      Toast.makeText(this, "계산한 기준을 저장하지 못했어요. 다시 측정해 주세요", Toast.LENGTH_SHORT).show();
+      return;
+    }
+    Toast.makeText(this, "위치 측정으로 기준을 저장했어요", Toast.LENGTH_SHORT).show();
+    if (calReturn.equals("ble")) {
+      loadBleDrafts(); // Show the saved values, not stale drafts.
+      refreshBle();
+    }
+    showPage(calReturn);
   }
 
   private SeekBar settingSlider(

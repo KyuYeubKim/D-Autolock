@@ -802,4 +802,85 @@ public class MainActivityTest {
       assertSame(checked.getParent(), odometer.getParent()); // Same line as the update time.
     }
   }
+
+  private void measureAt(Controller c, View primary, double vehicle, double beacon) {
+    c.averageRssi = vehicle;
+    c.beaconRssi = beacon;
+    primary.performClick();
+    org.robolectric.Shadows.shadowOf(Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofMillis(4300));
+  }
+
+  private Controller wizardReady(org.robolectric.android.controller.ActivityController<MainActivity> a)
+      throws Exception {
+    Controller c = ((DApplication) a.get().getApplication()).controller();
+    AccountPersistenceTest.await(c);
+    c.cloud.protocol.setSignToken("test-session");
+    c.vin = "test-car";
+    c.settings
+        .edit()
+        .putString("beaconAddress", "AA:BB:CC:DD:EE:01")
+        .putString("beaconName", "Holy-IOT")
+        .commit();
+    c.monitoring = c.autoEnabled = true;
+    return c;
+  }
+
+  @Test
+  public void positionWizardPausesAutomationWalksTheSpotsAndSavesBothSignals() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = wizardReady(a);
+      View root = a.get().getWindow().getDecorView();
+      root.findViewWithTag("thresholdEdit").performClick();
+      root.findViewWithTag("calibrateOpen").performClick();
+      assertEquals(View.VISIBLE, root.findViewWithTag("calibratePage").getVisibility());
+      assertFalse(c.autoEnabled); // No door commands while measuring.
+      TextView title = root.findViewWithTag("calStepTitle"),
+          label = root.findViewWithTag("calStepLabel");
+      View primary = root.findViewWithTag("calPrimary"), skip = root.findViewWithTag("calSkip");
+      primary.performClick(); // 시작하기
+      assertEquals("운전석 문 앞", title.getText().toString());
+      assertEquals("도어 열림 위치 1 / 6", label.getText().toString());
+      measureAt(c, primary, -60, -82); // Moves on by itself after 4 s.
+      assertEquals("운전석 뒷문 앞", title.getText().toString());
+      measureAt(c, primary, -62, -84);
+      measureAt(c, primary, -84, -56); // Trunk: the beacon is the strong one.
+      for (int i = 4; i <= 6; i++) skip.performClick();
+      assertEquals("도어 잠금 위치 1 / 6", label.getText().toString());
+      measureAt(c, primary, -90, -92);
+      measureAt(c, primary, -88, -91);
+      for (int i = 9; i <= 12; i++) skip.performClick();
+      assertEquals("계산 결과", title.getText().toString());
+      String result = ((TextView) root.findViewWithTag("calResult")).getText().toString();
+      assertTrue(result, result.contains("도어 열림 위치 3곳 중 3곳"));
+      assertTrue(result, result.contains("도어 잠금 위치 2곳 중 2곳"));
+      primary.performClick(); // 이 기준으로 저장
+      assertEquals(-75, c.settings.getInt("near", 0));
+      assertEquals(-86, c.settings.getInt("far", 0));
+      assertEquals(-73, c.settings.getInt("beaconNear", 0)); // Given only the trunk spot.
+      assertEquals(-89, c.settings.getInt("beaconFar", 0));
+      assertEquals(View.GONE, root.findViewWithTag("calibratePage").getVisibility());
+    }
+  }
+
+  @Test
+  public void leavingThePositionWizardPutsAutomationBack() throws Exception {
+    try (org.robolectric.android.controller.ActivityController<MainActivity> a =
+        Robolectric.buildActivity(MainActivity.class).setup()) {
+      Controller c = wizardReady(a);
+      View root = a.get().getWindow().getDecorView();
+      root.findViewWithTag("thresholdEdit").performClick();
+      root.findViewWithTag("calibrateOpen").performClick();
+      assertFalse(c.autoEnabled);
+      root.findViewWithTag("calPrimary").performClick();
+      c.averageRssi = -60;
+      root.findViewWithTag("calPrimary").performClick(); // Leave mid-measurement.
+      a.get().onBackPressed();
+      assertEquals(View.GONE, root.findViewWithTag("calibratePage").getVisibility());
+      assertTrue(c.autoEnabled);
+      assertFalse(c.settings.contains("near")); // Nothing saved.
+      c.monitoring = c.autoEnabled = false;
+    }
+  }
 }

@@ -3,21 +3,27 @@ package com.dautolock.app.core;
 import com.dautolock.app.core.ProximityEngine.Action;
 
 /**
- * Phase 2: combine the primary (vehicle) BLE decision with the auxiliary trunk beacon.
+ * Combine the primary (vehicle) BLE decision with the auxiliary trunk beacon.
  *
  * <ul>
  *   <li><b>Open on EITHER</b> (OR): the vehicle BLE opens as before, and the beacon can also open —
  *       so approaching from the rear/trunk works even when the car's own BLE is weak there.
- *   <li><b>Lock only when BOTH are clear</b> (AND): the vehicle BLE must want to lock and the beacon
- *       must no longer see the phone at the car.
+ *   <li><b>Lock on EITHER</b> (OR, since v0.3.41): the vehicle BLE locks as before, and the beacon
+ *       can also lock once it really measures the phone far away — but never while the other
+ *       signal still has the phone at the car. That rule is what stops the two from fighting
+ *       (one says near and opens, the other says far and locks, over and over).
  * </ul>
  *
- * Conservative safeguards (security first — a car must not stay unlocked):
+ * Safeguards (a car must not stay unlocked, and must not lock on someone at it):
  *
  * <ul>
- *   <li><b>Dead-beacon fallback:</b> a stale/not-receiving beacon never blocks a lock; the lock
- *       falls back to the vehicle BLE alone.
- *   <li><b>Max hold:</b> a lock held because the beacon stays near proceeds anyway after
+ *   <li><b>Dead-beacon fallback:</b> a stale/not-receiving beacon never blocks a lock, and never
+ *       locks on its own either — a flat battery is not a departure. The vehicle BLE alone decides.
+ *   <li><b>Vehicle BLE near wins:</b> a beacon lock waits while the vehicle BLE's last reading is
+ *       near (that reading persists through the car's Bluetooth dropping out at ignition off, so a
+ *       phone inside the car is not locked in). There is no time limit on this one: the car's own
+ *       BLE is the authority.
+ *   <li><b>Max hold:</b> a vehicle-BLE lock held because the beacon stays near proceeds anyway after
  *       {@link #MAX_LOCK_HOLD_MS}, so a stuck-near beacon can never keep the car unlocked forever.
  *   <li><b>Flap guard:</b> a beacon-only unlock is muted for {@link #UNLOCK_COOLDOWN_MS} right after
  *       a lock, so a strong beacon cannot immediately re-open the car.
@@ -35,6 +41,7 @@ public final class BeaconCombine {
     UNLOCK_PRIMARY,
     UNLOCK_BEACON,
     LOCK,
+    LOCK_BEACON,
     HOLD
   }
 
@@ -45,6 +52,7 @@ public final class BeaconCombine {
    * @param beacon the beacon's pending action
    * @param beaconFresh beacon is currently receiving (not stale/dead)
    * @param beaconNear beacon is fresh and its smoothed signal is at/above its near threshold
+   * @param primaryNear the vehicle BLE's last smoothed reading is at/above its near threshold
    * @param now monotonic time
    * @param lastLockAt time of the last lock (-1 if none) — for the post-lock unlock mute
    * @param lockHoldSince time the current lock hold started (-1 if not holding) — for the max hold
@@ -54,6 +62,7 @@ public final class BeaconCombine {
       Action beacon,
       boolean beaconFresh,
       boolean beaconNear,
+      boolean primaryNear,
       long now,
       long lastLockAt,
       long lockHoldSince) {
@@ -62,13 +71,15 @@ public final class BeaconCombine {
     if (beacon == Action.UNLOCK
         && beaconFresh
         && (lastLockAt < 0 || now - lastLockAt >= UNLOCK_COOLDOWN_MS)) return Decision.UNLOCK_BEACON;
-    // AND to lock.
+    // OR to lock: the vehicle BLE first, as before …
     if (primary == Action.LOCK) {
       boolean beaconBlocks = beaconFresh && beaconNear; // Beacon still sees the phone at the car.
       if (!beaconBlocks) return Decision.LOCK; // Includes the dead-beacon fallback.
       if (lockHoldSince >= 0 && now - lockHoldSince >= MAX_LOCK_HOLD_MS) return Decision.LOCK;
       return Decision.HOLD;
     }
+    // … then the beacon, only on a live far reading and only with the vehicle BLE not near.
+    if (beacon == Action.LOCK && beaconFresh && !primaryNear) return Decision.LOCK_BEACON;
     return Decision.NONE;
   }
 }

@@ -293,12 +293,13 @@ public final class ProximityService extends Service {
       lastIgnitionGraceLog = now;
     }
     ProximityEngine.Action action = ignitionGraceSkip ? ProximityEngine.Action.NONE : pending;
-    // Phase 2: combine with the auxiliary beacon — open on EITHER signal, lock only when BOTH are
-    // clear. A dead beacon never blocks a lock, a long hold locks anyway, and a beacon-only re-open
-    // is muted briefly after a lock. With no beacon (or combine off) this is the vehicle decision
-    // unchanged.
+    // Combine with the auxiliary beacon — open or lock on EITHER signal, but never lock while the
+    // other one still has the phone at the car. A dead beacon neither blocks nor causes a lock, a
+    // long hold locks anyway, and a beacon-only re-open is muted briefly after a lock. With no
+    // beacon (or combine off) this is the vehicle decision unchanged.
     final ProximityEngine checkedEngine;
     final ProximityEngine.Action commandAction;
+    final ProximityEngine primaryEngine = engine;
     if (beaconEngine != null && controller.settings.getBoolean("beaconCombine", true)) {
       boolean beaconFresh = beaconEngine.fresh(now);
       BeaconCombine.Decision decision =
@@ -307,6 +308,7 @@ public final class ProximityService extends Service {
               beaconEngine.pending(now),
               beaconFresh,
               beaconFresh && beaconEngine.lastReadingNear(),
+              engine.lastReadingNear(),
               now,
               lastLockAt,
               lockHoldSince);
@@ -320,12 +322,17 @@ public final class ProximityService extends Service {
         commandAction = ProximityEngine.Action.NONE;
       } else {
         lockHoldSince = -1;
-        checkedEngine = decision == BeaconCombine.Decision.UNLOCK_BEACON ? beaconEngine : engine;
+        checkedEngine =
+            decision == BeaconCombine.Decision.UNLOCK_BEACON
+                    || decision == BeaconCombine.Decision.LOCK_BEACON
+                ? beaconEngine
+                : engine;
         commandAction =
             decision == BeaconCombine.Decision.UNLOCK_PRIMARY
                     || decision == BeaconCombine.Decision.UNLOCK_BEACON
                 ? ProximityEngine.Action.UNLOCK
                 : decision == BeaconCombine.Decision.LOCK
+                        || decision == BeaconCombine.Decision.LOCK_BEACON
                     ? ProximityEngine.Action.LOCK
                     : ProximityEngine.Action.NONE;
       }
@@ -377,9 +384,11 @@ public final class ProximityService extends Service {
                                 : 0;
                         evaluate();
                       }),
+              // Departure (which may lead to the automatic Stop) is always the vehicle BLE's call,
+              // even when the beacon triggered the lock.
               () ->
-                  sameEngine(checkedEngine)
-                      && checkedEngine.departureConfirmed(SystemClock.elapsedRealtime()),
+                  sameEngine(primaryEngine)
+                      && primaryEngine.departureConfirmed(SystemClock.elapsedRealtime()),
               readyAt);
       if (!accepted) {
         autoAttempt = false;

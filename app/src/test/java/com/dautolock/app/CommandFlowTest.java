@@ -109,6 +109,7 @@ public class CommandFlowTest {
   static class Protocol extends CloudProtocol {
     boolean locked;
     int power = 1;
+    double speed = 0;
     Object epb = "--";
     boolean doorOpen, openOnUnlock, rejectClimate, rejectHvac, windowOpen;
     Object okLight = JSONObject.NULL;
@@ -140,7 +141,7 @@ public class CommandFlowTest {
           JSONObject s =
               new JSONObject()
                   .put("time", System.currentTimeMillis())
-                  .put("speed", 0)
+                  .put("speed", speed)
                   .put("powerGear", power)
                   .put("okLight", okLight)
                   .put("epb", epb);
@@ -508,6 +509,29 @@ public class CommandFlowTest {
     c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {});
     complete(c);
     assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
+    assertEquals(15000, c.automaticRecheckMs(true));
+  }
+
+  @Test
+  public void automaticUnlockOfAnOpenOrMovingCarIsRetiredInsteadOfBackingOff() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3; // Opened by the other signal; the driver is in and has powered the car on.
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    java.util.concurrent.atomic.AtomicInteger done = new java.util.concurrent.atomic.AtomicInteger();
+    c.automaticCommand(
+        CloudClient.Command.UNLOCK, () -> true, () -> true, done::incrementAndGet, () -> {});
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertEquals(1, done.get()); // The request is consumed, not re-checked.
+    assertEquals(15000, c.automaticRecheckMs(true));
+    p.locked = true; // Driving away: the car locked itself.
+    p.speed = 40;
+    c.automaticCommand(
+        CloudClient.Command.UNLOCK, () -> true, () -> true, done::incrementAndGet, () -> {});
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertEquals(2, done.get());
     assertEquals(15000, c.automaticRecheckMs(true));
   }
 

@@ -952,6 +952,29 @@ final class Controller {
                     automatic,
                     departureConfirmed.getAsBoolean(),
                     parkingConfirmationCurrent(parkingConfirmedAt));
+            // Automatic unlock refused while the car is in use but with nothing left to do — the
+            // doors are already open, or it is driving with the phone aboard: this approach is
+            // over, so retire it instead of re-checking (real log: a beacon unlock after the vehicle
+            // BLE's re-queried the cloud every ≤5 min through a whole 40 min drive). Nothing is
+            // sent; a locked, stationary, powered car still backs off and re-checks as before.
+            if (block != null
+                && automatic
+                && command == CloudClient.Command.UNLOCK
+                && checked.fresh(System.currentTimeMillis())
+                && (Boolean.FALSE.equals(checked.locked)
+                    || (checked.speed != null && checked.speed > 0))) {
+              boolean moving = checked.speed != null && checked.speed > 0;
+              unlockInUseBlocks = 0;
+              if (valid.getAsBoolean()) alreadyDone.run();
+              diagnostics.record(
+                  "AUTO_UNLOCK_RETIRED", "reason=" + (moving ? "moving" : "already_unlocked"));
+              lastControl =
+                  moving
+                      ? "주행 중 · 자동 잠금 해제 생략"
+                      : "BYD 조회상 이미 잠금 해제 상태 · 명령 생략";
+              note(lastControl);
+              return;
+            }
             // Automatic unlock blocked because the car is powered or moving (phone most likely
             // inside): the service backs off so it does not retry every ~18 s. LOCK is not backed
             // off — a real departure must lock promptly.

@@ -67,4 +67,25 @@ public class HvacSnapshotTest {
             .tempOffset());
     assertNull(new HvacSnapshot(new JSONObject().put("mainSettingTempNew", -129), now).setTemp);
   }
+
+  @Test
+  public void fieldsNestedUnderStatusNowAreRead() throws Exception {
+    HvacSnapshot s =
+        new HvacSnapshot(
+            new JSONObject()
+                .put(
+                    "statusNow",
+                    new JSONObject()
+                        .put("status", 1)
+                        .put("acSwitch", 1)
+                        .put("vdeTempRangeMin", 15)
+                        .put("vdeTempRangeMax", 31)
+                        .put("mainSettingTempNew", 23.0)
+                        .put("time", now - 1000)),
+            now);
+    assertEquals(Integer.valueOf(1), s.status);
+    assertEquals(14.0, s.tempOffset(), 0);
+    assertEquals(23.0, s.setTemp, 0);
+    assertTrue(s.label(now).contains("ON"));
+  }
 }

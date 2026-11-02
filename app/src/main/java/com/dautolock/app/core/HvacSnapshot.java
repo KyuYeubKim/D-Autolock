@@ -9,8 +9,11 @@ public final class HvacSnapshot {
   public final Double setTemp, setScale, rangeMin, rangeMax;
   public final long measuredAt, receivedAt;
 
-  public HvacSnapshot(JSONObject data, long receivedAt) {
+  public HvacSnapshot(JSONObject response, long receivedAt) {
     this.receivedAt = receivedAt;
+    // getStatusNow nests the fields under "statusNow" (pyBYD unwraps it; real log: all null).
+    JSONObject nested = response.optJSONObject("statusNow");
+    JSONObject data = nested != null ? nested : response;
     status = value(data, "status");
     acSwitch = value(data, "acSwitch");
     windPosition = value(data, "windPosition");

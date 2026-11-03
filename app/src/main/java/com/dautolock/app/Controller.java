@@ -405,6 +405,7 @@ final class Controller {
                 .apply();
           if (!same) {
             vehicleLink.forget();
+            forgetCharge();
             cloud.climateTempOffset = 14; // Relearned from the next car's climate range.
           }
           snapshot = null;
@@ -446,6 +447,7 @@ final class Controller {
                 .remove("beaconFar")
                 .remove("climateTempOffset")
                 .apply();
+            forgetCharge();
             cloud.climateTempOffset = 14; // Relearned from the next car's climate range.
           }
           vin = selectedVin;
@@ -646,6 +648,7 @@ final class Controller {
               .remove("beaconFar")
               .remove("climateTempOffset")
               .apply();
+          forgetCharge();
           note("저장된 ID·비밀번호·PIN과 차량 연결 정보를 삭제했습니다");
         });
   }
@@ -708,6 +711,118 @@ final class Controller {
       DoorNotifications.result(
           context, next.locked ? "도어 잠김 확인" : "도어 열림 확인", "BYD Cloud 조회에서 상태 변경을 확인했습니다");
     }
+    chargeWatch(next);
+  }
+
+  // Charge-complete notice. No polling: status reads that happen anyway track the session, and one
+  // alarm is set for the car's own finish estimate (re-armed by every newer estimate).
+  static final String CHARGE_WATCH = "com.dautolock.app.CHARGE_WATCH";
+  static final long CHARGE_GRACE_MS = 3 * 60000, CHARGE_MIN_DELAY_MS = 10 * 60000;
+  static final long CHARGE_UNKNOWN_MS = 60 * 60000, CHARGE_RETRY_MS = 30 * 60000;
+  static final int CHARGE_MAX_CHECKS = 12;
+
+  boolean chargeNotify() {
+    return settings.getBoolean("chargeNotify", true);
+  }
+
+  /**
+   * Charging stopped while the car stays locked and OFF means it finished (or the charger stopped)
+   * with nobody at the car — the cable stays latched while locked — so that is the one case worth a
+   * notice. Stopping with the car unlocked or ON is the driver unplugging: ended quietly.
+   */
+  private void chargeWatch(VehicleSnapshot next) {
+    long now = System.currentTimeMillis();
+    if (!next.fresh(now) || next.chargeState == null) return;
+    boolean seen = settings.getBoolean("chargeSeen", false);
+    if (next.charging()) {
+      if (!seen) {
+        settings.edit().putBoolean("chargeSeen", true).putInt("chargeChecks", 0).apply();
+        diagnostics.record(
+            "CHARGE_START", "soc=" + next.battery + " chargeMin=" + next.chargeMinutes);
+      }
+      if (chargeNotify()) scheduleChargeCheck(chargeCheckAt(next, now));
+      return;
+    }
+    if (!seen) return;
+    forgetCharge();
+    boolean unattended =
+        Boolean.TRUE.equals(next.locked) && Integer.valueOf(1).equals(next.power);
+    boolean notify = unattended && chargeNotify();
+    diagnostics.record(
+        "CHARGE_END",
+        "notify="
+            + notify
+            + " locked="
+            + next.locked
+            + " power="
+            + next.power
+            + " soc="
+            + next.battery);
+    if (notify)
+      DoorNotifications.chargeDone(
+          context,
+          (next.battery == null ? "배터리 잔량 미확인" : "배터리 " + Math.round(next.battery) + "%")
+              + (next.range == null ? "" : " · 주행 가능 " + Math.round(next.range) + " km"));
+  }
+
+  /** The car's finish estimate plus a little grace, never sooner than 10 minutes from now. */
+  static long chargeCheckAt(VehicleSnapshot s, long now) {
+    long base = s.measuredAt > 0 ? s.measuredAt : s.receivedAt;
+    long expected =
+        s.chargeUnderOneMinute
+            ? base + 60000
+            : s.chargeMinutes == null ? now + CHARGE_UNKNOWN_MS : base + s.chargeMinutes * 60000L;
+    return Math.max(expected + CHARGE_GRACE_MS, now + CHARGE_MIN_DELAY_MS);
+  }
+
+  private android.app.PendingIntent chargeAlarm() {
+    return android.app.PendingIntent.getBroadcast(
+        context,
+        11,
+        new Intent(context, DoorActionReceiver.class).setAction(CHARGE_WATCH),
+        android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+  }
+
+  /** Inexact, Doze-tolerant one-shot alarm; re-arming replaces the previous one. */
+  private void scheduleChargeCheck(long at) {
+    android.app.AlarmManager alarms = context.getSystemService(android.app.AlarmManager.class);
+    if (alarms == null) return;
+    alarms.setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, at, chargeAlarm());
+    long previous = settings.getLong("chargeWatchAt", -1);
+    settings.edit().putLong("chargeWatchAt", at).apply();
+    if (Math.abs(previous - at) >= 60000)
+      diagnostics.record(
+          "CHARGE_CHECK_SCHEDULED",
+          "inMin=" + Math.max(0, (at - System.currentTimeMillis()) / 60000));
+  }
+
+  /** Charge session over, notice turned off, or account/vehicle changed: no alarm left behind. */
+  void forgetCharge() {
+    settings.edit().remove("chargeSeen").remove("chargeChecks").remove("chargeWatchAt").apply();
+    android.app.AlarmManager alarms = context.getSystemService(android.app.AlarmManager.class);
+    if (alarms != null) alarms.cancel(chargeAlarm());
+  }
+
+  /** The alarm fired: one read-only status read; its result re-arms, ends or notifies. */
+  void chargeWatchDue() {
+    settings.edit().remove("chargeWatchAt").apply();
+    if (!settings.getBoolean("chargeSeen", false) || !chargeNotify()) return;
+    long now = System.currentTimeMillis();
+    if (initializing || busy() || statusReading || cloud.backoffMillis() > 0) {
+      scheduleChargeCheck(now + CHARGE_GRACE_MS); // Not counted: nothing was read.
+      return;
+    }
+    if (vin.isEmpty() || (!cloud.protocol.isLoggedIn() && !hasSavedLogin())) return;
+    int checks = settings.getInt("chargeChecks", 0);
+    if (checks >= CHARGE_MAX_CHECKS) {
+      diagnostics.record("CHARGE_CHECK_LIMIT", "checks=" + checks);
+      return;
+    }
+    settings.edit().putInt("chargeChecks", checks + 1).apply();
+    diagnostics.record("CHARGE_CHECK", "n=" + (checks + 1));
+    // Fallback if this read fails; a successful read replaces or cancels it.
+    scheduleChargeCheck(now + CHARGE_RETRY_MS);
+    readStatus("charge_watch");
   }
 
   void command(CloudClient.Command command, boolean automatic, BooleanSupplier proximityValid) {
@@ -1330,6 +1445,39 @@ final class Controller {
           // sessions. Cleared only when the save succeeded, so a failed export never loses the log.
           if (saved)
             diagnostics.clear(() -> note("진단 로그를 저장하고 기존 로그를 비웠습니다 · 새 로그를 기록합니다"));
+        });
+  }
+
+  /**
+   * Copies the log into a private cache file for the share sheet (served by
+   * DiagnosticsShareProvider). Only the latest copy is kept; the on-device log is not cleared here
+   * because sending cannot be confirmed — the screen offers that afterwards. Calls back on the main
+   * thread with the file, or null on failure.
+   */
+  void shareDiagnostics(Consumer<java.io.File> done) {
+    diagnostics.snapshot(
+        data -> {
+          java.io.File file = null;
+          try {
+            java.io.File dir = new java.io.File(context.getCacheDir(), DiagnosticsShareProvider.DIR);
+            if (!dir.isDirectory() && !dir.mkdirs()) throw new java.io.IOException("share directory");
+            java.io.File[] old = dir.listFiles();
+            if (old != null) for (java.io.File f : old) f.delete();
+            file =
+                new java.io.File(
+                    dir,
+                    "D-Autolock-diagnostics-"
+                        + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", Locale.KOREA)
+                            .format(new Date())
+                        + ".txt");
+            java.nio.file.Files.write(
+                file.toPath(), data.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+          } catch (Exception e) {
+            note("진단 로그 공유 파일을 만들지 못했습니다: " + e.getClass().getSimpleName());
+            file = null;
+          }
+          java.io.File result = file;
+          main.post(() -> done.accept(result));
         });
   }
 

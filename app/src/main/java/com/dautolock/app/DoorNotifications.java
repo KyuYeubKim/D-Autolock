@@ -136,6 +136,31 @@ final class DoorNotifications {
     }
   }
 
+  static final int CHARGE_ID = 11;
+
+  /** Charging ended with the car still locked and OFF. Opens the app; no actions. */
+  static void chargeDone(Context context, String detail) {
+    channels(context);
+    if (!enabled(context)) return;
+    NotificationManager manager = context.getSystemService(NotificationManager.class);
+    manager.createNotificationChannel(
+        new NotificationChannel("charge", "충전 완료", NotificationManager.IMPORTANCE_DEFAULT));
+    try {
+      manager.notify(
+          CHARGE_ID,
+          new Notification.Builder(context, "charge")
+              .setSmallIcon(R.drawable.ic_bolt)
+              .setContentTitle("충전이 끝났어요")
+              .setContentText(detail)
+              .setContentIntent(open(context))
+              .setAutoCancel(true)
+              .setCategory(Notification.CATEGORY_STATUS)
+              .setVisibility(Notification.VISIBILITY_PRIVATE)
+              .build());
+    } catch (SecurityException ignored) {
+    }
+  }
+
   static void cancelSecurityAlert(Context context) {
     context.getSystemService(NotificationManager.class).cancel(SECURITY_ID);
   }

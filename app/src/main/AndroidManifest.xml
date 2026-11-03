@@ -34,5 +34,8 @@
             android:foregroundServiceType="connectedDevice" />
         <activity android:name=".BridgeQrActivity" android:exported="false" android:screenOrientation="fullSensor" android:theme="@style/ScannerTheme" />
         <receiver android:name=".DoorActionReceiver" android:exported="false" />
+        <provider android:name=".DiagnosticsShareProvider"
+            android:authorities="com.dautolock.app.diagnostics"
+            android:exported="false" android:grantUriPermissions="true" />
     </application>
 </manifest>

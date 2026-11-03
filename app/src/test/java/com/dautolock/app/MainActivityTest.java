@@ -493,6 +493,8 @@ public class MainActivityTest {
       assertFalse(((Switch) find(decor, "실제 자동 도어 제어")).isChecked());
       assertNotNull(find(decor, "탑승 공조 · READY 상태 진단"));
       assertNotNull(find(decor, "진단 로그 파일 저장"));
+      assertNotNull(decor.findViewWithTag("diagnosticsShare"));
+      assertTrue(((Switch) decor.findViewWithTag("chargeNotify")).isChecked()); // On by default.
       assertNotNull(find(decor, "탑승 시 공조 시작"));
       assertNotNull(find(decor, "시동 켜기"));
       assertNotNull(find(decor, "원격 Ready"));

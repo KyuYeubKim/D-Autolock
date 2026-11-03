@@ -717,6 +717,23 @@ public final class MainActivity extends Activity {
                 new Intent(
                     android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                     android.net.Uri.parse("package:" + getPackageName()))));
+    Switch chargeSwitch = new Switch(this);
+    chargeSwitch.setTag("chargeNotify");
+    chargeSwitch.setText("충전 완료 알림");
+    chargeSwitch.setTextColor(TEXT);
+    chargeSwitch.setMinHeight(dp(56));
+    chargeSwitch.setChecked(controller.chargeNotify());
+    notify.addView(chargeSwitch);
+    chargeSwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          controller.settings.edit().putBoolean("chargeNotify", on).apply();
+          if (!on) controller.forgetCharge();
+        });
+    text(
+        notify,
+        "충전 중이면 차가 알려준 완료 예상 시각에 한 번만 상태를 확인하고, 차가 잠긴 채 충전이 끝났으면 알려줍니다. 계속 조회하지 않습니다.",
+        12,
+        MUTED);
     text(
         notify,
         "알림을 허용하고 앱 배터리를 ‘제한 없음’으로 두면 화면을 꺼도 자동 도어가 계속 동작하고, 열기·잠금 결과를 알림으로 받을 수 있습니다.",
@@ -725,6 +742,7 @@ public final class MainActivity extends Activity {
     LinearLayout events = card("진단 로그");
     button(events, "활동 전체 보기", v -> showActivity());
     button(events, "진단 로그 보기", v -> showDiagnostics());
+    button(events, "진단 로그 공유", v -> shareDiagnostics()).setTag("diagnosticsShare");
     button(
         events,
         "진단 로그 파일 저장",
@@ -752,6 +770,7 @@ public final class MainActivity extends Activity {
     text(
         events,
         "신호·판단·제어 결과를 휴대폰에 자동 저장합니다(최대 약 1.5 MB). 계정·비밀번호·PIN·VIN·기기 주소와 서버 원문은 포함하지 않습니다. "
+            + "‘진단 로그 공유’는 텔레그램 등으로 바로 보내고, 돌아오면 휴대폰의 로그를 비울지 묻습니다. "
             + "‘진단 로그 파일 저장’을 누르면 파일로 저장한 뒤 기존 로그를 비우고 새로 기록합니다.",
         12,
         MUTED);
@@ -928,8 +947,10 @@ public final class MainActivity extends Activity {
     if (controller.settings.getBoolean("unlockOnPark", false)) trip.add("주차 시 열기");
     menuSubs.get("trip").setText(trip.isEmpty() ? "모두 꺼짐" : String.join(" · ", trip));
     menuSubs.get("notify").setText(
-        (DoorNotifications.enabled(this) ? "알림 허용" : "알림 꺼짐") + " · 배터리 설정");
-    menuSubs.get("logs").setText("활동 보기 · 진단 파일 저장");
+        (DoorNotifications.enabled(this) ? "알림 허용" : "알림 꺼짐")
+            + (controller.chargeNotify() ? " · 충전 완료 알림" : "")
+            + " · 배터리 설정");
+    menuSubs.get("logs").setText("활동 보기 · 진단 공유 · 파일 저장");
     menuSubs.get("update").setText("현재 버전 " + appVersion);
   }
 
@@ -3503,6 +3524,48 @@ public final class MainActivity extends Activity {
     }
     if (request == 51 && result == RESULT_OK && data != null && data.getData() != null)
       controller.exportDiagnostics(data.getData());
+    if (request == SHARE_REQUEST) askClearAfterShare();
+  }
+
+  private static final int SHARE_REQUEST = 52;
+
+  /** Snapshot the log to a private file and open the share sheet (Telegram etc.). */
+  private void shareDiagnostics() {
+    controller.shareDiagnostics(
+        file -> {
+          if (file == null || isFinishing()) return;
+          android.net.Uri uri = DiagnosticsShareProvider.uri(file);
+          Intent send =
+              new Intent(Intent.ACTION_SEND)
+                  .setType("text/plain")
+                  .putExtra(Intent.EXTRA_STREAM, uri)
+                  .putExtra(Intent.EXTRA_SUBJECT, file.getName())
+                  .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+          send.setClipData(ClipData.newRawUri(file.getName(), uri));
+          try {
+            startActivityForResult(Intent.createChooser(send, "진단 로그 공유"), SHARE_REQUEST);
+          } catch (ActivityNotFoundException e) {
+            controller.note("공유할 앱을 찾지 못했습니다. 진단 로그 파일 저장을 사용하세요");
+          }
+        });
+  }
+
+  /**
+   * Whether it was really sent cannot be known, so clearing is the user's call — the same fresh
+   * start the file export gives, without losing a log that never left the phone.
+   */
+  private void askClearAfterShare() {
+    if (isFinishing()) return;
+    new AlertDialog.Builder(this)
+        .setTitle("보낸 로그를 비울까요?")
+        .setMessage("비우면 지금부터 새로 기록해 다음에 보낼 로그가 짧아집니다. 보내지 않았다면 그대로 두세요.")
+        .setPositiveButton(
+            "비우기",
+            (d, w) ->
+                controller.diagnostics.clear(
+                    () -> controller.note("진단 로그를 비웠습니다 · 새 로그를 기록합니다")))
+        .setNegativeButton("그대로 두기", null)
+        .show();
   }
 
   private void about() {

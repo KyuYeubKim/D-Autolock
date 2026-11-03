@@ -110,6 +110,8 @@ public class CommandFlowTest {
     boolean locked;
     int power = 1;
     double speed = 0;
+    Integer chargeState, fullHour, fullMinute;
+    Double soc;
     Object epb = "--";
     boolean doorOpen, openOnUnlock, rejectClimate, rejectHvac, windowOpen;
     Object okLight = JSONObject.NULL;
@@ -145,6 +147,9 @@ public class CommandFlowTest {
                   .put("powerGear", power)
                   .put("okLight", okLight)
                   .put("epb", epb);
+          if (chargeState != null) s.put("chargeState", chargeState);
+          if (fullHour != null) s.put("fullHour", fullHour).put("fullMinute", fullMinute);
+          if (soc != null) s.put("soc", soc);
           for (String side : new String[] {"leftFront", "rightFront", "leftRear", "rightRear"}) {
             s.put(side + "Door", doorOpen ? 1 : 0)
                 .put(side + "DoorLock", locked ? 2 : 1)
@@ -510,6 +515,111 @@ public class CommandFlowTest {
     complete(c);
     assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
     assertEquals(15000, c.automaticRecheckMs(true));
+  }
+
+  private static android.app.AlarmManager alarms() {
+    return RuntimeEnvironment.getApplication().getSystemService(android.app.AlarmManager.class);
+  }
+
+  private static android.app.Notification chargeNotice() {
+    return org.robolectric.Shadows.shadowOf(
+            RuntimeEnvironment.getApplication()
+                .getSystemService(android.app.NotificationManager.class))
+        .getNotification(DoorNotifications.CHARGE_ID);
+  }
+
+  /** A locked, OFF car charging with 2 h to go, read once by a normal status refresh. */
+  private Controller charging(Protocol p) throws Exception {
+    org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication())
+        .grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS);
+    p.locked = true;
+    p.chargeState = 1;
+    p.fullHour = 2;
+    p.fullMinute = 0;
+    p.soc = 55.0;
+    Controller c = create(p);
+    c.refreshNow();
+    complete(c);
+    return c;
+  }
+
+  @Test
+  public void chargeFinishedWhileLockedIsReadOnceAtTheEstimateAndNotified() throws Exception {
+    Protocol p = new Protocol();
+    long before = System.currentTimeMillis();
+    Controller c = charging(p);
+    org.robolectric.shadows.ShadowAlarmManager.ScheduledAlarm alarm =
+        org.robolectric.Shadows.shadowOf(alarms()).getNextScheduledAlarm();
+    assertNotNull(alarm); // One alarm at the car's own estimate, no polling meanwhile.
+    long expected = before + 2 * 3600000L + Controller.CHARGE_GRACE_MS;
+    assertTrue(Math.abs(alarm.triggerAtTime - expected) < 60000);
+    assertEquals(1, p.statusRequests);
+    p.chargeState = 15; // Finished by itself; still locked and OFF.
+    p.soc = 100.0;
+    c.chargeWatchDue();
+    complete(c);
+    assertEquals(2, p.statusRequests);
+    android.app.Notification notice = chargeNotice();
+    assertNotNull(notice);
+    assertTrue(
+        String.valueOf(notice.extras.getCharSequence(android.app.Notification.EXTRA_TEXT))
+            .contains("100%"));
+    assertFalse(c.settings.getBoolean("chargeSeen", false));
+    assertNull(org.robolectric.Shadows.shadowOf(alarms()).getNextScheduledAlarm());
+  }
+
+  @Test
+  public void unpluggingAtTheCarEndsTheChargeWatchQuietly() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = charging(p);
+    p.chargeState = 15; // The driver unlocked and took the cable out.
+    p.locked = false;
+    c.chargeWatchDue();
+    complete(c);
+    assertNull(chargeNotice());
+    assertFalse(c.settings.getBoolean("chargeSeen", false));
+    assertNull(org.robolectric.Shadows.shadowOf(alarms()).getNextScheduledAlarm());
+  }
+
+  @Test
+  public void chargeNoticeOffSetsNoAlarm() throws Exception {
+    Protocol p = new Protocol();
+    p.chargeState = 1;
+    p.fullHour = 1;
+    p.fullMinute = 0;
+    Controller c = create(p);
+    c.settings.edit().putBoolean("chargeNotify", false).commit();
+    c.refreshNow();
+    complete(c);
+    assertNull(org.robolectric.Shadows.shadowOf(alarms()).getNextScheduledAlarm());
+  }
+
+  @Test
+  public void sharingDiagnosticsWritesOnePrivateCopyAndKeepsTheLog() throws Exception {
+    Controller c = create(new Protocol());
+    c.diagnostics.record("TEST_SHARE_MARKER", "x");
+    java.io.File shared = null;
+    for (int round = 0; round < 2; round++) {
+      java.util.concurrent.atomic.AtomicReference<java.io.File> result =
+          new java.util.concurrent.atomic.AtomicReference<>();
+      c.shareDiagnostics(result::set);
+      long limit = System.currentTimeMillis() + 5000;
+      while (result.get() == null && System.currentTimeMillis() < limit) {
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+        Thread.sleep(20);
+      }
+      shared = result.get();
+      assertNotNull(shared);
+    }
+    assertTrue(shared.getName().matches("D-Autolock-diagnostics-[0-9-]+\\.txt"));
+    String text =
+        new String(java.nio.file.Files.readAllBytes(shared.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+    assertTrue(text.contains("TEST_SHARE_MARKER"));
+    assertEquals(1, shared.getParentFile().listFiles().length); // Only the latest copy is kept.
+    java.util.concurrent.CompletableFuture<String> log = new java.util.concurrent.CompletableFuture<>();
+    c.diagnostics.snapshot(log::complete);
+    assertTrue( // Not cleared: sending cannot be confirmed.
+        log.get(5, java.util.concurrent.TimeUnit.SECONDS).contains("TEST_SHARE_MARKER"));
   }
 
   @Test

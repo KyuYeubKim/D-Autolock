@@ -9,6 +9,10 @@ public final class DoorActionReceiver extends BroadcastReceiver {
   public void onReceive(Context context, Intent intent) {
     String action = intent.getAction();
     Controller controller = ((DApplication) context.getApplicationContext()).controller();
+    if (Controller.CHARGE_WATCH.equals(action)) {
+      controller.chargeWatchDue();
+      return;
+    }
     if (DoorNotifications.CANCEL_STOP.equals(action)) {
       controller.diagnostics.record("NOTIFICATION_ACTION", "CANCEL_STOP");
       controller.cancelPendingStop("알림에서 사용자 취소");

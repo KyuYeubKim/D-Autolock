@@ -1302,7 +1302,7 @@ public final class MainActivity extends Activity {
     hero.setTag("signalCard");
     hero.setClipChildren(false);
     carHero = new CarHeroView(this);
-    carHero.setPadding(0, dp(12), 0, 0);
+    carHero.setPadding(0, dp(40), 0, 0); // The roof clears the corner badges.
     hero.addView(carHero, new FrameLayout.LayoutParams(-1, -2));
     primaryBadge =
         badge(hero, "차량 BLE", "thresholdEdit", Gravity.TOP | Gravity.START, v -> openBle(false));

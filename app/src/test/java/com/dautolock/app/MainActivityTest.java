@@ -849,6 +849,9 @@ public class MainActivityTest {
       measureAt(c, primary, -62, -84);
       measureAt(c, primary, -84, -56); // Trunk: the beacon is the strong one.
       for (int i = 4; i <= 6; i++) skip.performClick();
+      assertEquals("운전석에 앉아서", title.getText().toString());
+      assertEquals("차 안", label.getText().toString());
+      measureAt(c, primary, -66, -50);
       assertEquals("도어 잠금 위치 1 / 6", label.getText().toString());
       measureAt(c, primary, -90, -92);
       measureAt(c, primary, -88, -91);
@@ -857,6 +860,7 @@ public class MainActivityTest {
       String result = ((TextView) root.findViewWithTag("calResult")).getText().toString();
       assertTrue(result, result.contains("도어 열림 위치 3곳 중 3곳"));
       assertTrue(result, result.contains("도어 잠금 위치 2곳 중 2곳"));
+      assertTrue(result, result.contains("운전석에서는 잠기지 않아요"));
       primary.performClick(); // 이 기준으로 저장
       assertEquals(-75, c.settings.getInt("near", 0));
       assertEquals(-86, c.settings.getInt("far", 0));

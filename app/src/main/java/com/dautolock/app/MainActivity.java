@@ -97,8 +97,9 @@ public final class MainActivity extends Activity {
   private final Map<String, String> detailTitles = new HashMap<>();
   private final Map<String, TextView> menuSubs = new HashMap<>();
   private String appVersion = "";
-  // 위치로 자동 설정 wizard: step 0 intro, 1..6 open spots, 7..12 lock spots, 13 result.
-  private static final int CAL_SPOTS = 6, CAL_RESULT = 1 + 2 * CAL_SPOTS;
+  // 위치로 자동 설정 wizard: step 0 intro, 1..6 open spots, 7 the driver's seat, 8..13 lock spots,
+  // 14 result.
+  private static final int CAL_SPOTS = 6, CAL_INSIDE = CAL_SPOTS + 1, CAL_RESULT = 2 + 2 * CAL_SPOTS;
   private static final String[][] CAL_OPEN_PLACES = {
     {"운전석 문 앞", "운전석 문손잡이 앞, 문을 열 때 서는 자리에 서세요."},
     {"운전석 뒷문 앞", "뒷좌석에 짐을 싣거나 탈 때 서는 자리예요."},
@@ -107,11 +108,15 @@ public final class MainActivity extends Activity {
     {"조수석 문 앞", "조수석 문손잡이 앞에 서세요."},
     {"차 앞", "보닛 앞, 차를 마주 보고 서세요."}
   };
+  private static final String[] CAL_INSIDE_PLACE = {
+    "운전석에 앉아서",
+    "문을 닫고 운전석에 앉으세요. 휴대폰은 운전할 때 두는 곳(주머니·컵홀더·거치대 등)에 두세요. 차 안에서는 잠기지 않도록 기준을 잡는 데 써요."
+  };
   private static final String[][] CAL_LOCK_PLACES = {
-    {"운전석 쪽, 몇 걸음 떨어진 곳", "운전석 문에서 3~5 m쯤 걸어 나간 자리예요. 여기서부터 잠겼으면 하는 곳에 서세요."},
-    {"트렁크 뒤, 몇 걸음 떨어진 곳", "트렁크에서 뒤로 3~5 m쯤 떨어진 자리예요."},
-    {"조수석 쪽, 몇 걸음 떨어진 곳", "조수석 문에서 3~5 m쯤 떨어진 자리예요."},
-    {"차 앞, 몇 걸음 떨어진 곳", "보닛 앞에서 3~5 m쯤 떨어진 자리예요."},
+    {"운전석 쪽, 걸어 나간 곳", "운전석 문에서 5~8 m쯤 걸어 나간 자리예요. 이쯤이면 잠겨 있었으면 하는 곳에 서세요."},
+    {"트렁크 뒤, 걸어 나간 곳", "트렁크에서 뒤로 5~8 m쯤 떨어진 자리예요."},
+    {"조수석 쪽, 걸어 나간 곳", "조수석 문에서 5~8 m쯤 떨어진 자리예요."},
+    {"차 앞, 걸어 나간 곳", "보닛 앞에서 5~8 m쯤 떨어진 자리예요."},
     {"평소 걸어 나가는 방향", "현관이나 엘리베이터 쪽 등, 주차 후 늘 걸어가는 방향의 잠겼으면 하는 지점이에요."},
     {"그보다 조금 더 먼 곳", "바로 앞 위치에서 몇 걸음 더 간 자리예요. 여기서는 꼭 잠겨 있어야 해요."}
   };
@@ -121,6 +126,7 @@ public final class MainActivity extends Activity {
   private Button calPrimary, calBack, calSkip;
   private final ThresholdCalibrator.Spot[] calOpen = new ThresholdCalibrator.Spot[CAL_SPOTS],
       calLock = new ThresholdCalibrator.Spot[CAL_SPOTS];
+  private ThresholdCalibrator.Spot calInside;
   private int calStep;
   private ThresholdCalibrator.Result calResultValue;
   private String calReturn = "ble";
@@ -2828,9 +2834,10 @@ public final class MainActivity extends Activity {
     navigateBack();
   }
 
-  // 위치로 자동 설정, step by step: the user stands at six spots where the doors should open, then
-  // at six where they should lock, measuring each; ThresholdCalibrator turns the readings into
-  // both signals' thresholds. Automatic open/lock pauses while this page is up.
+  // 위치로 자동 설정, step by step: the user stands at six spots where the doors should open, sits
+  // in the driver's seat, then stands at six where they should lock, measuring each;
+  // ThresholdCalibrator turns the readings into both signals' thresholds. Automatic open/lock
+  // pauses while this page is up.
 
   private void buildCalibratePage(FrameLayout pages) {
     calScroll = new ScrollView(this);
@@ -2888,6 +2895,7 @@ public final class MainActivity extends Activity {
     if (!page.equals("calibrate")) calReturn = page;
     Arrays.fill(calOpen, null);
     Arrays.fill(calLock, null);
+    calInside = null;
     calStep = 0;
     pauseForCalibration();
     showPage("calibrate");
@@ -2925,7 +2933,7 @@ public final class MainActivity extends Activity {
   }
 
   private static boolean calSpotStep(int step) {
-    return step >= 1 && step <= 2 * CAL_SPOTS;
+    return step >= 1 && step < CAL_RESULT;
   }
 
   private void calGo(int step) {
@@ -2947,6 +2955,7 @@ public final class MainActivity extends Activity {
     if (calStep == CAL_RESULT) {
       Arrays.fill(calOpen, null);
       Arrays.fill(calLock, null);
+      calInside = null;
       calGo(1);
     } else calGo(calStep + 1);
   }
@@ -2960,7 +2969,7 @@ public final class MainActivity extends Activity {
       return;
     }
     int step = calStep;
-    boolean open = step <= CAL_SPOTS;
+    boolean open = step <= CAL_SPOTS, inside = step == CAL_INSIDE;
     List<Double> primary = new ArrayList<>(), beacon = new ArrayList<>();
     calMeasureUntil = SystemClock.elapsedRealtime() + 4000;
     calNotice.setText("");
@@ -2983,7 +2992,19 @@ public final class MainActivity extends Activity {
               refreshCalibrate();
               return;
             }
-            (open ? calOpen : calLock)[open ? step - 1 : step - 1 - CAL_SPOTS] = spot;
+            if (inside) calInside = spot;
+            else (open ? calOpen : calLock)[open ? step - 1 : step - 1 - CAL_INSIDE] = spot;
+            controller.diagnostics.record(
+                "CAL_SPOT",
+                (open ? "open " + step : inside ? "inside" : "lock " + (step - CAL_INSIDE))
+                    + " primary="
+                    + calValue(spot.primary)
+                    + " beacon="
+                    + calValue(spot.beacon)
+                    + " samples="
+                    + primary.size()
+                    + "/"
+                    + beacon.size());
             calGo(step + 1);
           }
         };
@@ -2996,6 +3017,10 @@ public final class MainActivity extends Activity {
     List<Double> sorted = new ArrayList<>(values);
     Collections.sort(sorted);
     return sorted.get(sorted.size() / 2);
+  }
+
+  private static String calValue(double rssi) {
+    return Double.isNaN(rssi) ? "lost" : String.valueOf(Math.round(rssi));
   }
 
   private static String reading(double rssi) {
@@ -3041,7 +3066,7 @@ public final class MainActivity extends Activity {
       calStepBody.setText(
           "문이 열렸으면 하는 위치 "
               + CAL_SPOTS
-              + "곳, 잠겼으면 하는 위치 "
+              + "곳, 운전석, 잠겼으면 하는 위치 "
               + CAL_SPOTS
               + "곳에서 차례로 신호를 측정하면 차량 BLE와 보조 비콘의 기준을 자동으로 계산해요.\n\n"
               + "· 차 주위를 한 바퀴 돌 수 있는, 사방이 트인 곳에서 하면 가장 정확해요.\n"
@@ -3051,15 +3076,15 @@ public final class MainActivity extends Activity {
               + "· 벽이나 다른 차가 많은 곳은 신호가 달라질 수 있어요. 평소 주차하는 곳에서 다르게 동작하면 그곳에서 한 번 더 해 보세요.");
       calPrimary.setText("시작하기");
     } else if (spotStep) {
-      boolean open = calStep <= CAL_SPOTS;
-      int index = open ? calStep - 1 : calStep - 1 - CAL_SPOTS;
-      String[] place = (open ? CAL_OPEN_PLACES : CAL_LOCK_PLACES)[index];
-      ThresholdCalibrator.Spot done = (open ? calOpen : calLock)[index];
+      boolean open = calStep <= CAL_SPOTS, inside = calStep == CAL_INSIDE;
+      int index = open ? calStep - 1 : calStep - 1 - CAL_INSIDE;
+      String[] place = inside ? CAL_INSIDE_PLACE : (open ? CAL_OPEN_PLACES : CAL_LOCK_PLACES)[index];
+      ThresholdCalibrator.Spot done = inside ? calInside : (open ? calOpen : calLock)[index];
       calStepLabel.setText(
-          (open ? "도어 열림 위치 " : "도어 잠금 위치 ") + (index + 1) + " / " + CAL_SPOTS);
+          inside ? "차 안" : (open ? "도어 열림 위치 " : "도어 잠금 위치 ") + (index + 1) + " / " + CAL_SPOTS);
       calStepTitle.setText(place[0]);
       calStepBody.setText(
-          (!open && index == 0 ? "이제 문이 잠겼으면 하는 곳이에요. 차에서 걸어 나가며 측정해요.\n\n" : "")
+          (!open && !inside && index == 0 ? "이제 문이 잠겼으면 하는 곳이에요. 차에서 걸어 나가며 측정해요.\n\n" : "")
               + place[1]);
       if (done != null) {
         calMeasured.setText("측정됨 · " + spotText(done, beaconOn));
@@ -3077,6 +3102,7 @@ public final class MainActivity extends Activity {
       calSkip.setText("처음부터 다시");
       calPrimary.setText("이 기준으로 저장");
       List<ThresholdCalibrator.Spot> open = measured(calOpen), lock = measured(calLock);
+      List<ThresholdCalibrator.Spot> inside = measured(new ThresholdCalibrator.Spot[] {calInside});
       if (open.isEmpty() || lock.isEmpty()) {
         calResultValue = null;
         calStepBody.setText(
@@ -3085,14 +3111,17 @@ public final class MainActivity extends Activity {
         calPrimary.setEnabled(false);
       } else {
         calStepBody.setText("측정한 위치를 바탕으로 계산한 기준이에요. 저장하면 바로 적용돼요.");
-        calResult.setText(resultText(open, lock, beaconOn));
+        calResult.setText(resultText(open, inside, lock, beaconOn));
       }
     }
     calPrimary.setAlpha(calPrimary.isEnabled() ? 1f : .45f);
   }
 
   private String resultText(
-      List<ThresholdCalibrator.Spot> open, List<ThresholdCalibrator.Spot> lock, boolean beaconOn) {
+      List<ThresholdCalibrator.Spot> open,
+      List<ThresholdCalibrator.Spot> inside,
+      List<ThresholdCalibrator.Spot> lock,
+      boolean beaconOn) {
     ThresholdCalibrator.Pair current =
         new ThresholdCalibrator.Pair(
             controller.settings.getInt("near", Controller.DEFAULT_NEAR),
@@ -3103,7 +3132,8 @@ public final class MainActivity extends Activity {
                 controller.settings.getInt("beaconNear", Controller.DEFAULT_BEACON_NEAR),
                 controller.settings.getInt("beaconFar", Controller.DEFAULT_BEACON_FAR))
             : null;
-    ThresholdCalibrator.Result r = ThresholdCalibrator.calibrate(open, lock, current, currentBeacon);
+    ThresholdCalibrator.Result r =
+        ThresholdCalibrator.calibrate(open, inside, lock, current, currentBeacon);
     calResultValue = r;
     StringBuilder out =
         new StringBuilder()
@@ -3133,7 +3163,13 @@ public final class MainActivity extends Activity {
       out.append(
           "\n\n일부 열림 위치는 잠금 위치와 신호 차이가 작아 열리지 않을 수 있어요. 그 위치를 차에 조금 더 가깝게 다시 재 보세요.");
     if (r.lockCovered < lock.size())
-      out.append("\n\n일부 잠금 위치는 신호가 아직 강해 잠기지 않을 수 있어요. 조금 더 멀리서 다시 재 보세요.");
+      out.append(
+          "\n\n일부 잠금 위치에서는 아직 안 잠기고 몇 걸음 더 가면 잠겨요. 신호는 순간순간 몇 dB씩 흔들려서, 열림과 잠금 사이에 여유를 둬 차 옆이나 차 안에서 잘못 잠기지 않게 했어요.");
+    if (!inside.isEmpty())
+      out.append(
+          r.insideKept == inside.size()
+              ? "\n\n운전석에서는 잠기지 않아요."
+              : "\n\n운전석에서 차량 BLE 신호가 너무 약하거나 끊겨 잠길 수 있어요. 휴대폰을 두는 곳을 바꿔 다시 재 보세요.");
     return out.toString();
   }
 
@@ -3146,6 +3182,20 @@ public final class MainActivity extends Activity {
       if (controller.monitoring) controller.auto(true);
     }
     calStartedWatch = false; // Keep watching with the new values.
+    controller.diagnostics.record(
+        "CAL_RESULT",
+        "open="
+            + r.openCovered
+            + "/"
+            + measured(calOpen).size()
+            + " lock="
+            + r.lockCovered
+            + "/"
+            + measured(calLock).size()
+            + " inside="
+            + r.insideKept
+            + "/"
+            + (calInside == null ? 0 : 1));
     boolean beacon = r.beacon != null && r.beaconMeasured && controller.beaconConfigured();
     try {
       controller.calibratedThresholds(

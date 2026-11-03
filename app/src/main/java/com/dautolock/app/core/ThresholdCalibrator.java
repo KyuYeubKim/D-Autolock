@@ -10,19 +10,31 @@ import java.util.List;
  * neither is near and either is at/below its far (a lost vehicle BLE also locks, after its loss
  * wait; a lost beacon never does).
  *
- * <p>Each open spot is given to the signal that hears it most clearly above that signal's own
- * strongest lock-spot reading (its margin) — and also to the other signal when that one still
- * clears its lock spots by {@link #SHARE_DB}, so a dead beacon leaves the car BLE able to open
- * there. Per signal, near then goes halfway between its strongest lock-spot reading and the
- * weakest open spot it was given (a weak spot another signal hears far better does not drag it
- * down). Far sits just above the strongest lock-spot reading, kept the minimum gap below near.
- * A signal given no spot only opens when stronger than anywhere it was measured.
+ * <p>Each signal's lock reference is its strongest lock-spot reading, except that with three or
+ * more lock spots the single strongest is set aside: each signal is unusually strong in one
+ * direction (the car's BLE in front of the bonnet, a trunk beacon behind the boot), and letting
+ * that one spot set the bar made both thresholds hug the car (real log 11-03: near −61 / far −66
+ * from a −66 spot in front, while the phone in the driver's seat read −56…−78). That direction then
+ * locks a few steps further out instead.
+ *
+ * <p>Each open spot is given to the signal that hears it most clearly above that reference (its
+ * margin) — and also to the other signal when that one still clears it by {@link #SHARE_DB}, so a
+ * dead beacon leaves the car BLE able to open there. Per signal, near then goes halfway between
+ * the reference and the weakest open spot it was given (a weak spot another signal hears far
+ * better does not drag it down). Far sits just above the reference, but at least {@link #CAL_GAP}
+ * under near — RSSI swings several dB from second to second, and a narrow band let the car BLE
+ * dip to "far" while the phone sat in the car — and {@link #KEEP_DB} under anything measured
+ * inside the car. A signal given no spot only opens when stronger than anywhere it was measured.
  */
 public final class ThresholdCalibrator {
   public static final int MIN_NEAR = -95, MAX_NEAR = -40, MIN_FAR = -100;
   static final int SHARE_DB = 15;
   private static final int GAP = ProximityEngine.MIN_GAP_DB;
-  /** Lock spots read a little stronger now and then; far sits this much above the strongest. */
+  /** Band the wizard leaves between near and far, wider than the engine's minimum. */
+  static final int CAL_GAP = 10;
+  /** How far under a reading taken in the driver's seat far must sit. */
+  static final int KEEP_DB = 12;
+  /** Lock spots read a little stronger now and then; far sits this much above the reference. */
   private static final int LOCK_MARGIN = 2;
 
   /** One measured position: smoothed RSSI of each signal, NaN when it was not received there. */
@@ -51,6 +63,8 @@ public final class ThresholdCalibrator {
     public final boolean primaryMeasured, beaconMeasured;
     /** How many open spots would open, and how many lock spots would lock, with these values. */
     public final int openCovered, lockCovered;
+    /** How many in-car spots neither signal would lock at (a lost car BLE counts as locking). */
+    public final int insideKept;
 
     Result(
         Pair primary,
@@ -58,80 +72,117 @@ public final class ThresholdCalibrator {
         boolean primaryMeasured,
         boolean beaconMeasured,
         int openCovered,
-        int lockCovered) {
+        int lockCovered,
+        int insideKept) {
       this.primary = primary;
       this.beacon = beacon;
       this.primaryMeasured = primaryMeasured;
       this.beaconMeasured = beaconMeasured;
       this.openCovered = openCovered;
       this.lockCovered = lockCovered;
+      this.insideKept = insideKept;
     }
   }
 
   private ThresholdCalibrator() {}
 
+  public static Result calibrate(List<Spot> open, List<Spot> lock, Pair primary, Pair beacon) {
+    return calibrate(open, new ArrayList<>(), lock, primary, beacon);
+  }
+
   /**
+   * @param inside spots measured sitting in the car, where neither signal may ever say far
    * @param beacon current beacon thresholds, or null when no beacon is configured (then only the
    *     vehicle BLE is calibrated and checked)
    */
-  public static Result calibrate(List<Spot> open, List<Spot> lock, Pair primary, Pair beacon) {
+  public static Result calibrate(
+      List<Spot> open, List<Spot> inside, List<Spot> lock, Pair primary, Pair beacon) {
     List<Integer> lockP = values(lock, true), lockB = beacon == null ? new ArrayList<>() : values(lock, false);
-    // Margin of an open spot over a signal's strongest lock spot; never heard at lock spots = wide.
+    Integer refP = reference(lockP), refB = reference(lockB);
+    // Margin of an open spot over a signal's lock reference; never heard at lock spots = wide.
     List<Integer> givenP = new ArrayList<>(), givenB = new ArrayList<>();
     for (Spot s : open) {
-      int mp = margin(s.primary, lockP), mb = beacon == null ? Integer.MIN_VALUE : margin(s.beacon, lockB);
+      int mp = margin(s.primary, refP), mb = beacon == null ? Integer.MIN_VALUE : margin(s.beacon, refB);
       boolean toP = mp >= GAP && (mp >= mb || mp >= SHARE_DB);
       boolean toB = mb >= GAP && (mb > mp || mb >= SHARE_DB);
       if (toP) givenP.add((int) Math.round(s.primary));
       if (toB) givenB.add((int) Math.round(s.beacon));
     }
-    Pair p = pair(givenP, values(open, true), lockP);
-    Pair b = beacon == null ? null : pair(givenB, values(open, false), lockB);
+    Pair p = pair(givenP, values(open, true), lockP, values(inside, true));
+    Pair b = beacon == null ? null : pair(givenB, values(open, false), lockB, values(inside, false));
     Pair primaryUsed = p == null ? primary : p, beaconUsed = beacon == null ? null : b == null ? beacon : b;
-    int opened = 0, locked = 0;
+    int opened = 0, locked = 0, kept = 0;
     for (Spot s : open) if (opens(s, primaryUsed, beaconUsed)) opened++;
     for (Spot s : lock) if (locks(s, primaryUsed, beaconUsed)) locked++;
-    return new Result(primaryUsed, beaconUsed, p != null, b != null, opened, locked);
+    for (Spot s : inside) if (keeps(s, primaryUsed, beaconUsed)) kept++;
+    return new Result(primaryUsed, beaconUsed, p != null, b != null, opened, locked, kept);
   }
 
-  /** Margin of a reading over the strongest lock reading; MIN_VALUE when not heard here. */
-  private static int margin(double value, List<Integer> locks) {
+  /**
+   * The lock-spot reading a signal is held to: the strongest, or with three or more spots the
+   * second strongest, so the one direction a signal is unusually strong in does not set the bar.
+   */
+  static Integer reference(List<Integer> locks) {
+    if (locks.isEmpty()) return null;
+    List<Integer> sorted = new ArrayList<>(locks);
+    sorted.sort((a, b) -> b - a);
+    return sorted.get(sorted.size() >= 3 ? 1 : 0);
+  }
+
+  /** Margin of a reading over the lock reference; MIN_VALUE when not heard here. */
+  private static int margin(double value, Integer reference) {
     if (Double.isNaN(value)) return Integer.MIN_VALUE;
-    return locks.isEmpty() ? 100 : (int) Math.round(value) - max(locks);
+    return reference == null ? 100 : (int) Math.round(value) - reference;
+  }
+
+  static Pair pair(List<Integer> given, List<Integer> heard, List<Integer> locks) {
+    return pair(given, heard, locks, new ArrayList<>());
   }
 
   /**
    * @param given the open-spot readings this signal is responsible for
    * @param heard every open-spot reading of this signal
    * @param locks every lock-spot reading of this signal
+   * @param inside this signal's readings in the driver's seat
    */
-  static Pair pair(List<Integer> given, List<Integer> heard, List<Integer> locks) {
+  static Pair pair(List<Integer> given, List<Integer> heard, List<Integer> locks, List<Integer> inside) {
     if (heard.isEmpty() && locks.isEmpty()) return null;
     int near, far;
-    if (locks.isEmpty()) {
+    Integer ref = reference(locks);
+    if (ref == null) {
       // Never heard where it should lock (it drops out there): open just under the weakest open.
       near = (given.isEmpty() ? max(heard) : min(given)) - 2;
-      far = near - GAP;
+      far = near - CAL_GAP;
     } else {
-      int strongestLock = max(locks);
       List<Integer> clear = new ArrayList<>();
-      for (int v : given) if (v >= strongestLock + GAP) clear.add(v);
+      for (int v : given) if (v >= ref + GAP) clear.add(v);
       if (clear.isEmpty()) {
         // Opens nowhere it was measured: only when stronger than every spot, never at a lock spot.
-        near = Math.max(strongestLock + GAP, heard.isEmpty() ? Integer.MIN_VALUE : max(heard) + 1);
+        near = Math.max(ref + GAP, heard.isEmpty() ? Integer.MIN_VALUE : max(heard) + 1);
       } else {
         int weakestOpen = min(clear);
-        near = Math.max(strongestLock + GAP, Math.min(weakestOpen, (weakestOpen + strongestLock) / 2));
+        near = Math.max(ref + GAP, Math.min(weakestOpen, (weakestOpen + ref) / 2));
       }
-      far = Math.min(strongestLock + LOCK_MARGIN, near - GAP);
+      far = Math.min(ref + LOCK_MARGIN, near - CAL_GAP);
     }
+    if (!inside.isEmpty()) far = Math.min(far, min(inside) - KEEP_DB);
     near = Math.max(MIN_NEAR, Math.min(MAX_NEAR, near));
-    far = Math.max(MIN_FAR, Math.min(near - GAP, far));
+    far = Math.max(MIN_FAR, Math.min(near - CAL_GAP, far));
     return new Pair(near, far);
   }
 
   static boolean opens(Spot s, Pair primary, Pair beacon) {
     return near(s.primary, primary) || near(s.beacon, beacon);
+  }
+
+  /**
+   * In the car: the car BLE heard and above its far, the beacon (when heard) above its far. Not
+   * relying on one signal's near to hold off the other's lock — that hold has a time limit.
+   */
+  static boolean keeps(Spot s, Pair primary, Pair beacon) {
+    boolean primaryKept = primary == null || (!Double.isNaN(s.primary) && s.primary > primary.far);
+    boolean beaconKept = beacon == null || Double.isNaN(s.beacon) || s.beacon > beacon.far;
+    return primaryKept && beaconKept;
   }
 
   static boolean locks(Spot s, Pair primary, Pair beacon) {

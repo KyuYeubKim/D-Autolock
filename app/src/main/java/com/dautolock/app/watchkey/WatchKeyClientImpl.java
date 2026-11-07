@@ -215,8 +215,16 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
       int httpCode = response.code();
       String raw = response.body() != null ? response.body().string() : "";
       JSONObject top = raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
-      String biz = top.optString("code", top.optString("resultCode", ""));
+      String biz =
+          firstString(top, "code", "resultCode", "rspCode", "returnCode", "resCode", "status");
       diag("WATCHKEY_HTTP", endpoint + " http=" + httpCode + " code=" + (biz.isEmpty() ? "?" : biz));
+
+      // For the pre-approval steps only (server time, QR uuid, QR status — no secrets), log the raw
+      // body so the real field names and the QR uuid value can be confirmed from the first run. The
+      // token/vehicle/bluetooth steps carry secrets and are never logged here.
+      if (bodyLoggable(endpoint) && !raw.isEmpty()) {
+        diag("WATCHKEY_BODY", endpoint + " " + (raw.length() > 1200 ? raw.substring(0, 1200) + "…" : raw));
+      }
 
       // The business payload may be an encrypted hex string ("encryData"/"data") or a plain object.
       JSONObject merged = new JSONObject();
@@ -259,6 +267,13 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
     return "";
   }
 
+  /** Only the pre-approval steps carry no secret, so only their bodies may be logged. */
+  private static boolean bodyLoggable(String endpoint) {
+    return endpoint.endsWith("getServerCurrentTime")
+        || endpoint.endsWith("create/qrcode")
+        || endpoint.endsWith("check/qrcode");
+  }
+
   private static boolean isHex(String s) {
     if (s.length() < 16 || s.length() % 2 != 0) return false;
     for (int i = 0; i < s.length(); i++) {
@@ -279,6 +294,8 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
         + WATCH_MODEL
         + "&watchName="
         + WATCH_NAME
+        + "&watchImei="
+        + imeiMd5()
         + "&watchOs="
         + WATCH_OS
         + "&watchAppVersion="

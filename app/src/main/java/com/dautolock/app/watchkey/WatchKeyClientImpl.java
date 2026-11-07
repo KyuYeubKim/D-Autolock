@@ -284,8 +284,10 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
       }
 
       JSONObject merged = new JSONObject();
-      copyStrings(biz, merged);
 
+      // Merge the decrypted business payload FIRST so it wins over the envelope. The envelope also
+      // carries its own 'identifier' (="KR") and 'language' that must NOT mask the token's real
+      // identifier; copyStrings is first-wins, so the decrypted fields have to go in first.
       String respondData = biz.optString("respondData", "");
       if (respondData.isEmpty()) respondData = biz.optString("response", "");
       if (!respondData.isEmpty() && isHex(respondData)) {
@@ -299,13 +301,17 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
               if (p.length() >= 2 && p.startsWith("\"") && p.endsWith("\"")) {
                 p = p.substring(1, p.length() - 1);
               }
-              if (!merged.has("serverTime")) merged.put("serverTime", p);
+              merged.put("serverTime", p);
             }
           }
         } catch (Exception e) {
           diag("WATCHKEY_DECRYPT_ERR", endpoint + " " + e.getMessage());
         }
       }
+
+      // Envelope fills only what the business payload did not provide (e.g. a codeStatus that some
+      // responses carry at the envelope level when there is no encrypted respondData).
+      copyStrings(biz, merged);
       return merged;
     }
   }

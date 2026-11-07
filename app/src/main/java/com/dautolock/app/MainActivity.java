@@ -55,6 +55,12 @@ public final class MainActivity extends Activity {
   private final Runnable disarmCommand = this::disarmCommand;
   private TextView signalDetails, autoDetails, autoReason, controlDetails, readyDetails;
   private TextView carAudioState;
+  private com.dautolock.app.watchkey.WatchKey watchKey;
+  private com.dautolock.app.watchkey.WatchKeyProvision watchKeyRun;
+  private Switch watchKeySwitch;
+  private TextView watchKeyStatus;
+  private ImageView watchKeyQr;
+  private Button watchKeyRegister;
   private TextView beaconDevice;
   private TextView updateStatus;
   private TextView bridgeStatus;
@@ -821,6 +827,7 @@ public final class MainActivity extends Activity {
     } catch (PackageManager.NameNotFoundException ignored) {
     }
     text(updates, "D-Autolock " + appVersion + " · 비공식 개인용 앱", 12, MUTED);
+    LinearLayout watchCard = buildWatchKeyCard();
     // Settings: a grouped menu; each row opens a page holding the cards built above.
     detail("account", "계정과 차량", link);
     detail("bluetooth", "블루투스와 비콘", bluetooth);
@@ -830,6 +837,7 @@ public final class MainActivity extends Activity {
     detail("notify", "알림 및 백그라운드", notify);
     detail("logs", "로그 및 진단", events);
     detail("update", "앱 업데이트", updates);
+    detail("watchkey", "블루투스 키 (실험실)", watchCard);
     LinearLayout connection = menuGroup("연결");
     menuRow(connection, R.drawable.ic_person, "account");
     menuRow(connection, R.drawable.ic_bluetooth, "bluetooth");
@@ -841,6 +849,8 @@ public final class MainActivity extends Activity {
     menuRow(manage, R.drawable.ic_bell, "notify");
     menuRow(manage, R.drawable.ic_checklist, "logs");
     menuRow(manage, R.drawable.ic_download, "update");
+    LinearLayout lab = menuGroup("실험실");
+    menuRow(lab, R.drawable.ic_bluetooth, "watchkey");
     LinearLayout links = new LinearLayout(this);
     links.setGravity(Gravity.CENTER);
     LinearLayout.LayoutParams linksParams = new LinearLayout.LayoutParams(-1, -2);
@@ -861,6 +871,119 @@ public final class MainActivity extends Activity {
     foot.setPadding(0, dp(18), 0, 0);
     buildSetup();
     styleSwitches(shell);
+  }
+
+  /** Stage A of the Bluetooth (watch) key: issuance + status only, behind the watchKeyEnabled flag. */
+  private LinearLayout buildWatchKeyCard() {
+    watchKey =
+        new com.dautolock.app.watchkey.WatchKey(this, controller.settings, controller.diagnostics);
+    LinearLayout card = card("블루투스 키 (실험실)");
+    watchKeySwitch = new Switch(this);
+    watchKeySwitch.setTag("watchKeyEnabled");
+    watchKeySwitch.setText("블루투스 키 사용");
+    watchKeySwitch.setTextColor(TEXT);
+    watchKeySwitch.setMinHeight(dp(56));
+    watchKeySwitch.setChecked(watchKey.enabled());
+    card.addView(watchKeySwitch);
+    watchKeySwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          if (updating) return;
+          watchKey.setEnabled(on);
+          update();
+        });
+    text(
+        card,
+        "스마트워치 디지털 키 방식으로 차와 블루투스로 직접 통신하는 실험 기능입니다. 지금(1단계)은 키 발급과 상태 확인까지만 하고, 열림·잠금 판정은 바꾸지 않습니다. 끄면 이전과 똑같이 동작합니다.",
+        12,
+        MUTED);
+    text(
+        card,
+        "주의: 이 앱이 당신의 갤럭시 워치(SM-R925N) 모델로 BYD 계정에 워치로 등록됩니다. 실제로 쓰는 워치 키가 밀려날 수 있고, 차에 블루투스 본딩이 남으며, 서버가 비정상 사용으로 제한할 수 있습니다. 본인 차·본인 계정·개인용으로만 사용하세요.",
+        12,
+        0xffb00020);
+    watchKeyStatus = text(card, "", 13, TEXT);
+    watchKeyStatus.setPadding(0, dp(8), 0, 0);
+    watchKeyStatus.setTag("watchKeyStatus");
+    watchKeyQr = new ImageView(this);
+    LinearLayout.LayoutParams qp = new LinearLayout.LayoutParams(dp(220), dp(220));
+    qp.topMargin = dp(10);
+    qp.gravity = Gravity.CENTER_HORIZONTAL;
+    card.addView(watchKeyQr, qp);
+    watchKeyQr.setVisibility(View.GONE);
+    text(
+        card,
+        "발급을 누르면 QR이 나옵니다. 공식 BYD 앱으로 그 QR을 스캔해 승인하면 키가 발급됩니다.",
+        12,
+        MUTED);
+    watchKeyRegister = primaryButton(card, "블루투스 키 발급", v -> startWatchKeyRegister());
+    button(card, "키 삭제 / 초기화", v -> clearWatchKey());
+    return card;
+  }
+
+  private void startWatchKeyRegister() {
+    if (!watchKey.enabled()) {
+      Toast.makeText(this, "먼저 '블루투스 키 사용'을 켜 주세요", Toast.LENGTH_SHORT).show();
+      return;
+    }
+    if (watchKeyRun != null) return;
+    watchKeyRegister.setEnabled(false);
+    watchKeyQr.setVisibility(View.GONE);
+    watchKeyStatus.setText("시작 중…");
+    watchKeyRun =
+        watchKey.register(
+            new com.dautolock.app.watchkey.WatchKeyProvision.Listener() {
+              @Override
+              public void onStatus(String m) {
+                watchKeyStatus.setText(m);
+              }
+
+              @Override
+              public void onQrReady(com.dautolock.app.watchkey.QrInfo qr) {
+                android.graphics.Bitmap b =
+                    com.dautolock.app.watchkey.WatchQr.bitmap(qr.payload, dp(220));
+                if (b != null) {
+                  watchKeyQr.setImageBitmap(b);
+                  watchKeyQr.setVisibility(View.VISIBLE);
+                }
+              }
+
+              @Override
+              public void onApproved() {
+                watchKeyStatus.setText("승인됨 · 키 발급 중…");
+              }
+
+              @Override
+              public void onIssued(String s) {
+                watchKeyQr.setVisibility(View.GONE);
+                watchKeyRun = null;
+                watchKeyRegister.setEnabled(true);
+                update();
+              }
+
+              @Override
+              public void onError(String m) {
+                watchKeyQr.setVisibility(View.GONE);
+                watchKeyStatus.setText(m);
+                watchKeyRun = null;
+                watchKeyRegister.setEnabled(true);
+              }
+            },
+            r -> runOnUiThread(r));
+  }
+
+  private void clearWatchKey() {
+    new AlertDialog.Builder(this)
+        .setTitle("블루투스 키 삭제")
+        .setMessage(
+            "저장된 블루투스 키를 지웁니다. 공식 BYD 앱에서도 등록된 워치 키를 함께 해제하는 것이 좋습니다. 계속할까요?")
+        .setPositiveButton(
+            "삭제",
+            (d, w) -> {
+              watchKey.clear();
+              update();
+            })
+        .setNegativeButton("취소", null)
+        .show();
   }
 
   /** A settings sub-page ("settings/" + key) that takes over the given cards from the home body. */
@@ -974,6 +1097,10 @@ public final class MainActivity extends Activity {
             + (controller.chargeNotify() ? " · 충전 완료 알림" : "")
             + " · 배터리 설정");
     menuSubs.get("logs").setText("활동 보기 · 진단 공유 · 파일 저장");
+    if (menuSubs.containsKey("watchkey"))
+      menuSubs
+          .get("watchkey")
+          .setText(watchKey != null && watchKey.enabled() ? watchKey.statusLine() : "꺼짐");
     menuSubs.get("update").setText("현재 버전 " + appVersion);
   }
 
@@ -2141,6 +2268,12 @@ public final class MainActivity extends Activity {
             : controller.carAudio.connected()
                 ? "차 블루투스 · 연결됨 (차 안)"
                 : "차 블루투스 · 연결 안 됨");
+    if (watchKeySwitch != null) {
+      watchKeySwitch.setChecked(watchKey.enabled());
+      watchKeyRegister.setEnabled(watchKey.enabled() && watchKeyRun == null);
+      if (watchKeyRun == null)
+        watchKeyStatus.setText(watchKey.enabled() ? watchKey.statusLine() : "꺼짐");
+    }
     updating = false;
     account.setText(
         (controller.cloud.protocol.isLoggedIn()

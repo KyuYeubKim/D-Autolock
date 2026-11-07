@@ -1,6 +1,8 @@
 package com.dautolock.app.watchkey;
 
 import com.dautolock.app.api.CryptoUtils;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
@@ -63,6 +65,27 @@ public final class WatchEnvelope {
       sb.append(key).append('=').append(value).append('&');
     }
     sb.append("password=").append(CryptoUtils.md5Hex(secret));
-    return CryptoUtils.sha1Mixed(sb.toString());
+    return sha1MixedWatch(sb.toString());
+  }
+
+  /**
+   * The watch channel's own {@code sha1Mixed}: SHA-1, then each byte as {@code
+   * Integer.toHexString(b & 0xFF)} (so no zero padding — {@code 0x05 -> "5"}, {@code 0x0a -> "a"}),
+   * upper-casing even byte indices and lower-casing odd ones. This differs from the main cloud
+   * API's variant (which zero-pads with {@code %02x} and then strips '0' at even positions); the
+   * watch server rejects the signature if the main variant is used.
+   */
+  static String sha1MixedWatch(String value) {
+    try {
+      byte[] digest = MessageDigest.getInstance("SHA-1").digest(value.getBytes(StandardCharsets.UTF_8));
+      StringBuilder sb = new StringBuilder();
+      for (int i = 0; i < digest.length; i++) {
+        String hex = Integer.toHexString(digest[i] & 0xFF);
+        sb.append(i % 2 == 0 ? hex.toUpperCase(Locale.ROOT) : hex.toLowerCase(Locale.ROOT));
+      }
+      return sb.toString();
+    } catch (Exception e) {
+      throw new RuntimeException("watch SHA1 mixed hashing failed", e);
+    }
   }
 }

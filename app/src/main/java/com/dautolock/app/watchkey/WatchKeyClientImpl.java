@@ -5,6 +5,7 @@ import android.provider.Settings;
 import com.dautolock.app.api.BydConfig;
 import com.dautolock.app.api.CryptoUtils;
 import java.util.Locale;
+import java.util.TimeZone;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -16,14 +17,16 @@ import okhttp3.Response;
 import org.json.JSONObject;
 
 /**
- * Real watch provisioning REST client against the BYD region host, built on the app's existing
- * {@link CryptoUtils} and {@link BydConfig}. This talks to live BYD servers, so it is driven only on
- * the user's device with their own account — never from tests (which use a fake {@link
- * WatchKeyClient}).
+ * Real watch provisioning REST client against the BYD region host, matching the reference watch
+ * client (BydLock's {@code WatchKeyApi}) field-for-field: the AES/MD5/SHA1 envelope, the per-step
+ * field sets, the {@code {"response":"{...}"}} wrapper, and the response field names. Built on the
+ * app's existing {@link CryptoUtils} (whose {@code aesEncryptHex}/{@code md5Hex} byte-match the watch
+ * channel) plus {@link WatchEnvelope#sign} (which uses the watch channel's own {@code sha1Mixed}).
  *
- * <p>The exact per-step field set, the success code values and the response envelope are only partly
- * known from static analysis; several details here are marked as adjustable and are refined from the
- * diagnostics of the first real run (every step logs its HTTP + business code, never any secret).
+ * <p>This talks to live BYD servers, so it is driven only on the user's device with their own
+ * account — never from tests (which use a fake {@link WatchKeyClient}). Every step logs its HTTP and
+ * business code; the three pre-approval steps also log their raw body (no secrets there). The token,
+ * vehicle and bluetooth steps never log their body.
  */
 public final class WatchKeyClientImpl implements WatchKeyClient {
 
@@ -33,7 +36,10 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
   private static final String WATCH_MODEL = "SM-R925N";
   private static final String WATCH_NAME = "SAMSUNGSM-R925N";
   private static final String WATCH_OS = "0";
-  private static final String APP_VERSION = "341"; // Watch-app version field; adjustable.
+  private static final String APP_VERSION = "341"; // Watch-app version field (reference value).
+
+  // Fixed key seed for the QR payload cipher (reference: md5("watch.bydautolink"), lower-cased).
+  private static final String QR_KEY_SEED = "watch.bydautolink";
 
   private static final MediaType JSON = MediaType.parse("application/json; charset=UTF-8");
 
@@ -56,7 +62,12 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
 
   @Override
   public long serverTime() throws Exception {
-    JSONObject body = postUnLogin("watch/login/getServerCurrentTime", null);
+    TreeMap<String, String> enc = new TreeMap<>();
+    enc.put("timeStamp", String.valueOf(now()));
+    enc.put("random", random());
+    enc.put("networkType", "wifi");
+    enc.put("version", APP_VERSION);
+    JSONObject body = sendUnLogin("watch/login/getServerCurrentTime", enc);
     String t = firstString(body, "serverTime", "currentTime", "time", "timeStamp");
     if (!t.isEmpty()) {
       try {
@@ -70,14 +81,25 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
 
   @Override
   public QrInfo createQrCode() throws Exception {
-    JSONObject body = postUnLogin("watch/login/create/qrcode", null);
+    TreeMap<String, String> enc = new TreeMap<>();
+    enc.put("timeStamp", String.valueOf(now()));
+    enc.put("random", random());
+    enc.put("networkType", "wifi");
+    enc.put("version", APP_VERSION);
+    JSONObject body = sendUnLogin("watch/login/create/qrcode", enc);
     String uuid = firstString(body, "uuid", "qrUuid", "qrCode");
     return new QrInfo(uuid, buildQrPayload(uuid));
   }
 
   @Override
   public int qrStatus(String uuid) throws Exception {
-    JSONObject body = postUnLogin("watch/login/check/qrcode", uuid);
+    TreeMap<String, String> enc = new TreeMap<>();
+    enc.put("timeStamp", String.valueOf(now()));
+    enc.put("random", random());
+    enc.put("networkType", "wifi");
+    enc.put("version", APP_VERSION);
+    enc.put("uuid", uuid);
+    JSONObject body = sendUnLogin("watch/login/check/qrcode", enc);
     String s = firstString(body, "codeStatus", "status", "state");
     if (s.isEmpty()) return 0;
     try {
@@ -89,54 +111,64 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
 
   @Override
   public WatchTokens gainToken(String uuid) throws Exception {
-    TreeMap<String, String> extra = new TreeMap<>();
-    extra.put("uuid", uuid);
-    JSONObject body = postUnLogin("watch/login/gain/token", uuid);
+    TreeMap<String, String> enc = new TreeMap<>();
+    enc.put("timeStamp", String.valueOf(now()));
+    enc.put("uuid", uuid);
+    enc.put("timeZone", TimeZone.getDefault().getID());
+    JSONObject body = sendUnLogin("watch/login/gain/token", enc);
     return new WatchTokens(
         firstString(body, "signToken", "watchSignToken"),
         firstString(body, "encryToken", "watchEncryToken"),
-        firstString(body, "identifier", "watchIdentifier"),
-        firstString(body, "userType", "watchUserType"));
+        firstString(body, "identifier", "userId", "watchIdentifier"),
+        firstString(body, "userType", "watchUserType"),
+        firstString(body, "vin", "watchVin", "carVin"));
   }
 
   @Override
   public String gainVehicleVin(WatchTokens tokens) throws Exception {
-    JSONObject body = postLogin("watch/login/gain/vehicle", tokens, null);
-    return firstString(body, "vin", "watchVin", "carVin");
+    TreeMap<String, String> map = new TreeMap<>();
+    map.put("appVersion", "2");
+    map.put("vin", tokens.vin);
+    JSONObject body = sendLogin("watch/login/gain/vehicle", tokens, map);
+    String vin = firstString(body, "vin", "watchVin", "carVin");
+    return vin.isEmpty() ? tokens.vin : vin;
   }
 
   @Override
   public BleKey gainBluetooth(WatchTokens tokens) throws Exception {
-    JSONObject body = postLogin("watch/login/gain/bluetooth", tokens, null);
+    TreeMap<String, String> map = new TreeMap<>();
+    map.put("appVersion", "2");
+    map.put("vin", tokens.vin);
+    JSONObject body = sendLogin("watch/login/gain/bluetooth", tokens, map);
     return new BleKey(
-        firstString(body, "dkey", "btBleDk", "bleDk"),
-        firstString(body, "keyNumber", "bleKeyNo", "keyNo"),
-        firstString(body, "macAddress", "bleMacAddress", "mac"));
+        firstString(body, "dk", "dkey", "DK", "dK", "DKEY", "btBleDk", "bleDk"),
+        firstString(body, "empowerBluetoothKeyNo", "keyNumber", "bleKeyNo", "keyNo"),
+        firstString(body, "bluetoothMacAddress", "macAddress", "bleMacAddress", "mac"));
   }
 
   // --- request builders -------------------------------------------------------------------------
 
-  /** Pre-token steps (create/check/gettime/gain-token): envelope keyed by the country code. */
-  private JSONObject postUnLogin(String endpoint, String uuid) throws Exception {
+  /**
+   * Pre-token steps (time / create / check / gain-token): the {@code encryData} and {@code sign} are
+   * keyed by the country code. {@code enc} is the (already built) business map; its {@code timeStamp}
+   * is reused as {@code reqTimestamp} so the signed value matches what the server reconstructs.
+   */
+  private JSONObject sendUnLogin(String endpoint, TreeMap<String, String> enc) throws Exception {
     String country = country();
-    TreeMap<String, String> enc = new TreeMap<>();
-    enc.put("timeStamp", String.valueOf(now()));
-    enc.put("random", random());
-    enc.put("networkType", "wifi");
-    enc.put("version", APP_VERSION);
-    if (uuid != null && !uuid.isEmpty()) enc.put("uuid", uuid);
+    String ts = enc.get("timeStamp");
+    String imei = imeiMd5();
 
     String encryData = WatchEnvelope.encryData(enc, country);
 
     TreeMap<String, String> signed = new TreeMap<>(enc);
     signed.put("identifier", country);
-    signed.put("watchImei", imeiMd5());
+    signed.put("watchImei", imei);
     signed.put("watchModel", WATCH_MODEL);
     signed.put("watchName", WATCH_NAME);
     signed.put("watchBrand", WATCH_BRAND);
     signed.put("watchAppVersion", APP_VERSION);
     signed.put("watchOs", WATCH_OS);
-    signed.put("reqTimestamp", String.valueOf(now()));
+    signed.put("reqTimestamp", ts);
     signed.put("language", language());
     signed.put("countryCode", country);
     String sign = WatchEnvelope.sign(signed, country);
@@ -146,30 +178,36 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
     req.put("encryData", encryData);
     req.put("identifier", country);
     req.put("language", language());
-    req.put("reqTimestamp", String.valueOf(now()));
+    req.put("reqTimestamp", ts);
     req.put("sign", sign);
     req.put("watchAppVersion", APP_VERSION);
     req.put("watchBrand", WATCH_BRAND);
-    req.put("watchImei", imeiMd5());
+    req.put("watchImei", imei);
     req.put("watchModel", WATCH_MODEL);
     req.put("watchName", WATCH_NAME);
     req.put("watchOs", WATCH_OS);
-    return exchange(endpoint, req.toString(), country);
+    return exchange(endpoint, req.toString(), CryptoUtils.md5Hex(country).toLowerCase(Locale.ROOT));
   }
 
-  /** Post-token steps (gain vehicle/bluetooth): envelope keyed by the encry token. */
-  private JSONObject postLogin(String endpoint, WatchTokens tokens, TreeMap<String, String> body)
+  /** Post-token steps (gain vehicle/bluetooth): envelope keyed by the encry token; sign by the sign token. */
+  private JSONObject sendLogin(String endpoint, WatchTokens tokens, TreeMap<String, String> bodyMap)
       throws Exception {
     String country = country();
-    TreeMap<String, String> enc = body != null ? body : new TreeMap<>();
-    enc.put("timeStamp", String.valueOf(now()));
-    enc.put("random", random());
-    enc.put("networkType", "wifi");
-    enc.put("deviceType", "0");
-
-    String encryData = WatchEnvelope.encryData(enc, CryptoUtils.md5Hex(tokens.encryToken));
-
+    String ts = String.valueOf(now());
+    String imei = imeiMd5();
+    String userType = tokens.userType;
     String identifier = tokens.identifier.isEmpty() ? country : tokens.identifier;
+
+    TreeMap<String, String> enc = new TreeMap<>();
+    enc.put("timeStamp", ts);
+    enc.put("random", random());
+    enc.put("watchImei", imei);
+    enc.put("deviceType", "0");
+    enc.put("networkType", "wifi");
+    if (bodyMap != null) enc.putAll(bodyMap);
+
+    String encryData = WatchEnvelope.encryData(enc, tokens.encryToken);
+
     TreeMap<String, String> signed = new TreeMap<>(enc);
     signed.put("identifier", identifier);
     signed.put("watchModel", WATCH_MODEL);
@@ -177,32 +215,38 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
     signed.put("watchBrand", WATCH_BRAND);
     signed.put("watchAppVersion", APP_VERSION);
     signed.put("watchOs", WATCH_OS);
-    signed.put("reqTimestamp", String.valueOf(now()));
+    signed.put("reqTimestamp", ts);
     signed.put("language", language());
     signed.put("countryCode", country);
-    if (!tokens.userType.isEmpty()) signed.put("userType", tokens.userType);
+    signed.put("userType", userType);
     String sign = WatchEnvelope.sign(signed, tokens.signToken);
 
     JSONObject req = new JSONObject();
-    req.put("countryCode", country);
-    req.put("encryData", encryData);
     req.put("identifier", identifier);
-    req.put("language", language());
-    req.put("reqTimestamp", String.valueOf(now()));
-    req.put("sign", sign);
-    req.put("watchAppVersion", APP_VERSION);
-    req.put("watchBrand", WATCH_BRAND);
-    req.put("watchImei", imeiMd5());
+    req.put("watchImei", imei);
     req.put("watchModel", WATCH_MODEL);
     req.put("watchName", WATCH_NAME);
+    req.put("watchBrand", WATCH_BRAND);
+    req.put("watchAppVersion", APP_VERSION);
     req.put("watchOs", WATCH_OS);
-    if (!tokens.userType.isEmpty()) req.put("userType", tokens.userType);
-    return exchange(endpoint, req.toString(), CryptoUtils.md5Hex(tokens.encryToken));
+    req.put("reqTimestamp", ts);
+    req.put("language", language());
+    req.put("countryCode", country);
+    req.put("userType", userType);
+    req.put("encryData", encryData);
+    req.put("sign", sign);
+    return exchange(
+        endpoint, req.toString(), CryptoUtils.md5Hex(tokens.encryToken).toLowerCase(Locale.ROOT));
   }
 
   // --- transport & parsing ----------------------------------------------------------------------
 
-  private JSONObject exchange(String endpoint, String requestJson, String respKeySource)
+  /**
+   * POST the request, unwrap the {@code {"response":"{...}"}} envelope, raise the server's business
+   * code when it is not {@code "0"}, and return a flattened business object. {@code respKeyHex} is
+   * the AES key (already hex) used to decrypt an encrypted {@code respondData} payload.
+   */
+  private JSONObject exchange(String endpoint, String requestJson, String respKeyHex)
       throws Exception {
     Request request =
         new Request.Builder()
@@ -214,35 +258,63 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
     try (Response response = http.newCall(request).execute()) {
       int httpCode = response.code();
       String raw = response.body() != null ? response.body().string() : "";
-      JSONObject top = raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
-      String biz =
-          firstString(top, "code", "resultCode", "rspCode", "returnCode", "resCode", "status");
-      diag("WATCHKEY_HTTP", endpoint + " http=" + httpCode + " code=" + (biz.isEmpty() ? "?" : biz));
 
-      // For the pre-approval steps only (server time, QR uuid, QR status — no secrets), log the raw
-      // body so the real field names and the QR uuid value can be confirmed from the first run. The
-      // token/vehicle/bluetooth steps carry secrets and are never logged here.
+      JSONObject top = raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
+      String wrapped = top.optString("response", "");
+      if (wrapped.isEmpty()) wrapped = top.optString("respondData", "");
+
+      JSONObject biz = (!wrapped.isEmpty() && wrapped.trim().startsWith("{")) ? new JSONObject(wrapped) : null;
+      String code = biz != null ? biz.optString("code", "") : "";
+      String message = biz != null ? biz.optString("message", "") : "";
+      diag("WATCHKEY_HTTP", endpoint + " http=" + httpCode + " code=" + (code.isEmpty() ? "?" : code));
+
+      // Pre-approval steps only (server time, QR uuid, QR status — no secrets): log the raw body so
+      // the real field names and the QR uuid value can be confirmed. Token/vehicle/bluetooth bodies
+      // carry secrets and are never logged.
       if (bodyLoggable(endpoint) && !raw.isEmpty()) {
         diag("WATCHKEY_BODY", endpoint + " " + (raw.length() > 1200 ? raw.substring(0, 1200) + "…" : raw));
       }
 
-      // The business payload may be an encrypted hex string ("encryData"/"data") or a plain object.
+      if (biz == null) {
+        throw new java.io.IOException("응답 형식 오류 (response 없음)");
+      }
+      if (!code.isEmpty() && !"0".equals(code)) {
+        throw new java.io.IOException(
+            "워치 서버 오류 " + code + (message.isEmpty() ? "" : " · " + message));
+      }
+
       JSONObject merged = new JSONObject();
-      copyStrings(top, merged);
-      String enc = top.optString("encryData", top.optString("data", ""));
-      if (!enc.isEmpty() && isHex(enc)) {
+      copyStrings(biz, merged);
+
+      String respondData = biz.optString("respondData", "");
+      if (respondData.isEmpty()) respondData = biz.optString("response", "");
+      if (!respondData.isEmpty() && isHex(respondData)) {
         try {
-          String plain = CryptoUtils.aesDecryptUtf8(enc, CryptoUtils.md5Hex(respKeySource));
-          if (plain != null && plain.trim().startsWith("{")) copyStrings(new JSONObject(plain), merged);
+          String plain = CryptoUtils.aesDecryptUtf8(respondData, respKeyHex);
+          if (plain != null) {
+            String p = plain.trim();
+            if (p.startsWith("{")) {
+              copyStrings(new JSONObject(p), merged);
+            } else {
+              if (p.length() >= 2 && p.startsWith("\"") && p.endsWith("\"")) {
+                p = p.substring(1, p.length() - 1);
+              }
+              if (!merged.has("serverTime")) merged.put("serverTime", p);
+            }
+          }
         } catch (Exception e) {
           diag("WATCHKEY_DECRYPT_ERR", endpoint + " " + e.getMessage());
         }
-      } else {
-        JSONObject data = top.optJSONObject("data");
-        if (data != null) copyStrings(data, merged);
       }
       return merged;
     }
+  }
+
+  /** Only the pre-approval steps carry no secret, so only their bodies may be logged. */
+  private static boolean bodyLoggable(String endpoint) {
+    return endpoint.endsWith("getServerCurrentTime")
+        || endpoint.endsWith("create/qrcode")
+        || endpoint.endsWith("check/qrcode");
   }
 
   /** Flatten string/number leaves (one level into nested objects) so field lookup is envelope-agnostic. */
@@ -267,13 +339,6 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
     return "";
   }
 
-  /** Only the pre-approval steps carry no secret, so only their bodies may be logged. */
-  private static boolean bodyLoggable(String endpoint) {
-    return endpoint.endsWith("getServerCurrentTime")
-        || endpoint.endsWith("create/qrcode")
-        || endpoint.endsWith("check/qrcode");
-  }
-
   private static boolean isHex(String s) {
     if (s.length() < 16 || s.length() % 2 != 0) return false;
     for (int i = 0; i < s.length(); i++) {
@@ -283,23 +348,16 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
     return true;
   }
 
+  /**
+   * The QR the owner scans in the official BYD app: {@code watchQRCode://} followed by the AES-hex of
+   * {@code watchImei=<imei>&uuid=<uuid>&countryCode=<cc>} (key = md5("watch.bydautolink"), upper-cased
+   * hex). The official app decrypts this; a plaintext payload is rejected at scan as a region
+   * mismatch.
+   */
   private String buildQrPayload(String uuid) {
-    return "watchQRCode://watch.bydautolink?uuid="
-        + uuid
-        + "&countryCode="
-        + country()
-        + "&watchBrand="
-        + WATCH_BRAND
-        + "&watchModel="
-        + WATCH_MODEL
-        + "&watchName="
-        + WATCH_NAME
-        + "&watchImei="
-        + imeiMd5()
-        + "&watchOs="
-        + WATCH_OS
-        + "&watchAppVersion="
-        + APP_VERSION;
+    String plain = "watchImei=" + imeiMd5() + "&uuid=" + uuid + "&countryCode=" + country();
+    String keyHex = CryptoUtils.md5Hex(QR_KEY_SEED).toLowerCase(Locale.ROOT);
+    return "watchQRCode://" + CryptoUtils.aesEncryptHex(plain, keyHex).toUpperCase(Locale.ROOT);
   }
 
   private long now() {

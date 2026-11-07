@@ -1488,10 +1488,6 @@ public final class MainActivity extends Activity {
     extraParams.topMargin = dp(12);
     controls.addView(extraRow, extraParams);
     roundButton(
-        extraRow, R.drawable.ic_window_open, "창문 열기", TEXT, "control_window_open",
-        new CloudClient.Command[] {CloudClient.Command.OPEN_WINDOWS},
-        () -> controller.accessory(CloudClient.Command.OPEN_WINDOWS));
-    roundButton(
         extraRow, R.drawable.ic_window_close, "창문 닫기", TEXT, "control_window_close",
         new CloudClient.Command[] {CloudClient.Command.CLOSE_WINDOWS},
         () -> controller.accessory(CloudClient.Command.CLOSE_WINDOWS));
@@ -1499,8 +1495,8 @@ public final class MainActivity extends Activity {
         extraRow, R.drawable.ic_find_car, "차량 찾기", ACCENT, "control_find_car",
         new CloudClient.Command[] {CloudClient.Command.FIND_CAR},
         () -> controller.accessory(CloudClient.Command.FIND_CAR));
-    // An empty fourth cell keeps these under the same four columns as the row above.
-    extraRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+    // Empty cells keep these under the same four columns as the row above.
+    for (int i = 0; i < 2; i++) extraRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
     LinearLayout bigRow = new LinearLayout(this);
     bigRow.setBaselineAligned(false);
     bigRow.setClipChildren(false);
@@ -2161,10 +2157,7 @@ public final class MainActivity extends Activity {
         enabled &=
             need == CloudClient.Command.CLIMATE_ON
                 ? CloudClient.hasClimate(controller.capabilities)
-                : CloudClient.hasFeature(controller.capabilities, need.feature)
-                    // Some cars list 1026 but cannot open remotely; BYD's learn info says so.
-                    && (need != CloudClient.Command.OPEN_WINDOWS
-                        || !Boolean.FALSE.equals(controller.windowOpenSupported()));
+                : CloudClient.hasFeature(controller.capabilities, need.feature);
       setTreeEnabled(commands.get(i), enabled);
       commands.get(i).setAlpha(enabled ? 1f : .45f);
     }
@@ -2450,6 +2443,7 @@ public final class MainActivity extends Activity {
                     + " BYD가 주차브레이크 정보를 제공하지 않으면 이번 직접 확인을 사용합니다. 해제·유효하지 않은 값이 오면 차단합니다."
                     + " 확인은 이번 요청에만 30초간 유효하며 자동 종료에는 적용되지 않습니다. 종료 후 계기판 전원 OFF를 확인하세요."
                     + " 도어가 잠긴 상태에서 보내면 차량이 경적을 한 번 울릴 수 있습니다."
+                    + "\n\n차 옆에서 차량 보조 앱이 실시간 P단을 확인해 주지 못하면(멀리서 끌 때) 원격 공조 끄기로 대신 요청합니다. 원격 시동 상태면 1분 안에 차 전원이 꺼지고, 누가 타서 쓰는 중인 차는 꺼지지 않습니다."
                 : "선택한 차량에 " + cmd.label + " 명령을 전송합니다.")
         .setNegativeButton("취소", null)
         .setPositiveButton(

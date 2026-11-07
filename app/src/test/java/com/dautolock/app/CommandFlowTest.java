@@ -113,7 +113,7 @@ public class CommandFlowTest {
     Integer chargeState, fullHour, fullMinute;
     Double soc;
     Object epb = "--";
-    boolean doorOpen, openOnUnlock, rejectClimate, rejectHvac, windowOpen;
+    boolean doorOpen, openOnUnlock, rejectClimate, rejectHvac, windowOpen, climateOffPowersDown;
     Object okLight = JSONObject.NULL;
     int statusRequests, hvacRequests, configRequests;
     Runnable beforeStatus = () -> {};
@@ -178,7 +178,7 @@ public class CommandFlowTest {
             }
           }
           if (command.equals("TURNOFFENGINE")) power = 1;
-          if (command.equals("OPENWINDOW")) windowOpen = true;
+          if (command.equals("CLOSEAIR") && climateOffPowersDown) power = 1;
           if (command.equals("CLOSEWINDOW")) windowOpen = false;
           cb.onSuccess(new JSONObject().put("controlState", 1));
         } else throw new AssertionError("Unexpected endpoint " + endpoint);
@@ -1309,6 +1309,56 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void stopAwayFromTheCarEndsTheRemoteStartWithClimateOff() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3; // Started remotely (시동 켜기), locked, nobody in it.
+    p.locked = true;
+    p.climateOffPowersDown = true;
+    Controller c = create(p);
+    bridgeParked(c);
+    c.vehicleLink.state.clear(); // Phone far away: the Bridge cannot vouch for P.
+    c.manualStopAfterParkingConfirmation();
+    complete(c);
+    assertEquals(Collections.singletonList("CLOSEAIR"), p.commands); // Never TURNOFFENGINE.
+    assertTrue(c.stopStatus, c.stopStatus.contains("전원 OFF 확인 중"));
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofSeconds(16));
+    completeRead(c);
+    assertTrue(c.stopStatus, c.stopStatus.contains("원격 시동 꺼짐"));
+    assertEquals(Collections.singletonList("CLOSEAIR"), p.commands);
+  }
+
+  @Test
+  public void remoteClimateOffThatLeavesTheCarRunningSaysSoAndIsNotResent() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3; // Someone took the car over: CLOSEAIR only stops its A/C.
+    Controller c = create(p);
+    bridgeParked(c);
+    c.vehicleLink.state.clear();
+    c.manualStopAfterParkingConfirmation();
+    complete(c);
+    org.robolectric.shadows.ShadowLooper main =
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper());
+    for (int i = 0; i < 4; i++) {
+      main.idleFor(java.time.Duration.ofSeconds(16));
+      completeRead(c);
+    }
+    assertEquals(Collections.singletonList("CLOSEAIR"), p.commands);
+    assertTrue(c.stopStatus, c.stopStatus.contains("아직 켜져"));
+  }
+
+  @Test
+  public void stopWithLiveBridgeParkStillSendsTurnOffEngine() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    bridgeParked(c);
+    c.manualStopAfterParkingConfirmation();
+    complete(c);
+    assertEquals(Collections.singletonList("TURNOFFENGINE"), p.commands);
+  }
+
+  @Test
   public void manualParkingConfirmationExpiresDuringSlowStatusRequest() throws Exception {
     Protocol p = new Protocol();
     p.power = 3;
@@ -1332,12 +1382,6 @@ public class CommandFlowTest {
 
   private void addFunction(Controller c, String functionNo) throws Exception {
     c.capabilities.getJSONArray("items").put(new JSONObject().put("functionNo", functionNo));
-  }
-
-  private void learnInfo(Controller c, JSONObject learn) throws Exception {
-    JSONObject vehicle = new JSONObject().put("vin", c.vin);
-    if (learn != null) vehicle.put("vehicleFunLearnInfo", learn);
-    c.vehicles = new JSONArray().put(vehicle);
   }
 
   @Test
@@ -1364,32 +1408,6 @@ public class CommandFlowTest {
   }
 
   @Test
-  public void openWindowsChecksStateSendsOnceAndReadsBackOpen() throws Exception {
-    Protocol p = new Protocol();
-    Controller c = create(p);
-    learnInfo(c, new JSONObject().put("openWindowLearnInfo", 1));
-    c.accessory(CloudClient.Command.OPEN_WINDOWS);
-    complete(c);
-    assertEquals(Collections.singletonList("OPENWINDOW"), p.commands);
-    assertEquals(2, p.statusRequests); // Preflight and readback.
-    assertTrue(c.windowsStatus.contains("창문 열기 완료"));
-  }
-
-  @Test
-  public void openWindowsBlockedWhenByDLearnInfoSaysTheCarCannotOpen() throws Exception {
-    Protocol p = new Protocol();
-    Controller c = create(p);
-    learnInfo(c, new JSONObject().put("openWindowLearnInfo", 0).put("openWindow499LearnInfo", 0));
-    assertEquals(Boolean.FALSE, c.windowOpenSupported());
-    c.accessory(CloudClient.Command.OPEN_WINDOWS);
-    complete(c);
-    assertTrue(p.commands.isEmpty());
-    assertTrue(c.lastControl.contains("지원하지 않습니다"));
-    learnInfo(c, null); // No learn info: 1026 decides, as in pyBYD.
-    assertNull(c.windowOpenSupported());
-  }
-
-  @Test
   public void closeWindowsReadsBackClosedAndSkipsWhenAlreadyClosed() throws Exception {
     Protocol p = new Protocol();
     p.windowOpen = true;
@@ -1397,6 +1415,7 @@ public class CommandFlowTest {
     c.accessory(CloudClient.Command.CLOSE_WINDOWS);
     complete(c);
     assertEquals(Collections.singletonList("CLOSEWINDOW"), p.commands);
+    assertEquals(2, p.statusRequests); // Preflight and readback.
     assertTrue(c.windowsStatus.contains("창문 닫기 완료"));
     c.accessory(CloudClient.Command.CLOSE_WINDOWS);
     complete(c);
@@ -1408,12 +1427,13 @@ public class CommandFlowTest {
   public void climateScaleLearnedFromHvacSetsTheNextStartTemperature() throws Exception {
     Protocol p = new Protocol();
     Controller c = create(p);
-    assertEquals(9, c.cloud.climateParams().getInt("mainSettingTemp")); // 23 °C, default scale.
+    // Default 17–33 °C (Korean Dolphin): 23 °C in half-degree steps from 16.5 °C.
+    assertEquals(13, c.cloud.climateParams().getInt("mainSettingTemp"));
     c.learnClimateScale(
         new com.dautolock.app.core.HvacSnapshot(
-            new JSONObject().put("vdeTempRangeMin", 17).put("vdeTempRangeMax", 33),
+            new JSONObject().put("vdeTempRangeMin", 15).put("vdeTempRangeMax", 31),
             System.currentTimeMillis()));
-    assertEquals(7, c.cloud.climateParams().getInt("mainSettingTemp")); // 23 °C on 17–33 °C.
-    assertEquals(16f, c.settings.getFloat("climateTempOffset", 0), 0);
+    assertEquals(9, c.cloud.climateParams().getInt("mainSettingTemp")); // 23 °C on 15–31 °C.
+    assertEquals(14f, c.settings.getFloat("climateTempOffset", 0), 0);
   }
 }

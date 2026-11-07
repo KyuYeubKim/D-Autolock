@@ -485,9 +485,9 @@ public class MainActivityTest {
       assertFalse(decor.findViewWithTag("control_power_off").isEnabled());
       assertFalse(decor.findViewWithTag("control_prepare").isEnabled());
       for (String tag :
-          new String[] {"control_window_open", "control_window_close", "control_find_car"})
+          new String[] {"control_window_close", "control_find_car"})
         assertFalse(tag, decor.findViewWithTag(tag).isEnabled());
-      assertNotNull(find(decor, "창문 열기"));
+      assertNull(decor.findViewWithTag("control_window_open")); // Removed in v0.3.46.
       assertNotNull(find(decor, "창문 닫기"));
       assertNotNull(find(decor, "차량 찾기"));
       assertFalse(((Switch) find(decor, "실제 자동 도어 제어")).isChecked());

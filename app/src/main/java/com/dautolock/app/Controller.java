@@ -217,7 +217,7 @@ final class Controller {
 
   private CloudClient configure(CloudClient client) {
     client.setDiagnostics(diagnostics::record);
-    client.climateTempOffset = settings.getFloat("climateTempOffset", 14f);
+    client.climateTempOffset = settings.getFloat("climateTempOffset", 16f);
     client.setSessionRecovery(
         () -> {
           if (client != cloud || !hasSavedLogin())
@@ -406,7 +406,7 @@ final class Controller {
           if (!same) {
             vehicleLink.forget();
             forgetCharge();
-            cloud.climateTempOffset = 14; // Relearned from the next car's climate range.
+            cloud.climateTempOffset = 16; // Relearned from the next car's climate range.
           }
           snapshot = null;
           capabilities = new JSONObject();
@@ -448,7 +448,7 @@ final class Controller {
                 .remove("climateTempOffset")
                 .apply();
             forgetCharge();
-            cloud.climateTempOffset = 14; // Relearned from the next car's climate range.
+            cloud.climateTempOffset = 16; // Relearned from the next car's climate range.
           }
           vin = selectedVin;
           vehicleName =
@@ -664,6 +664,12 @@ final class Controller {
   // ~60 s after the key-off) without holding a real departure's lock for long.
   static final long IGNITION_OFF_GRACE_MS = 90 * 1000;
   private volatile long powerOnSeenAt, powerOffAt;
+  // A 시동 끄기 sent as CLOSEAIR (no live Bridge P): when it was acknowledged, for which car.
+  private volatile long remoteShutdownAt = -1, remoteShutdownSince;
+  private volatile String remoteShutdownVin = "";
+  /** Power read-backs after a remote 시동 끄기; BYD powered a remote start down ~40 s after. */
+  static final long[] REMOTE_SHUTDOWN_CHECKS_MS = {15000, 35000, 60000};
+  static final long REMOTE_SHUTDOWN_GIVE_UP_MS = 55000;
 
   /** Power ON was observed in the last 5 minutes: an opening door now is someone leaving. */
   boolean recentlyPowered() {
@@ -712,6 +718,35 @@ final class Controller {
           context, next.locked ? "도어 잠김 확인" : "도어 열림 확인", "BYD Cloud 조회에서 상태 변경을 확인했습니다");
     }
     chargeWatch(next);
+    remoteShutdownWatch(next);
+  }
+
+  /** Reports how a remote 시동 끄기 (CLOSEAIR) ended, from the status reads it scheduled. */
+  private void remoteShutdownWatch(VehicleSnapshot next) {
+    long at = remoteShutdownAt, now = System.currentTimeMillis();
+    long elapsed = SystemClock.elapsedRealtime() - remoteShutdownSince;
+    if (at < 0) return;
+    if (!remoteShutdownVin.equals(vin)) {
+      remoteShutdownAt = -1;
+      return;
+    }
+    if (!next.fresh(now) || next.measuredAt < at) return;
+    boolean off = Integer.valueOf(1).equals(next.power);
+    if (!off && elapsed < REMOTE_SHUTDOWN_GIVE_UP_MS) return;
+    remoteShutdownAt = -1;
+    diagnostics.record("REMOTE_SHUTDOWN_RESULT", "power=" + next.power + " elapsedMs=" + elapsed);
+    stopStatus =
+        lastControl =
+            off
+                ? "원격 시동 꺼짐 · 차량 전원 OFF 확인"
+                : "원격 공조는 껐지만 차량 전원이 아직 켜져 있습니다 · 누가 차를 쓰는 중이면 꺼지지 않습니다";
+    note(lastControl);
+    DoorNotifications.result(
+        context,
+        off ? "시동 꺼짐 확인" : "시동 꺼짐 미확인",
+        off
+            ? "원격 시동 끄기 · BYD 조회상 차량 전원 OFF"
+            : "원격 공조 끄기만 적용됐습니다. 차 옆에서 차량 보조 앱이 연결되면 시동 끄기를 쓸 수 있어요");
   }
 
   // Charge-complete notice. No polling: status reads that happen anyway track the session, and one
@@ -1100,6 +1135,21 @@ final class Controller {
                               || (checked.speed != null && checked.speed > 0))
                       ? unlockInUseBlocks + 1
                       : 0;
+            // Manual 시동 끄기 away from the car: without a live Bridge P, TURNOFFENGINE stays
+            // refused. A remote-started car is shut down by ending its remote climate instead —
+            // BYD powers it off once that climate stops, while CLOSEAIR in a car someone took over
+            // only turns the A/C off. Everything but the Bridge must still pass.
+            if (block != null
+                && stop
+                && !automatic
+                && Integer.valueOf(3).equals(checked.power)
+                && checked.manualStopBlock(
+                        System.currentTimeMillis(), parkingConfirmationCurrent(parkingConfirmedAt))
+                    == null
+                && CloudClient.hasClimate(capabilities)) {
+              remoteShutdown(ticket, target, valid, block);
+              return;
+            }
             if (block != null) throw new Exception("제어 보류: " + block);
             if ((stop && Integer.valueOf(1).equals(snapshot.power))
                 || (!stop && Boolean.valueOf(lock).equals(snapshot.locked))) {
@@ -1246,6 +1296,47 @@ final class Controller {
         },
         finished,
         automatic);
+  }
+
+  /**
+   * 시동 끄기 while the Bridge cannot vouch for P (the phone is away from the car): one CLOSEAIR
+   * ends the remote climate session, which powers a remote-started car down shortly after (real
+   * log 11-07: the car was OFF ~40 s after its climate stopped). Sent once; the power read-backs
+   * are spread over a minute through ordinary status reads, so the worker is not held.
+   */
+  private void remoteShutdown(int ticket, String target, BooleanSupplier valid, String bridgeBlock)
+      throws Exception {
+    if (!valid.getAsBoolean()) {
+      note("거리 또는 설정이 바뀌어 제어를 취소했습니다");
+      return;
+    }
+    diagnostics.record("STOP_VIA_CLIMATE_OFF", "reason=" + bridgeBlock);
+    cancelReadinessWatch("원격 시동 끄기 요청");
+    long sentAt = System.currentTimeMillis();
+    cloud.command(
+        target,
+        pinHash,
+        CloudClient.Command.CLIMATE_OFF,
+        () -> {
+          if (!valid.getAsBoolean()) return false;
+          diagnostics.record("CONTROL_SEND", "MANUAL CLIMATE_OFF purpose=remote_shutdown");
+          lastControl = "원격 시동 끄기 · 전송 중";
+          changed();
+          return true;
+        });
+    remoteShutdownVin = target;
+    remoteShutdownSince = SystemClock.elapsedRealtime();
+    remoteShutdownAt = sentAt;
+    stopStatus = lastControl = "원격 시동 끄기 요청 완료 · 차량 전원 OFF 확인 중";
+    note(lastControl);
+    for (long delay : REMOTE_SHUTDOWN_CHECKS_MS)
+      main.postDelayed(
+          () -> {
+            if (remoteShutdownAt != sentAt) return;
+            if (validSession(ticket, target)) readStatus("remote_shutdown_check");
+            else remoteShutdownAt = -1;
+          },
+          delay);
   }
 
   void prepareMonitoring() {
@@ -1810,39 +1901,14 @@ final class Controller {
   }
 
   /**
-   * Whether BYD says this car can open its windows remotely. pyBYD: function 1026 alone is not
-   * enough — vehicleFunLearnInfo openWindowLearnInfo or openWindow499LearnInfo must be 1 (some
-   * cars list 1026 and ignore OPENWINDOW). Null when the vehicle list has no learn info, and then
-   * 1026 decides, as in pyBYD.
-   */
-  Boolean windowOpenSupported() {
-    JSONArray list = vehicles;
-    for (int i = 0; i < list.length(); i++) {
-      JSONObject o = list.optJSONObject(i);
-      if (o == null || !vin.equals(o.optString("vin"))) continue;
-      Object raw = o.opt("vehicleFunLearnInfo");
-      JSONObject learn = raw instanceof JSONObject ? (JSONObject) raw : null;
-      if (learn == null && raw instanceof String)
-        try {
-          learn = new JSONObject((String) raw);
-        } catch (Exception ignored) {
-        }
-      if (learn == null) return null;
-      return learn.optInt("openWindowLearnInfo") > 0 || learn.optInt("openWindow499LearnInfo") > 0;
-    }
-    return null;
-  }
-
-  /**
-   * 창문 열기·닫기 and 차량 찾기 from the main screen. Sent once; an unconfirmed result is never
-   * resent. Windows first need a fresh stationary state and are read back afterwards; 차량 찾기
-   * (horn and lights) has no state to read back.
+   * 창문 닫기 and 차량 찾기 from the main screen. Sent once; an unconfirmed result is never
+   * resent. Closing windows first needs a fresh stationary state and is read back afterwards;
+   * 차량 찾기 (horn and lights) has no state to read back.
    */
   void accessory(CloudClient.Command command) {
     int ticket = generation.get();
     String target = vin;
     boolean window = command != CloudClient.Command.FIND_CAR;
-    boolean open = command == CloudClient.Command.OPEN_WINDOWS;
     run(
         () -> {
           try {
@@ -1852,14 +1918,6 @@ final class Controller {
               capabilities = cloud.capabilities(target);
             if (!CloudClient.hasFeature(capabilities, command.feature))
               throw new Exception("이 차량의 " + command.label + " 지원을 확인하지 못했습니다");
-            if (open && vehicles.length() == 0)
-              try {
-                vehicles = cloud.vehicles(); // Only to read the window-open learn flags.
-              } catch (Exception e) {
-                diagnostics.record("WINDOW_OPEN_LEARN_INFO_ERROR", e.getMessage());
-              }
-            if (open && Boolean.FALSE.equals(windowOpenSupported()))
-              throw new Exception("BYD 정보상 이 차량은 원격 창문 열기를 지원하지 않습니다 (닫기만 가능)");
             long sentAt = System.currentTimeMillis();
             if (window) {
               note(command.label + " 전 차량 상태 확인 중…");
@@ -1869,7 +1927,7 @@ final class Controller {
               diagnostics.record("PREFLIGHT", "MANUAL " + command + " " + checked.diagnostic(now));
               if (!checked.fresh(now) || checked.speed == null || checked.speed != 0d)
                 throw new Exception("제어 보류: 최신 정차 상태를 확인하지 못했습니다");
-              if (!open && Boolean.TRUE.equals(checked.windowsClosed)) {
+              if (Boolean.TRUE.equals(checked.windowsClosed)) {
                 windowsStatus = "BYD 조회상 이미 모든 창문 닫힘 · 명령 생략";
                 lastControl = windowsStatus;
                 diagnostics.record("CONTROL_SKIP_STATE", "MANUAL " + command + " source=cloud");
@@ -1903,17 +1961,9 @@ final class Controller {
             boolean verified =
                 after.fresh(now)
                     && after.measuredAt >= sentAt
-                    && (open
-                        ? Boolean.FALSE.equals(after.windowsClosed)
-                        : Boolean.TRUE.equals(after.windowsClosed));
+                    && Boolean.TRUE.equals(after.windowsClosed);
             windowsStatus =
-                verified
-                    ? open
-                        ? "창문 열기 완료 · BYD 조회상 열림 (환기 정도로 조금 열립니다)"
-                        : "창문 닫기 완료 · BYD 조회상 모두 닫힘"
-                    : open
-                        ? "창문 열기 응답 수신 · 창문 변화 미확인. 일부 차량은 명령을 받아도 열리지 않습니다"
-                        : "창문 닫기 응답 수신 · 실제 창문 상태 미확인";
+                verified ? "창문 닫기 완료 · BYD 조회상 모두 닫힘" : "창문 닫기 응답 수신 · 실제 창문 상태 미확인";
             lastControl = windowsStatus;
             note(lastControl);
             DoorNotifications.result(

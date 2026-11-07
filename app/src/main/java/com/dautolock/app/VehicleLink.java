@@ -56,6 +56,11 @@ final class VehicleLink {
     return pairing != null && !vehicle.isEmpty() && vehicle.equals(controller.vin);
   }
 
+  /** The paired head unit's classic Bluetooth address (also its audio device), or "". */
+  synchronized String headUnitAddress() {
+    return configured() ? address : "";
+  }
+
   synchronized void configure(String qr, String target) throws Exception {
     if (controller.vin.isEmpty()) throw new Exception("BYD 차량을 먼저 선택하세요");
     Pairing next = Pairing.parse(qr);

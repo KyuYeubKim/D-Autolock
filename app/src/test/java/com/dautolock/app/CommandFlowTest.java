@@ -1291,6 +1291,73 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void lockRefusedForUnconfirmedDepartureIsCountedUntilOneGoesThrough() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    for (int i = 1; i <= 2; i++) {
+      c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, false);
+      complete(c);
+      assertEquals(i, c.lockDepartureBlocks);
+    }
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    assertEquals(Collections.singletonList("LOCKDOOR"), p.commands);
+    assertEquals(0, c.lockDepartureBlocks);
+  }
+
+  private static final String HEAD_UNIT = "00:11:22:33:44:55";
+
+  private void carAudio(Controller c, String address, boolean connected) throws Exception {
+    java.lang.reflect.Field field = VehicleLink.class.getDeclaredField("address");
+    field.setAccessible(true);
+    field.set(c.vehicleLink, HEAD_UNIT);
+    android.content.Intent i =
+        new android.content.Intent(android.bluetooth.BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+            .putExtra(
+                android.bluetooth.BluetoothDevice.EXTRA_DEVICE,
+                android.bluetooth.BluetoothAdapter.getDefaultAdapter().getRemoteDevice(address))
+            .putExtra(
+                android.bluetooth.BluetoothProfile.EXTRA_STATE,
+                connected
+                    ? android.bluetooth.BluetoothProfile.STATE_CONNECTED
+                    : android.bluetooth.BluetoothProfile.STATE_DISCONNECTED);
+    c.carAudio.onBroadcast(i);
+  }
+
+  @Test
+  public void carAudioOnTheHeadUnitMarksInCarAndOtherDevicesDoNot() throws Exception {
+    Controller c = create(new Protocol());
+    bridgeParked(c);
+    carAudio(c, "AA:BB:CC:DD:EE:FF", true); // Earbuds or another car: ignored.
+    assertFalse(c.inCarByAudio());
+    carAudio(c, HEAD_UNIT, true);
+    assertTrue(c.inCarByAudio());
+    c.settings.edit().putBoolean("carAudioHold", false).commit();
+    assertFalse(c.inCarByAudio()); // Switched off in settings.
+    c.settings.edit().putBoolean("carAudioHold", true).commit();
+    carAudio(c, HEAD_UNIT, false);
+    assertFalse(c.inCarByAudio());
+  }
+
+  @Test
+  public void automaticStopIsNotSentWhileThePhoneIsOnTheCarsAudio() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    ownTrip(c);
+    bridgeParked(c);
+    c.monitoring = c.autoEnabled = true;
+    c.automaticCommand(CloudClient.Command.LOCK, () -> true, () -> true, () -> {}, () -> {}, true);
+    complete(c);
+    carAudio(c, HEAD_UNIT, true); // Back in the car before the delayed Stop.
+    runDelayedStop(c, true);
+    assertEquals(Collections.singletonList("LOCKDOOR"), p.commands);
+    assertTrue(c.stopStatus, c.stopStatus.contains("차 블루투스"));
+  }
+
+  @Test
   public void manualParkingConfirmationStopsOnceAndClosesLockedWindowsAfterPowerOff()
       throws Exception {
     Protocol p = new Protocol();

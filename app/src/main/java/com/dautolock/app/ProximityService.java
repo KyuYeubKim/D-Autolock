@@ -26,7 +26,12 @@ public final class ProximityService extends Service {
   private long watchdogIntervalMs = 120000;
   private String lastDiagnosticReason = "";
   private long nextPreflight, lastDiagnostic = -15000, lastCount = -1, started, lastIgnored = -5000;
-  private long lastIgnitionGraceLog = -15000;
+  private long lastIgnitionGraceLog = -15000, lastCarAudioLog = -15000;
+  // After a lock was refused for an unconfirmed departure with the car ON: no new cloud check before
+  // this time unless the departure is now sure (far for SURE_DEPARTURE_MS, or the signal lost).
+  private long lockRetryAt;
+  private static final long SURE_DEPARTURE_MS = 8000, DEPARTURE_RETRY_MS = 30000;
+  private static final long DEPARTURE_RETRY_MAX_MS = 120000;
   // Phase 2 beacon combine: time of the last lock (flap mute) and when a beacon-held lock started.
   private long lastLockAt = -1, lockHoldSince = -1;
   // Auxiliary beacon engine — fed in parallel and shown/logged, but not yet used in any decision.
@@ -87,6 +92,7 @@ public final class ProximityService extends Service {
   private final BroadcastReceiver radio =
       new BroadcastReceiver() {
         public void onReceive(Context c, Intent i) {
+          controller.carAudio.onBroadcast(i);
           if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(i.getAction())) {
             int state = i.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1);
             if (state == BluetoothAdapter.STATE_OFF) {
@@ -272,6 +278,11 @@ public final class ProximityService extends Service {
         controller.unlockInUseBlocks = 0;
         nextUnlockCheck = 0;
       }
+      // Back near the car: a later departure starts fresh, without the refused-lock wait.
+      if (pending == ProximityEngine.Action.UNLOCK) {
+        controller.lockDepartureBlocks = 0;
+        lockRetryAt = 0;
+      }
       readyAction = pending;
       readyAt = now;
       if (pending != ProximityEngine.Action.NONE)
@@ -340,8 +351,25 @@ public final class ProximityService extends Service {
       checkedEngine = engine;
       commandAction = action;
     }
+    // This phone's audio/call Bluetooth is on the car's head unit: it is in (or right at) the car.
+    // No automatic door command; walking away drops that connection, then the usual rules apply.
+    boolean carAudioHold = commandAction != ProximityEngine.Action.NONE && controller.inCarByAudio();
+    if (carAudioHold && now - lastCarAudioLog >= 15000) {
+      controller.diagnostics.record("CAR_AUDIO_HOLD", commandAction + " " + engine.diagnostic(now));
+      lastCarAudioLog = now;
+    }
+    // A lock refused for an unconfirmed departure (car ON) is not re-checked every 15 s: it waits
+    // for a sure departure, or the backoff, so a phone hovering near the car is not polled for.
+    boolean lockRetryReady =
+        commandAction != ProximityEngine.Action.LOCK
+            || now >= lockRetryAt
+            || (primaryEngine.departureConfirmed(now)
+                && (!primaryEngine.fresh(now)
+                    || primaryEngine.farFor(now) >= SURE_DEPARTURE_MS));
     if (controller.autoEnabled
         && !autoAttempt
+        && !carAudioHold
+        && lockRetryReady
         && cloudWait == 0
         && now >= nextPreflight
         && (commandAction != ProximityEngine.Action.UNLOCK || now >= nextUnlockCheck)
@@ -377,6 +405,17 @@ public final class ProximityService extends Service {
                               "AUTO_RECHECK_BACKOFF",
                               commandAction + " delayMs=" + recheck + " reason=vehicle_in_use");
                         nextUnlockCheck = recheck > 15000 ? completed + recheck : 0;
+                        int refused = controller.lockDepartureBlocks;
+                        if (commandAction == ProximityEngine.Action.LOCK && refused > 0) {
+                          long wait =
+                              Math.min(
+                                  DEPARTURE_RETRY_MAX_MS,
+                                  DEPARTURE_RETRY_MS << Math.min(3, refused - 1));
+                          lockRetryAt = completed + wait;
+                          controller.diagnostics.record(
+                              "AUTO_RECHECK_BACKOFF",
+                              "LOCK delayMs=" + wait + " reason=departure_unconfirmed_power_on");
+                        } else if (commandAction == ProximityEngine.Action.LOCK) lockRetryAt = 0;
                         nextPreflight =
                             sameEngine(checkedEngine)
                                     && checkedEngine.pending(completed) == commandAction
@@ -412,6 +451,7 @@ public final class ProximityService extends Service {
         && now >= nextPreflight
         && now >= nextUnlockCheck
         && !controller.busy()
+        && !controller.inCarByAudio()
         && engine.approaching(now)) {
       ProximityEngine preparingEngine = engine;
       controller.prefetchUnlock(
@@ -462,6 +502,7 @@ public final class ProximityService extends Service {
     controller = ((DApplication) getApplication()).controller();
     DoorNotifications.channels(this);
     IntentFilter filter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
+    for (String action : CarAudio.ACTIONS) filter.addAction(action);
     if (Build.VERSION.SDK_INT >= 33) registerReceiver(radio, filter, Context.RECEIVER_EXPORTED);
     else registerReceiver(radio, filter);
   }
@@ -526,6 +567,8 @@ public final class ProximityService extends Service {
       started = SystemClock.elapsedRealtime();
       lastScanAttempt = started;
       scanning = true;
+      lockRetryAt = 0;
+      controller.carAudio.refresh(this);
       List<ScanFilter> filters = new ArrayList<>();
       filters.add(new ScanFilter.Builder().setDeviceAddress(address).build());
       addBeaconFilters(filters);

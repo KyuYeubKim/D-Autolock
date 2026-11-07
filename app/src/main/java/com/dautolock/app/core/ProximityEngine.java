@@ -128,6 +128,11 @@ public final class ProximityEngine {
         : nearDwellMs;
   }
 
+  /** How long the smoothed signal has stayed at/below far (0 when not receiving or not far). */
+  public synchronized long farFor(long now) {
+    return fresh(now) && candidate == Zone.FAR && since >= 0 ? Math.max(0, now - since) : 0;
+  }
+
   public synchronized long age(long now) {
     return lastSample < 0 ? -1 : Math.max(0, now - lastSample);
   }

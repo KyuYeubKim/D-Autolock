@@ -362,6 +362,21 @@ public class ProximityEngineTest {
   }
 
   @Test
+  public void farForCountsOnlyAContinuousFreshFarStretch() {
+    ProximityEngine e = new ProximityEngine(-65, -80);
+    feed(e, -60, 0, 3000);
+    assertEquals(0, e.farFor(3000));
+    feed(e, -95, 4000, 9000); // Smoothing reaches far after a couple of samples.
+    long far = e.farFor(9000);
+    assertTrue(String.valueOf(far), far >= 3000 && far <= 5000);
+    feed(e, -60, 10000, 14000); // Back near: the stretch ends.
+    assertEquals(0, e.farFor(14000));
+    feed(e, -95, 15000, 22000);
+    assertTrue(e.farFor(22000) > 0);
+    assertEquals(0, e.farFor(22000 + ProximityEngine.STALE_MS + 1)); // Lost: not "far".
+  }
+
+  @Test
   public void fiveDbGapIsAllowedForEarlierLocking() {
     new ProximityEngine(-75, -80); // near/far 5 dB apart: valid, locks closer.
   }

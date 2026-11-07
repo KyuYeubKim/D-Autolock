@@ -172,6 +172,9 @@ public final class VehicleSnapshot {
         && now - receivedAt <= 30000;
   }
 
+  public static final String LOCK_NEEDS_DEPARTURE =
+      "전원 ON·주차브레이크 미제공: 신호 세기로 이탈을 확인해야 잠급니다";
+
   public String automaticBlock(boolean lock, long now) {
     return automaticBlock(lock, now, false);
   }
@@ -184,7 +187,7 @@ public final class VehicleSnapshot {
     if (!lock && power != 1) return "자동 잠금 해제는 차량 전원 OFF 상태에서 실행합니다";
     if (lock && power == 3 && !Integer.valueOf(1).equals(epb)) {
       if (!"unavailable".equals(epbStatus)) return "주차브레이크 해제 또는 알 수 없는 상태입니다";
-      if (!departureConfirmed) return "전원 ON·주차브레이크 미제공: 신호 세기로 이탈을 확인해야 잠급니다";
+      if (!departureConfirmed) return LOCK_NEEDS_DEPARTURE;
     }
     if (locked == null) return "도어 잠금 상태를 확인하지 못했습니다";
     if (lock && !Boolean.TRUE.equals(doorsClosed)) return "모든 도어가 닫혔는지 확인하지 못했습니다";

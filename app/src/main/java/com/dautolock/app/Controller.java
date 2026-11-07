@@ -16,6 +16,7 @@ final class Controller {
   final DiagnosticLog diagnostics;
   final AutoUpdater updater;
   final VehicleLink vehicleLink;
+  final CarAudio carAudio = new CarAudio(this);
   private final ParkUnlockTrigger parkUnlock = new ParkUnlockTrigger();
   private final SecureStore store;
   private final Supplier<CloudClient> clients;
@@ -140,6 +141,18 @@ final class Controller {
 
   /** Consecutive automatic UNLOCK checks refused because the car was powered ON or moving. */
   volatile int unlockInUseBlocks;
+
+  /**
+   * Consecutive automatic LOCK checks refused because the car is ON and the departure was no longer
+   * confirmed by the time BYD answered (real log 11-07: the phone hovered at the far threshold and
+   * the car was queried every ~30 s for 6 min). ProximityService waits for a surer departure.
+   */
+  volatile int lockDepartureBlocks;
+
+  /** The phone's audio/call Bluetooth is on the car's head unit: someone (this phone) is inside. */
+  boolean inCarByAudio() {
+    return carAudio.connected() && settings.getBoolean("carAudioHold", true);
+  }
 
   /**
    * Re-check delay after an unretired automatic UNLOCK: 15 s, or backoff up to 5 min while the car
@@ -1102,6 +1115,9 @@ final class Controller {
                     automatic,
                     departureConfirmed.getAsBoolean(),
                     parkingConfirmationCurrent(parkingConfirmedAt));
+            if (automatic && lock)
+              lockDepartureBlocks =
+                  VehicleSnapshot.LOCK_NEEDS_DEPARTURE.equals(block) ? lockDepartureBlocks + 1 : 0;
             // Automatic unlock refused while the car is in use but with nothing left to do — the
             // doors are already open, or it is driving with the phone aboard: this approach is
             // over, so retire it instead of re-checking (real log: a beacon unlock after the vehicle
@@ -1777,6 +1793,10 @@ final class Controller {
       cancelPendingStop("대기 중 차량 조작 감지");
       return;
     }
+    if (inCarByAudio()) { // Back in the car (its audio reconnected): not a departure any more.
+      cancelPendingStop("휴대폰이 차 블루투스에 연결됨 · 차 안");
+      return;
+    }
     if (!valid.getAsBoolean()) {
       cancelPendingStop("이탈 신호 또는 자동 제어 상태 변경");
       return;
@@ -1862,7 +1882,7 @@ final class Controller {
       stopStatus = "자동 종료 보류 · " + e.getMessage();
       note(stopStatus);
       VehicleSnapshot left = snapshot;
-      if (left != null && Integer.valueOf(3).equals(left.power))
+      if (left != null && Integer.valueOf(3).equals(left.power) && !inCarByAudio())
         raiseSecurityAlert(
             "stop_blocked",
             "도어는 잠겼지만 시동이 켜져 있습니다. 직접 시동을 끄거나 ‘시동 끄고 잠금’을 누르세요. 사유: "
@@ -1874,6 +1894,7 @@ final class Controller {
 
   /** Automatic Stop only with a live, stable P from the paired Bridge. No Cloud-brake fallback. */
   private String automaticStopBlock() {
+    if (inCarByAudio()) return "휴대폰이 차 블루투스(오디오·통화)에 연결됨 · 차 안으로 보고 종료 안 함";
     if (!vehicleLink.required() || !vehicleLink.configured())
       return "실제 P단 확인 불가 · 차량 보조 앱(QR) 연결이 필요합니다";
     return vehicleLink.automaticStopBlock(snapshot);

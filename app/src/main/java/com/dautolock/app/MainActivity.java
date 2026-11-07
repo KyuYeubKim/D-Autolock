@@ -54,6 +54,7 @@ public final class MainActivity extends Activity {
   private CharSequence armedLabel;
   private final Runnable disarmCommand = this::disarmCommand;
   private TextView signalDetails, autoDetails, autoReason, controlDetails, readyDetails;
+  private TextView carAudioState;
   private TextView beaconDevice;
   private TextView updateStatus;
   private TextView bridgeStatus;
@@ -459,6 +460,22 @@ public final class MainActivity extends Activity {
     autoReason = text(proximity, "거리 관찰을 먼저 시작하세요", 13, MUTED);
     button(proximity, "거리 감도 · 대기 시간 (BLE 신호 설정)", v -> openBle(false));
     button(proximity, "위치로 자동 설정 (열림·잠금 위치 측정)", v -> openCalibrate());
+    Switch carAudioSwitch = new Switch(this);
+    carAudioSwitch.setTag("carAudioHold");
+    carAudioSwitch.setText("차 블루투스에 연결돼 있으면 자동 잠금·열림 멈춤");
+    carAudioSwitch.setTextColor(TEXT);
+    carAudioSwitch.setMinHeight(dp(56));
+    carAudioSwitch.setChecked(controller.settings.getBoolean("carAudioHold", true));
+    proximity.addView(carAudioSwitch);
+    carAudioSwitch.setOnCheckedChangeListener(
+        (b, on) -> controller.settings.edit().putBoolean("carAudioHold", on).apply());
+    text(
+        proximity,
+        "휴대폰 음악·통화가 차 블루투스(차량 보조 앱으로 등록한 기기)에 연결돼 있으면 차 안에 있는 것으로 보고 자동 잠금·열림과 자동 시동 끄기를 하지 않습니다. 시동을 켠 채 내려 멀어지면 연결이 끊긴 뒤 평소대로 잠급니다.",
+        12,
+        MUTED);
+    carAudioState = text(proximity, "", 12, MUTED);
+    carAudioState.setTag("carAudioState");
     auto.setOnCheckedChangeListener(
         (b, on) -> {
           if (updating) return;
@@ -2118,6 +2135,12 @@ public final class MainActivity extends Activity {
             : controller.autoEnabled
                 ? "자동 제어 ON · 진단 로그에서 판단과 결과를 확인하세요"
                 : "스위치를 켜면 실제 차량 명령을 보냅니다. 기능 지원은 실행 전 조회합니다.");
+    carAudioState.setText(
+        controller.vehicleLink.headUnitAddress().isEmpty()
+            ? "차 블루투스 · 차량 보조 앱을 QR로 등록하면 사용할 수 있어요"
+            : controller.carAudio.connected()
+                ? "차 블루투스 · 연결됨 (차 안)"
+                : "차 블루투스 · 연결 안 됨");
     updating = false;
     account.setText(
         (controller.cloud.protocol.isLoggedIn()

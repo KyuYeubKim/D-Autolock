@@ -240,9 +240,12 @@ final class AutoUpdater {
     if (!digest.toString().equals(settings.getString("updateDigest", "")))
       throw new Exception("업데이트 파일 검증 실패");
     PackageManager manager = context.getPackageManager();
+    // Request v2 (signingInfo) AND v1 (signatures) so compatible() can read the downloaded APK's
+    // signature even where getPackageArchiveInfo does not populate signingInfo for an archive; the
+    // APK is signed with both schemes so one of the two always reads back.
     int flags =
         Build.VERSION.SDK_INT >= 28
-            ? PackageManager.GET_SIGNING_CERTIFICATES
+            ? PackageManager.GET_SIGNING_CERTIFICATES | PackageManager.GET_SIGNATURES
             : PackageManager.GET_SIGNATURES;
     PackageInfo current = manager.getPackageInfo(context.getPackageName(), flags);
     PackageInfo candidate = manager.getPackageArchiveInfo(file.getAbsolutePath(), flags);
@@ -258,19 +261,24 @@ final class AutoUpdater {
     long nextCode =
         Build.VERSION.SDK_INT >= 28 ? candidate.getLongVersionCode() : candidate.versionCode;
     if (nextCode <= currentCode) return false;
-    Signature[] before =
-        Build.VERSION.SDK_INT >= 28 && current.signingInfo != null
-            ? current.signingInfo.getApkContentsSigners()
-            : current.signatures;
-    Signature[] after =
-        Build.VERSION.SDK_INT >= 28 && candidate.signingInfo != null
-            ? candidate.signingInfo.getApkContentsSigners()
-            : candidate.signatures;
-    return before != null
-        && after != null
-        && before.length > 0
-        && before.length == after.length
-        && new HashSet<>(Arrays.asList(before)).equals(new HashSet<>(Arrays.asList(after)));
+    Set<Signature> before = signers(current);
+    Set<Signature> after = signers(candidate);
+    // Strict: the installed signer set must be non-empty and exactly equal the candidate's. A
+    // different key fails. We just read from whichever scheme the platform exposed (v2 or v1).
+    return !before.isEmpty() && before.equals(after);
+  }
+
+  /**
+   * The signing certificates of a package, read from the v2 scheme (signingInfo) when present and
+   * falling back to the v1 scheme (signatures) otherwise — including when signingInfo exposes no
+   * signer, which getPackageArchiveInfo can do for an archive on some devices.
+   */
+  private static Set<Signature> signers(PackageInfo info) {
+    Signature[] s = null;
+    if (Build.VERSION.SDK_INT >= 28 && info.signingInfo != null)
+      s = info.signingInfo.getApkContentsSigners();
+    if (s == null || s.length == 0) s = info.signatures;
+    return s == null ? Collections.emptySet() : new HashSet<>(Arrays.asList(s));
   }
 
   void install(

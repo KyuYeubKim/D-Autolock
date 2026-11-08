@@ -9,8 +9,8 @@ android {
         applicationId 'com.dautolock.app'
         minSdk 26
         targetSdk 34
-        versionCode 68
-        versionName '0.3.56'
+        versionCode 69
+        versionName '0.3.57'
     }
     signingConfigs {
         localRelease {
@@ -19,6 +19,11 @@ android {
                 storePassword signingProps.getProperty('storePassword')
                 keyAlias 'd-autolock'
                 keyPassword signingProps.getProperty('keyPassword')
+                // Sign with BOTH v1 (JAR) and v2 so the in-app updater can read the downloaded APK's
+                // signature on every device. AGP defaults v1 off at minSdk 26, leaving v2-only APKs
+                // whose signature getPackageArchiveInfo could not expose → false "서명 불일치" holds.
+                enableV1Signing = true
+                enableV2Signing = true
             }
         }
     }

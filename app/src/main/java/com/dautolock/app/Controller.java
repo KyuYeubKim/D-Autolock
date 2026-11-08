@@ -50,6 +50,11 @@ final class Controller {
   }
 
   static final long WATCH_BLE_AUTO_TIMEOUT_MS = 8000;
+  /**
+   * Car clock (second resolution) vs phone clock tolerance when deciding that a state read after an
+   * unanswered BLE command was measured after the command began.
+   */
+  static final long BLE_PROBE_CLOCK_SLACK_MS = 3000;
   private com.dautolock.app.watchkey.WatchKey watchKey;
   WatchBleSender ble =
       new WatchBleSender() {
@@ -86,17 +91,18 @@ final class Controller {
     }
   }
 
-  /** The watch BLE control code for a command, or null if it has none (then the cloud is used). */
+  /**
+   * The watch BLE control code for a command, or null if it has none (then the cloud is used). Only
+   * the doors: the Korean Dolphin authenticated the key and then never answered START_CLIMATE (3)
+   * — three times out of three, and the climate did not start (real log 11-08 19:11, 19:15, 22:02).
+   * STOP_CLIMATE (8) was never seen working either, so 시동 켜기/끄기 stay on the cloud.
+   */
   static Byte watchBleCode(CloudClient.Command command) {
     switch (command) {
       case UNLOCK:
         return com.dautolock.app.watchble.WatchBleCodec.UNLOCK;
       case LOCK:
         return com.dautolock.app.watchble.WatchBleCodec.LOCK;
-      case CLIMATE_ON:
-        return com.dautolock.app.watchble.WatchBleCodec.START_CLIMATE;
-      case CLIMATE_OFF:
-        return com.dautolock.app.watchble.WatchBleCodec.STOP_CLIMATE;
       default:
         return null;
     }
@@ -1316,17 +1322,55 @@ final class Controller {
             // the same safety recheck and engine claim — and falls back to the cloud if the key is out
             // of range or the handshake fails. STOP has no BLE code, so it always uses the cloud.
             boolean sentByBle = false;
+            VehicleSnapshot bleProbe = null;
             Byte bleCode = watchBleCode(command);
             if (bleCode != null && ble.ready()) {
               if (dispatchReady.getAsBoolean() && (!automatic || claimOnce.getAsBoolean())) {
+                long bleStartedWall = System.currentTimeMillis();
                 com.dautolock.app.watchkey.WatchKey.BleResult r =
                     ble.send(bleCode, WATCH_BLE_AUTO_TIMEOUT_MS);
+                if (r != null && !r.success && r.controlSent) {
+                  // The control frame went out but no answer came back: the car may already have
+                  // acted on it. Read the state first and only fall back if it plainly did not.
+                  diagnostics.record(
+                      "WATCHBLE_FALLBACK",
+                      command + " reason=" + r.message + " controlSent=true · 상태 확인 후 판단");
+                  dispatched.set(true); // The frame went out; a failed read below is "미완료", not silent.
+                  bleProbe = cloud.snapshot(target);
+                  observeSnapshot(bleProbe, false);
+                  long probedAt = System.currentTimeMillis();
+                  boolean afterCommand =
+                      bleProbe.fresh(probedAt)
+                          && bleProbe.measuredAt >= bleStartedWall - BLE_PROBE_CLOCK_SLACK_MS
+                          && bleProbe.locked != null;
+                  diagnostics.record(
+                      "WATCHBLE_UNCONFIRMED",
+                      command
+                          + " applied="
+                          + (!afterCommand ? "unknown" : Boolean.valueOf(lock).equals(bleProbe.locked))
+                          + " "
+                          + bleProbe.diagnostic(probedAt));
+                  if (!afterCommand) {
+                    throw new Exception(
+                        "블루투스 키 명령 결과 미확인 · 재전송하지 않았습니다. 차량에서 확인하세요");
+                  }
+                  if (Boolean.valueOf(lock).equals(bleProbe.locked)) {
+                    // Applied without an answer: count it as the BLE send, no second command.
+                    r =
+                        new com.dautolock.app.watchkey.WatchKey.BleResult(
+                            true, r.message, r.doors, true);
+                  } else bleProbe = null; // Plainly not applied: the cloud sends it below.
+                }
                 if (r != null && r.success) {
                   sentByBle = true;
                   dispatched.set(true);
                   diagnostics.record(
                       "CONTROL_SEND",
-                      (automatic ? "AUTO " : "MANUAL ") + command + " source=ble doors=" + r.doors);
+                      (automatic ? "AUTO " : "MANUAL ")
+                          + command
+                          + " source=ble doors="
+                          + r.doors
+                          + (bleProbe != null ? " answer=none stateConfirmed=true" : ""));
                   diagnostics.record(
                       "CONTROL_TIMING",
                       command
@@ -1335,7 +1379,7 @@ final class Controller {
                           + " channel=ble");
                   lastControl = command.label + " · 전송(BLE)";
                   changed();
-                } else {
+                } else if (r == null || !r.controlSent) {
                   diagnostics.record(
                       "WATCHBLE_FALLBACK",
                       command + " reason=" + (r == null ? "unavailable" : r.message));
@@ -1383,8 +1427,11 @@ final class Controller {
             }
             VehicleSnapshot after;
             try {
-              after = cloud.snapshot(target);
-              observeSnapshot(after, false);
+              if (bleProbe != null) after = bleProbe; // Already read: it confirmed the BLE result.
+              else {
+                after = cloud.snapshot(target);
+                observeSnapshot(after, false);
+              }
             } catch (Exception readbackError) {
               if (!sentByBle) throw readbackError;
               // BLE already actuated and the car confirmed it (result=1); a momentarily unavailable

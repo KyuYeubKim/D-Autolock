@@ -382,6 +382,35 @@ public class ProximityEngineTest {
   }
 
   @Test
+  public void aClaimedCommandStaysSendableOnTheSecondChannelForAWhile() {
+    // claim() consumes the proposal; the cloud fallback after a failed BLE key attempt still has to
+    // be able to send the same command (real log 11-08: it was cancelled every time).
+    ProximityEngine e = new ProximityEngine(-75, -85, 0, 2000, 5000);
+    feed(e, -50, 0, 3000);
+    assertTrue(e.claim(UNLOCK, 3000));
+    assertFalse(e.stillValid(UNLOCK, 3500)); // Consumed...
+    assertTrue(e.canDispatch(UNLOCK, 3500)); // ...but still this command's to finish.
+    assertFalse(e.canDispatch(LOCK, 3500));
+    // Silence does not withdraw it: the BLE key session itself blanks the car's advertisement.
+    assertTrue(e.canDispatch(UNLOCK, 9000));
+    assertFalse(e.canDispatch(UNLOCK, 3000 + ProximityEngine.CLAIM_HOLD_MS + 1));
+  }
+
+  @Test
+  public void aClaimedLockIsWithdrawnOnceThePhoneReadsNearAgain() {
+    ProximityEngine e = new ProximityEngine(-75, -85, 0, 2000, 5000);
+    feed(e, -50, 0, 3000);
+    e.alreadySatisfied(UNLOCK, 3000);
+    assertEquals(LOCK, e.pending(8000)); // 5 s without a sample.
+    assertTrue(e.claim(LOCK, 8000));
+    // The last reading (near, 5 s old) predates the claim: it is not a return to the car.
+    assertTrue(e.canDispatch(LOCK, 8000));
+    assertTrue(e.canDispatch(LOCK, 9000));
+    e.sample(-50, 9500); // Back by the car before the fallback went out.
+    assertFalse(e.canDispatch(LOCK, 9600));
+  }
+
+  @Test
   public void lossLockAtTheExactStaleBoundaryIsStillReportedAsALoss() {
     // With a 5 s loss-lock the lock is due at exactly 5000 ms, where fresh() (<= 5000) still holds;
     // gates that asked "!fresh" for "is this a signal-loss lock?" missed that moment.

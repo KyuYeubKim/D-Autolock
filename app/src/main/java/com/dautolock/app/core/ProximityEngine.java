@@ -39,6 +39,11 @@ public final class ProximityEngine {
    */
   public static final long FLAP_WINDOW_MS = 120000, FLAP_FAR_DWELL_MS = 20000;
   public static final long RELOCK_WINDOW_MS = 60000, RELOCK_NEAR_DWELL_MS = 3000;
+  /**
+   * How long a claimed proposal still authorizes the same command on a second channel (watch BLE key
+   * first, cloud fallback after): the BLE attempt takes ≤ ~9.5 s plus one state read.
+   */
+  public static final long CLAIM_HOLD_MS = 30000;
 
   /** Qualify at the configured threshold, then tolerate a small dip during cloud preflight. */
   public synchronized void beginCheck(Action action, long now) {
@@ -224,6 +229,32 @@ public final class ProximityEngine {
         && handled != Zone.NEAR
         && cooldown(now) == 0) return true;
     return action != Action.NONE && pending(now) == action;
+  }
+
+  /**
+   * The command for {@code action} may still be sent: either the engine proposes it now, or it was
+   * already claimed for this very command moments ago and nothing has reversed it. claim() consumes
+   * the proposal, so the cloud fallback after a failed BLE key attempt would otherwise find it gone
+   * and cancel (real log 11-08 22:20: the phone walked away, the BLE key was out of range, the cloud
+   * LOCK was cancelled as "거리 상태가 바뀌어" and the car stayed open).
+   */
+  public synchronized boolean canDispatch(Action action, long now) {
+    return stillValid(action, now) || holdsClaim(action, now);
+  }
+
+  /**
+   * This engine's latest claim was {@code action}, it is recent, and the phone has not turned
+   * around since — a fresh reading received after the claim back in the opposite zone (near again
+   * after a LOCK, far after an UNLOCK) withdraws it. Readings from before the claim do not count (a
+   * 5 s loss lock is claimed while the last, near, reading is still "fresh"), and silence does not
+   * either: the BLE key session itself blanks the car's advertisement for a few seconds.
+   */
+  public synchronized boolean holdsClaim(Action action, long now) {
+    if (action == Action.NONE || lastAction != action) return false;
+    if (handled != (action == Action.LOCK ? Zone.FAR : Zone.NEAR)) return false;
+    if (now < lastDispatch || now - lastDispatch > CLAIM_HOLD_MS) return false;
+    Zone opposite = action == Action.LOCK ? Zone.NEAR : Zone.FAR;
+    return !(lastSample > lastDispatch && fresh(now) && candidate == opposite);
   }
 
   public synchronized boolean claim(Action action, long now) {

@@ -76,6 +76,11 @@ public final class WatchBleClient {
   private boolean finished;
   /** This client registered a session with {@link BleAirtime} that finish() must close. */
   private boolean onAir;
+  /**
+   * The control frame was handed to the GATT stack, so the car may have acted on it even if no
+   * answer comes back. The caller must not blindly resend over another channel in that case.
+   */
+  private volatile boolean controlSent;
 
   private final byte[] rxBuf = new byte[4096];
   private int rxLen;
@@ -139,7 +144,7 @@ public final class WatchBleClient {
       fail("MAC 주소가 올바르지 않습니다");
       return;
     }
-    diag("WATCHBLE_START", "mac=" + WatchKeyMask.mac(mac) + " bond=" + bondName(device) + " cmd=" + (controlByte == WatchBleCodec.LOCK ? "lock" : "unlock"));
+    diag("WATCHBLE_START", "mac=" + WatchKeyMask.mac(mac) + " bond=" + bondName(device) + " cmd=" + commandName(controlByte));
     codec.clearSession();
     step = Step.CONNECTING;
     progress("연결 중…");
@@ -157,6 +162,26 @@ public final class WatchBleClient {
 
   public void cancel() {
     main.post(() -> finish(false, "취소됨", -1));
+  }
+
+  /** True once the control frame was written: a failure after this point is unconfirmed, not unsent. */
+  public boolean controlSent() {
+    return controlSent;
+  }
+
+  static String commandName(byte controlByte) {
+    switch (controlByte) {
+      case WatchBleCodec.UNLOCK:
+        return "unlock";
+      case WatchBleCodec.LOCK:
+        return "lock";
+      case WatchBleCodec.START_CLIMATE:
+        return "climate_on";
+      case WatchBleCodec.STOP_CLIMATE:
+        return "climate_off";
+      default:
+        return "code" + (controlByte & 0xFF);
+    }
   }
 
   private final BluetoothGattCallback callback =
@@ -346,6 +371,7 @@ public final class WatchBleClient {
       step = Step.CONTROL;
       progress(controlByte == WatchBleCodec.LOCK ? "잠금 명령 전송 중…" : "해제 명령 전송 중…");
       armStepTimeout();
+      controlSent = true;
       writeFrame(codec.createControlFrame(controlByte));
     } else if (step == Step.CONTROL && type == WatchBleCodec.RESPONSE_CONTROL) {
       int cmdType = codec.parseResponseCommandType(p);

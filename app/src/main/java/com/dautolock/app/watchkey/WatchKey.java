@@ -98,11 +98,21 @@ public final class WatchKey {
     public final boolean success;
     public final String message;
     public final int doors;
+    /**
+     * The control frame reached the GATT stack before the failure: the car may have acted on it,
+     * so the result is unconfirmed rather than unsent (check the state before any other channel).
+     */
+    public final boolean controlSent;
 
     public BleResult(boolean success, String message, int doors) {
+      this(success, message, doors, false);
+    }
+
+    public BleResult(boolean success, String message, int doors, boolean controlSent) {
       this.success = success;
       this.message = message;
       this.doors = doors;
+      this.controlSent = controlSent;
     }
   }
 
@@ -129,7 +139,7 @@ public final class WatchKey {
 
           @Override
           public void onResult(boolean success, String message, int doorStates) {
-            out[0] = new BleResult(success, message, doorStates);
+            out[0] = new BleResult(success, message, doorStates, client.controlSent());
             latch.countDown();
           }
         },
@@ -137,12 +147,12 @@ public final class WatchKey {
     try {
       if (!latch.await(timeoutMs + 1500, TimeUnit.MILLISECONDS)) {
         client.cancel();
-        return new BleResult(false, "timeout", -1);
+        return new BleResult(false, "timeout", -1, client.controlSent());
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       client.cancel();
-      return new BleResult(false, "interrupted", -1);
+      return new BleResult(false, "interrupted", -1, client.controlSent());
     }
     return out[0] == null ? new BleResult(false, "no_result", -1) : out[0];
   }

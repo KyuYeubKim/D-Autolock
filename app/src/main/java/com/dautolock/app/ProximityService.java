@@ -404,9 +404,11 @@ public final class ProximityService extends Service {
       boolean accepted =
           controller.automaticCommand(
               command,
+              // canDispatch, not stillValid: after a failed BLE key attempt the cloud fallback runs
+              // with the proposal already claimed (consumed) for this same command.
               () ->
                   sameEngine(checkedEngine)
-                      && checkedEngine.stillValid(commandAction, SystemClock.elapsedRealtime()),
+                      && checkedEngine.canDispatch(commandAction, SystemClock.elapsedRealtime()),
               () ->
                   sameEngine(checkedEngine)
                       && checkedEngine.claim(commandAction, SystemClock.elapsedRealtime()),

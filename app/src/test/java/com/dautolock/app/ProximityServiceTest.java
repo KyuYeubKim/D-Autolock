@@ -332,6 +332,37 @@ public class ProximityServiceTest {
   }
 
   @Test
+  public void failedBleKeyUnlockFallsBackToTheCloudInsteadOfCancelling() throws Exception {
+    // Real log 11-08 19:31: BLE key status=133, then the cloud fallback was cancelled; the car
+    // opened only 40 s later when the beacon triggered a second attempt.
+    Rig r = new Rig(e -> {});
+    CommandFlowTest.FakeBle fake = new CommandFlowTest.FakeBle();
+    fake.succeed = false;
+    r.c.ble = fake;
+    r.standNear(4);
+    assertEquals(1, fake.calls);
+    assertEquals(java.util.Collections.singletonList("OPENDOOR"), r.protocol.commands);
+    r.lifecycle.destroy();
+  }
+
+  @Test
+  public void failedBleKeyLockOnDepartureStillLocksThroughTheCloud() throws Exception {
+    // Real log 11-08 22:20: walking away the key was out of range and the car stayed open.
+    Rig r = new Rig(e -> e.putInt("lossLockSeconds", 5));
+    r.standNear(4);
+    assertEquals(java.util.Collections.singletonList("OPENDOOR"), r.protocol.commands);
+    r.standNear(11); // Past the command cooldown.
+    CommandFlowTest.FakeBle fake = new CommandFlowTest.FakeBle();
+    fake.succeed = false;
+    r.c.ble = fake;
+    r.idle(8); // The phone is gone.
+    assertEquals(1, fake.calls);
+    assertTrue(r.protocol.commands.contains("LOCKDOOR"));
+    assertTrue(r.protocol.locked);
+    r.lifecycle.destroy();
+  }
+
+  @Test
   public void observationPublishesDiagnosticsEvenWithoutAnySignal() throws Exception {
     DApplication app = (DApplication) RuntimeEnvironment.getApplication();
     Controller c = app.controller();

@@ -211,6 +211,12 @@ public class CommandFlowTest {
     return c;
   }
 
+  private static String log(Controller c) throws Exception {
+    java.util.concurrent.CompletableFuture<String> text = new java.util.concurrent.CompletableFuture<>();
+    c.diagnostics.snapshot(text::complete);
+    return text.get(5, java.util.concurrent.TimeUnit.SECONDS);
+  }
+
   private void complete(Controller c) throws Exception {
     long limit = System.currentTimeMillis() + 20000;
     while (c.busy() && System.currentTimeMillis() < limit) Thread.sleep(20);
@@ -221,6 +227,10 @@ public class CommandFlowTest {
   static final class FakeBle implements Controller.WatchBleSender {
     boolean ready = true;
     boolean succeed = true;
+    /** A failure after the control frame went out (no answer), not before it (no connection). */
+    boolean controlSent = false;
+    /** What the car does on receiving the frame (e.g. it locks even though no answer arrives). */
+    Runnable effect = () -> {};
     int calls = 0;
     byte lastCode = 0;
 
@@ -233,25 +243,23 @@ public class CommandFlowTest {
     public com.dautolock.app.watchkey.WatchKey.BleResult send(byte controlByte, long timeoutMs) {
       calls++;
       lastCode = controlByte;
+      effect.run();
       return new com.dautolock.app.watchkey.WatchKey.BleResult(
-          succeed, succeed ? "ok" : "fail", succeed ? 255 : -1);
+          succeed, succeed ? "ok" : "fail", succeed ? 255 : -1, succeed || controlSent);
     }
   }
 
   @Test
-  public void watchBleCodeMapsOnlyTheDoorAndEngineCommands() {
+  public void watchBleCodeMapsOnlyTheDoors() {
     assertEquals(
         Byte.valueOf(com.dautolock.app.watchble.WatchBleCodec.UNLOCK),
         Controller.watchBleCode(CloudClient.Command.UNLOCK));
     assertEquals(
         Byte.valueOf(com.dautolock.app.watchble.WatchBleCodec.LOCK),
         Controller.watchBleCode(CloudClient.Command.LOCK));
-    assertEquals(
-        Byte.valueOf(com.dautolock.app.watchble.WatchBleCodec.START_CLIMATE),
-        Controller.watchBleCode(CloudClient.Command.CLIMATE_ON));
-    assertEquals(
-        Byte.valueOf(com.dautolock.app.watchble.WatchBleCodec.STOP_CLIMATE),
-        Controller.watchBleCode(CloudClient.Command.CLIMATE_OFF));
+    // The car never answered START_CLIMATE over the key (real log 11-08): climate stays on the cloud.
+    assertNull(Controller.watchBleCode(CloudClient.Command.CLIMATE_ON));
+    assertNull(Controller.watchBleCode(CloudClient.Command.CLIMATE_OFF));
     assertNull(Controller.watchBleCode(CloudClient.Command.STOP));
     assertNull(Controller.watchBleCode(CloudClient.Command.CLOSE_WINDOWS));
     assertNull(Controller.watchBleCode(CloudClient.Command.FIND_CAR));
@@ -311,6 +319,91 @@ public class CommandFlowTest {
     assertEquals(1, fake.calls);
     assertEquals("the engine claim must be consumed exactly once", 1, claims[0]);
     assertEquals(Collections.singletonList("LOCKDOOR"), p.commands);
+  }
+
+  @Test
+  public void automaticLockFallsBackToTheCloudWithTheEngineProposalAlreadyClaimed()
+      throws Exception {
+    // Real log 11-08 22:20: walking away, the BLE key was out of range (status=133) and the cloud
+    // fallback was cancelled: it re-asked the engine for a proposal that the BLE attempt had already
+    // claimed. The car stayed open until locked by hand.
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    FakeBle fake = new FakeBle();
+    fake.succeed = false;
+    c.ble = fake;
+    com.dautolock.app.core.ProximityEngine e =
+        new com.dautolock.app.core.ProximityEngine(-75, -85, 0, 2000, 5000);
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofSeconds(60)); // A clock well past zero for the samples below.
+    long t0 = android.os.SystemClock.elapsedRealtime() - 20000;
+    for (long t = t0; t <= t0 + 3000; t += 1000) e.sample(-50, t);
+    e.alreadySatisfied(com.dautolock.app.core.ProximityEngine.Action.UNLOCK, t0 + 3000);
+    // The phone left: no car sample for 17 s, so the engine proposes a loss lock.
+    com.dautolock.app.core.ProximityEngine.Action lock =
+        com.dautolock.app.core.ProximityEngine.Action.LOCK;
+    assertEquals(lock, e.pending(android.os.SystemClock.elapsedRealtime()));
+    c.automaticCommand(
+        CloudClient.Command.LOCK,
+        () -> e.canDispatch(lock, android.os.SystemClock.elapsedRealtime()),
+        () -> e.claim(lock, android.os.SystemClock.elapsedRealtime()),
+        () -> {},
+        () -> {},
+        true);
+    complete(c);
+    assertEquals(1, fake.calls);
+    assertTrue(p.commands.contains("LOCKDOOR"));
+    assertTrue(p.locked);
+  }
+
+  @Test
+  public void unansweredBleLockThatTookEffectIsNotSentAgain() throws Exception {
+    // The control frame went out but no answer came (log 11-08 19:13 "시간 초과 step=CONTROL", the
+    // car read locked a minute later). Read first; a car already locked gets no second command.
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    fake.succeed = false;
+    fake.controlSent = true;
+    fake.effect = () -> p.locked = true;
+    c.ble = fake;
+    c.command(CloudClient.Command.LOCK, false, () -> true);
+    complete(c);
+    assertEquals(1, fake.calls);
+    assertFalse("no resend of a command the car carried out", p.commands.contains("LOCKDOOR"));
+    assertTrue(log(c).contains("WATCHBLE_UNCONFIRMED | LOCK applied=true"));
+  }
+
+  @Test
+  public void unansweredBleUnlockThatDidNotTakeEffectFallsBackToTheCloud() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    fake.succeed = false;
+    fake.controlSent = true; // Sent, unanswered, and the car is still locked afterwards.
+    c.ble = fake;
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    complete(c);
+    assertEquals(1, fake.calls);
+    assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
+    assertTrue(log(c).contains("WATCHBLE_UNCONFIRMED | UNLOCK applied=false"));
+  }
+
+  @Test
+  public void climateStartGoesStraightToTheCloudEvenWithTheBleKeyReady() throws Exception {
+    // Real log 11-08: three boarding climate starts over the key, three unanswered START_CLIMATE
+    // frames, and the climate never came on.
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    c.ble = fake;
+    c.manualClimateStart();
+    complete(c);
+    assertEquals(0, fake.calls);
+    assertEquals(Collections.singletonList("OPENAIR"), p.commands);
+    c.stop();
   }
 
   private static final com.dautolock.link.LinkProtocol.Sample PARK =

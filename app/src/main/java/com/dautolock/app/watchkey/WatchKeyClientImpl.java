@@ -125,13 +125,16 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
   }
 
   @Override
-  public String gainVehicleVin(WatchTokens tokens) throws Exception {
+  public WatchVehicle gainVehicle(WatchTokens tokens) throws Exception {
     TreeMap<String, String> map = new TreeMap<>();
     map.put("appVersion", "2");
     map.put("vin", tokens.vin);
     JSONObject body = sendLogin("watch/login/gain/vehicle", tokens, map);
     String vin = firstString(body, "vin", "watchVin", "carVin");
-    return vin.isEmpty() ? tokens.vin : vin;
+    // The BLE key is sometimes carried in the vehicle response (reference saveVehicle reads
+    // watchBluetoothDto.watchBluetoothInfo.dkey); copyStrings flattens it, so the same field lookup
+    // finds it here or in gain/bluetooth.
+    return new WatchVehicle(vin.isEmpty() ? tokens.vin : vin, parseBleKey(body));
   }
 
   @Override
@@ -140,6 +143,10 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
     map.put("appVersion", "2");
     map.put("vin", tokens.vin);
     JSONObject body = sendLogin("watch/login/gain/bluetooth", tokens, map);
+    return parseBleKey(body);
+  }
+
+  private static BleKey parseBleKey(JSONObject body) {
     return new BleKey(
         firstString(body, "dk", "dkey", "DK", "dK", "DKEY", "btBleDk", "bleDk"),
         firstString(body, "empowerBluetoothKeyNo", "keyNumber", "bleKeyNo", "keyNo"),
@@ -332,11 +339,23 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
                 + (info != null ? " infoKeys=[" + keyNames(info) + "]" : "")
                 + " signLen=" + merged.optString("signToken", "").length()
                 + " encryLen=" + merged.optString("encryToken", "").length()
-                + " idLen=" + merged.optString("identifier", "").length()
-                + " idIsKR=" + "KR".equals(merged.optString("identifier", ""))
+                + " userIdLen=" + merged.optString("userId", "").length()
                 + " userType=" + merged.optString("userType", "")
                 + " vinLen=" + merged.optString("vin", "").length()
                 + " controlPwdLen=" + merged.optString("controlPwd", "").length());
+      }
+      // Structure-only diagnostic for the vehicle/bluetooth steps (field names + lengths, never the
+      // dkey value), mirroring the reference GainRawDiag, so the dkey/mac location is confirmable.
+      if ((endpoint.endsWith("gain/vehicle") || endpoint.endsWith("gain/bluetooth"))
+          && decrypted != null) {
+        diag(
+            "WATCHKEY_GAIN_RAW",
+            endpoint
+                + " topKeys=[" + keyNames(decrypted) + "]"
+                + " dkLen=" + firstString(merged, "dk", "dkey", "DK", "dK", "DKEY").length()
+                + " macLen=" + firstString(merged, "bluetoothMacAddress", "macAddress", "mac").length()
+                + " keyNoLen=" + firstString(merged, "empowerBluetoothKeyNo", "keyNumber").length()
+                + " vinLen=" + firstString(merged, "vin", "watchVin").length());
       }
       return merged;
     }

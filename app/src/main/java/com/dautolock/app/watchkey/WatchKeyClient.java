@@ -20,8 +20,8 @@ public interface WatchKeyClient {
   /** {@code watch/login/gain/token} → the watch session (after owner approval). */
   WatchTokens gainToken(String uuid) throws Exception;
 
-  /** {@code watch/login/gain/vehicle} → the bound VIN. */
-  String gainVehicleVin(WatchTokens tokens) throws Exception;
+  /** {@code watch/login/gain/vehicle} → the bound VIN (and the BLE key, if it is carried here). */
+  WatchVehicle gainVehicle(WatchTokens tokens) throws Exception;
 
   /** {@code watch/login/gain/bluetooth} → the BLE key (dkey / keyNumber / MAC). */
   BleKey gainBluetooth(WatchTokens tokens) throws Exception;

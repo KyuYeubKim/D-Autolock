@@ -133,14 +133,21 @@ public final class WatchKeyProvision {
       Exception lastError = null;
       for (int attempt = 1; attempt <= 2 && (ble == null || !ble.valid()); attempt++) {
         try {
+          BleKey vehBle = null;
           try {
-            String v = client.gainVehicleVin(tokens);
-            if (v != null && !v.isEmpty()) vin = v;
+            WatchVehicle veh = client.gainVehicle(tokens);
+            if (veh != null) {
+              if (veh.vin != null && !veh.vin.isEmpty()) vin = veh.vin;
+              vehBle = veh.ble;
+            }
           } catch (Exception ve) {
             diag("WATCHKEY_VEHICLE_ERR", String.valueOf(ve.getMessage()));
             if (isTokenExpired(ve)) throw ve; // Let a token-expiry here trigger the refresh below.
           }
           ble = client.gainBluetooth(tokens);
+          if ((ble == null || !ble.valid()) && vehBle != null && vehBle.valid()) {
+            ble = vehBle; // The dkey can come from the vehicle response instead of gain/bluetooth.
+          }
         } catch (Exception e) {
           lastError = e;
           if (attempt == 1 && isTokenExpired(e)) {

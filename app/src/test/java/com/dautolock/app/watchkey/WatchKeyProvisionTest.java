@@ -47,8 +47,8 @@ public class WatchKeyProvisionTest {
     }
 
     @Override
-    public String gainVehicleVin(WatchTokens tokens) {
-      return "LVIN0001";
+    public WatchVehicle gainVehicle(WatchTokens tokens) {
+      return new WatchVehicle("LVIN0001", new BleKey("", "", ""));
     }
 
     @Override

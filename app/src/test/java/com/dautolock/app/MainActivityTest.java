@@ -483,13 +483,13 @@ public class MainActivityTest {
       assertNotNull(find(decor, "Sub 계정 로그인 / 변경"));
       assertFalse(find(decor, "도어 열기").isEnabled());
       assertFalse(decor.findViewWithTag("control_power_off").isEnabled());
-      assertFalse(decor.findViewWithTag("control_prepare").isEnabled());
-      for (String tag :
-          new String[] {"control_window_close", "control_find_car"})
-        assertFalse(tag, decor.findViewWithTag(tag).isEnabled());
+      assertFalse(decor.findViewWithTag("control_window_close").isEnabled());
+      assertFalse(decor.findViewWithTag("carHero").isEnabled()); // 차량 찾기 is the bonnet now.
       assertNull(decor.findViewWithTag("control_window_open")); // Removed in v0.3.46.
+      // v0.3.60: 차량 찾기 moved to the bonnet; 원격 Ready and 주차 마무리 left the main screen.
+      for (String tag : new String[] {"control_find_car", "control_prepare", "control_finish"})
+        assertNull(tag, decor.findViewWithTag(tag));
       assertNotNull(find(decor, "창문 닫기"));
-      assertNotNull(find(decor, "차량 찾기"));
       assertFalse(((Switch) find(decor, "실제 자동 도어 제어")).isChecked());
       assertNotNull(find(decor, "탑승 공조 · READY 상태 진단"));
       assertNotNull(find(decor, "진단 로그 파일 저장"));
@@ -497,8 +497,11 @@ public class MainActivityTest {
       assertTrue(((Switch) decor.findViewWithTag("chargeNotify")).isChecked()); // On by default.
       assertNotNull(find(decor, "탑승 시 공조 시작"));
       assertNotNull(find(decor, "시동 켜기"));
-      assertNotNull(find(decor, "원격 Ready"));
-      assertNotNull(find(decor, "주차 마무리"));
+      assertNull(find(decor, "원격 Ready"));
+      // All five controls share one row.
+      ViewGroup row = (ViewGroup) decor.findViewWithTag("control_unlock").getParent();
+      assertEquals(5, row.getChildCount());
+      assertSame(row, decor.findViewWithTag("control_window_close").getParent());
     }
   }
 
@@ -554,12 +557,21 @@ public class MainActivityTest {
       assertNotNull(confirm);
       assertNotNull(find(stop, "시동 끄기"));
       confirm.dismiss();
-      View prepare = root.findViewWithTag("control_prepare");
-      prepare.setEnabled(true);
-      prepare.performClick();
-      assertNotNull(find(prepare, "한 번 더 누르세요"));
-      prepare.performClick(); // 출차 준비 asks for parking confirmation before powering on.
-      assertNotSame(confirm, org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog());
+      CarHeroView car = root.findViewWithTag("carHero");
+      car.setEnabled(true);
+      car.performClick(); // The bonnet arms 차량 찾기 like any other control.
+      assertTrue(car.armed());
+      assertTrue(car.getContentDescription().toString().contains("한 번 더 누르면 실행"));
+      on.performClick(); // Arming another control disarms the bonnet.
+      assertFalse(car.armed());
+      assertFalse(car.getContentDescription().toString().contains("한 번 더"));
+      car.performClick();
+      org.robolectric.Shadows.shadowOf(Looper.getMainLooper())
+          .idleFor(java.time.Duration.ofMillis(3100));
+      assertFalse(car.armed()); // Times out like the circles.
+      car.performClick();
+      car.performClick(); // Second tap within 3 s runs it and clears the mark.
+      assertFalse(car.armed());
     }
   }
 
@@ -585,7 +597,7 @@ public class MainActivityTest {
       assertTrue(c.message.contains("모두 중단"));
       for (String tag :
           new String[] {
-            "control_prepare", "control_finish", "control_unlock", "control_lock",
+            "carHero", "control_unlock", "control_lock", "control_window_close",
             "control_power_on", "control_power_off", "doorTile", "batteryItem", "powerItem",
             "windowItem", "statusRefresh", "thresholdEdit", "activityAll", "diagnosticsOpen"
           }) assertNotNull(tag, root.findViewWithTag(tag));

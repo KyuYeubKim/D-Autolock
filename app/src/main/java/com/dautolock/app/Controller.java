@@ -2319,30 +2319,6 @@ final class Controller {
   }
 
   /**
-   * 원격 Ready (출차 준비): door unlock, then one parked remote climate start (which powers the car; this is not
-   * driving READY). The climate step runs only after the unlock is confirmed by a fresh readback.
-   */
-  void departurePrepare() {
-    executeCommand(
-        CloudClient.Command.UNLOCK,
-        false,
-        () -> true,
-        () -> true,
-        () -> {},
-        () ->
-            main.post(
-                () -> {
-                  VehicleSnapshot s = snapshot;
-                  if (s != null
-                      && s.fresh(System.currentTimeMillis())
-                      && Boolean.FALSE.equals(s.locked)) manualClimateStart();
-                  else note("원격 Ready 중단 · 도어 열림을 확인하지 못해 시동을 켜지 않았습니다");
-                }),
-        () -> false,
-        -1);
-  }
-
-  /**
    * 주차 마무리: Stop with this tap's one-use parking confirmation, then lock only when power OFF is
    * confirmed. An unconfirmed Stop never leads to another command on its own.
    */

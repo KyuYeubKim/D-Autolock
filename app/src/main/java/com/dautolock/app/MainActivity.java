@@ -45,13 +45,11 @@ public final class MainActivity extends Activity {
   private android.animation.ObjectAnimator refreshSpin;
   private LinearLayout activityRows;
   private String activityKey = "";
-  private View armedCommand, armedRing;
-  private TextView armedText;
-  private CharSequence armedDescription;
+  private View armedCommand;
+  private Runnable armedUndo;
   private Button cancelStop, stopDelay;
   private Switch stopSwitch;
   private final Runnable stopCountdown = this::update;
-  private CharSequence armedLabel;
   private final Runnable disarmCommand = this::disarmCommand;
   private TextView signalDetails, autoDetails, autoReason, controlDetails, readyDetails;
   private TextView carAudioState;
@@ -555,7 +553,7 @@ public final class MainActivity extends Activity {
                   .setMessage(
                       "탑승 시 공조 시작은 차량 전원을 켜는 용도입니다. 시작 후 "
                           + controller.climateOffSeconds()
-                          + "초 뒤 공조를 한 번 끕니다(수동 '시동 켜기'·'원격 Ready'에는 적용되지 않음).\n\n"
+                          + "초 뒤 공조를 한 번 끕니다(수동 '시동 켜기'에는 적용되지 않음).\n\n"
                           + "주의: 너무 빨리 끄면 차량 전원도 함께 꺼질 수 있습니다(과거 2초에서 관찰). 5초 이상에서는 전원이"
                           + " 유지된 기록이 있으나 실차에서 직접 확인하세요.")
                   .setNegativeButton("취소", null)
@@ -1305,42 +1303,68 @@ public final class MainActivity extends Activity {
 
   /**
    * Vehicle controls run only on a second tap within 3 seconds, so a stray touch does nothing.
-   * While armed, {@code ring} (the circle or the tile) gets an outline and the label asks again.
+   * While armed, {@code ring} (the circle) gets an outline and the label asks again.
    */
-  private View.OnClickListener doubleTap(
-      TextView label, String hint, View ring, boolean round, Runnable action) {
+  private View.OnClickListener doubleTap(TextView label, String hint, View ring, Runnable action) {
     return v -> {
-      if (armedCommand == v) {
-        disarmCommand();
-        action.run();
-        return;
-      }
-      disarmCommand();
-      armedCommand = v;
-      armedRing = ring;
-      armedText = label;
-      armedLabel = label.getText();
-      armedDescription = v.getContentDescription();
-      label.setText(hint);
-      v.setContentDescription(armedDescription + ". 3초 안에 한 번 더 누르면 실행합니다");
-      GradientDrawable mark = new GradientDrawable();
-      if (round) mark.setShape(GradientDrawable.OVAL);
-      else mark.setCornerRadius(dp(18));
-      mark.setStroke(dp(2), TEXT);
-      ring.setForeground(mark);
-      v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-      handler.postDelayed(disarmCommand, 3000);
+      CharSequence text = label.getText();
+      armOrRun(
+          v,
+          () -> {
+            label.setText(hint);
+            GradientDrawable mark = new GradientDrawable();
+            mark.setShape(GradientDrawable.OVAL);
+            mark.setStroke(dp(2), TEXT);
+            ring.setForeground(mark);
+          },
+          () -> {
+            label.setText(text);
+            ring.setForeground(null);
+          },
+          action);
     };
+  }
+
+  /**
+   * The first tap on {@code v} arms it ({@code show}); a second tap within 3 seconds runs
+   * {@code action}. Only one control is armed at a time: arming another one, or the timeout, runs
+   * {@code hide}.
+   */
+  private void armOrRun(View v, Runnable show, Runnable hide, Runnable action) {
+    if (armedCommand == v) {
+      disarmCommand();
+      action.run();
+      return;
+    }
+    disarmCommand();
+    CharSequence description = v.getContentDescription();
+    armedCommand = v;
+    armedUndo =
+        () -> {
+          hide.run();
+          v.setContentDescription(description);
+        };
+    show.run();
+    v.setContentDescription(description + ". 3초 안에 한 번 더 누르면 실행합니다");
+    v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+    handler.postDelayed(disarmCommand, 3000);
   }
 
   private void disarmCommand() {
     handler.removeCallbacks(disarmCommand);
     if (armedCommand == null) return;
-    armedText.setText(armedLabel);
-    armedCommand.setContentDescription(armedDescription);
-    armedRing.setForeground(null);
+    Runnable undo = armedUndo;
     armedCommand = null;
-    armedRing = null;
+    armedUndo = null;
+    undo.run();
+  }
+
+  private boolean supported(CloudClient.Command[] needs) {
+    for (CloudClient.Command need : needs)
+      if (!(need == CloudClient.Command.CLIMATE_ON
+          ? CloudClient.hasClimate(controller.capabilities)
+          : CloudClient.hasFeature(controller.capabilities, need.feature))) return false;
+    return true;
   }
 
   private void setTreeEnabled(View view, boolean enabled) {
@@ -1552,7 +1576,17 @@ public final class MainActivity extends Activity {
     hero.setTag("signalCard");
     hero.setClipChildren(false);
     carHero = new CarHeroView(this);
-    carHero.setPadding(0, dp(40), 0, 0); // The roof clears the corner badges.
+    carHero.setTag("carHero");
+    carHero.setPadding(0, dp(44), 0, 0); // The roof clears the corner badges.
+    // 차량 찾기 lives on the bonnet: two taps within 3 seconds, like the other controls.
+    carHero.setContentDescription("차량 찾기 · 본넷을 두 번 누르면 경적과 비상등으로 위치를 알립니다");
+    carHero.setOnClickListener(
+        v ->
+            armOrRun(
+                v,
+                () -> carHero.armed(true),
+                () -> carHero.armed(false),
+                () -> controller.accessory(CloudClient.Command.FIND_CAR)));
     hero.addView(carHero, new FrameLayout.LayoutParams(-1, -2));
     primaryBadge =
         badge(hero, "차량 BLE", "thresholdEdit", Gravity.TOP | Gravity.START, v -> openBle(false));
@@ -1606,36 +1640,6 @@ public final class MainActivity extends Activity {
     windowSub.setPadding(0, dp(2), 0, 0);
   }
 
-  /** A wide action tile; {@code filled} is the blue primary one, otherwise a white card. */
-  private LinearLayout bigTile(
-      LinearLayout row, int drawable, String title, String sub, boolean filled, String tag,
-      CloudClient.Command[] needs, Runnable action) {
-    LinearLayout tile = new LinearLayout(this);
-    tile.setTag(tag);
-    tile.setGravity(Gravity.CENTER_VERTICAL);
-    tile.setPadding(dp(14), dp(6), dp(8), dp(6));
-    tile.setBackground(pressable(filled ? background(ACCENT, 18) : surface(18)));
-    lift(tile, filled ? 3 : 1.5f);
-    tile.setClickable(true);
-    tile.setContentDescription(title + " · " + sub);
-    icon(tile, drawable, filled ? 0xffffffff : TEXT, 22);
-    LinearLayout texts = new LinearLayout(this);
-    texts.setOrientation(LinearLayout.VERTICAL);
-    texts.setPadding(dp(10), 0, 0, 0);
-    tile.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
-    TextView name = bold(texts, title, 14, filled ? 0xffffffff : TEXT);
-    name.setMaxLines(1);
-    TextView detail = text(texts, sub, 11, filled ? 0xe6ffffff : SUBTLE);
-    detail.setPadding(0, dp(2), 0, 0);
-    tile.setOnClickListener(doubleTap(detail, "한 번 더 누르세요", tile, false, action));
-    LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(64), 1);
-    p.setMargins(row.getChildCount() == 0 ? 0 : dp(5), 0, row.getChildCount() == 0 ? dp(5) : 0, 0);
-    row.addView(tile, p);
-    commands.add(tile);
-    commandNeeds.add(needs);
-    return tile;
-  }
-
   /** A white circle with its label underneath; the whole column is the touch target. */
   private LinearLayout roundButton(
       LinearLayout row, int drawable, String label, int color, String tag,
@@ -1656,12 +1660,12 @@ public final class MainActivity extends Activity {
     image.setImageResource(drawable);
     image.setColorFilter(color);
     circle.addView(image, new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-    column.addView(circle, new LinearLayout.LayoutParams(dp(54), dp(54)));
+    column.addView(circle, new LinearLayout.LayoutParams(dp(52), dp(52)));
     TextView name = text(column, label, 12, TEXT);
     name.setPadding(0, dp(7), 0, 0);
     name.setMaxLines(1); // setSingleLine + centered gravity scrolls the text out of view.
     name.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
-    column.setOnClickListener(doubleTap(name, "한 번 더", circle, true, action));
+    column.setOnClickListener(doubleTap(name, "한 번 더", circle, action));
     row.addView(column, new LinearLayout.LayoutParams(0, -2, 1));
     commands.add(column);
     commandNeeds.add(needs);
@@ -1702,7 +1706,7 @@ public final class MainActivity extends Activity {
     head.setGravity(Gravity.CENTER_VERTICAL);
     controls.addView(head);
     bold(head, "차량 제어", 16, TEXT).setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
-    text(head, "3초 안에 두 번 탭하면 실행", 11, MUTED).setPadding(dp(8), 0, 0, 0);
+    text(head, "3초 안에 두 번 탭 · 본넷은 차량 찾기", 11, MUTED).setPadding(dp(8), 0, 0, 0);
     LinearLayout roundRow = new LinearLayout(this);
     roundRow.setBaselineAligned(false);
     roundRow.setClipChildren(false);
@@ -1725,36 +1729,10 @@ public final class MainActivity extends Activity {
         roundRow, R.drawable.ic_power, "시동 끄기", LOCK, "control_power_off",
         new CloudClient.Command[] {CloudClient.Command.STOP},
         () -> confirm(CloudClient.Command.STOP));
-    LinearLayout extraRow = new LinearLayout(this);
-    extraRow.setBaselineAligned(false);
-    extraRow.setClipChildren(false);
-    LinearLayout.LayoutParams extraParams = new LinearLayout.LayoutParams(-1, -2);
-    extraParams.topMargin = dp(12);
-    controls.addView(extraRow, extraParams);
     roundButton(
-        extraRow, R.drawable.ic_window_close, "창문 닫기", TEXT, "control_window_close",
+        roundRow, R.drawable.ic_window_close, "창문 닫기", TEXT, "control_window_close",
         new CloudClient.Command[] {CloudClient.Command.CLOSE_WINDOWS},
         () -> controller.accessory(CloudClient.Command.CLOSE_WINDOWS));
-    roundButton(
-        extraRow, R.drawable.ic_find_car, "차량 찾기", ACCENT, "control_find_car",
-        new CloudClient.Command[] {CloudClient.Command.FIND_CAR},
-        () -> controller.accessory(CloudClient.Command.FIND_CAR));
-    // Empty cells keep these under the same four columns as the row above.
-    for (int i = 0; i < 2; i++) extraRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-    LinearLayout bigRow = new LinearLayout(this);
-    bigRow.setBaselineAligned(false);
-    bigRow.setClipChildren(false);
-    LinearLayout.LayoutParams bigParams = new LinearLayout.LayoutParams(-1, -2);
-    bigParams.topMargin = dp(16);
-    controls.addView(bigRow, bigParams);
-    bigTile(
-        bigRow, R.drawable.ic_car, "원격 Ready", "문 열고 예열", true, "control_prepare",
-        new CloudClient.Command[] {CloudClient.Command.UNLOCK, CloudClient.Command.CLIMATE_ON},
-        () -> climateConfirm("원격 Ready", "도어를 연 뒤 열림이 확인되면 원격 공조(예열)를 켭니다. ", controller::departurePrepare));
-    bigTile(
-        bigRow, R.drawable.ic_walk, "주차 마무리", "시동 끄고 잠금", false, "control_finish",
-        new CloudClient.Command[] {CloudClient.Command.STOP, CloudClient.Command.LOCK},
-        this::finishConfirm);
     cancelStop = button(controls, "", v -> controller.cancelPendingStop("앱에서 사용자 취소"));
     cancelStop.setTag("cancelStop");
     cancelStop.setTextColor(LOCK);
@@ -2418,15 +2396,12 @@ public final class MainActivity extends Activity {
     logout.setEnabled(!controller.busy() && !controller.initializing);
     login.setEnabled(!controller.busy() && !controller.initializing);
     for (int i = 0; i < commands.size(); i++) {
-      boolean enabled = ready;
-      for (CloudClient.Command need : commandNeeds.get(i))
-        enabled &=
-            need == CloudClient.Command.CLIMATE_ON
-                ? CloudClient.hasClimate(controller.capabilities)
-                : CloudClient.hasFeature(controller.capabilities, need.feature);
+      boolean enabled = ready && supported(commandNeeds.get(i));
       setTreeEnabled(commands.get(i), enabled);
       commands.get(i).setAlpha(enabled ? 1f : .45f);
     }
+    // The bonnet button: the picture stays at full strength, only the tap is off.
+    carHero.setEnabled(ready && supported(new CloudClient.Command[] {CloudClient.Command.FIND_CAR}));
     if (armedCommand != null && !armedCommand.isEnabled()) disarmCommand();
     long due = controller.stopDueAt;
     handler.removeCallbacks(stopCountdown);

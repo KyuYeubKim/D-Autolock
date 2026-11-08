@@ -933,17 +933,6 @@ public class CommandFlowTest {
   }
 
   @Test
-  public void departurePrepareUnlocksThenStartsClimateOnlyAfterConfirmedUnlock() throws Exception {
-    Protocol p = new Protocol();
-    p.locked = true;
-    Controller c = create(p);
-    c.departurePrepare();
-    settle(c);
-    assertEquals(Arrays.asList("OPENDOOR", "OPENAIR"), p.commands);
-    c.stop();
-  }
-
-  @Test
   public void departureFinishStopsThenLocksOnlyWhenPowerOffConfirmed() throws Exception {
     Protocol p = new Protocol();
     p.power = 3;

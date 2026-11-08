@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The header logo (ic_logo) in white, centred in the adaptive icon's 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="1.18" android:scaleY="1.18" android:translateX="21.43" android:translateY="26.74">
+        <path android:strokeColor="#FFFFFFFF" android:strokeWidth="3.6" android:strokeLineCap="round" android:fillColor="#00000000" android:pathData="M12,21 v-5 a6,6 0 0 1 12,0 v5" />
+        <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd" android:pathData="M12,20 h12 a4,4 0 0 1 4,4 v10 a4,4 0 0 1 -4,4 h-12 a4,4 0 0 1 -4,-4 v-10 a4,4 0 0 1 4,-4 z M18,25 a2.3,2.3 0 1 0 0.01,0 z M16.9,27.5 h2.2 l-0.5,6.5 h-1.2 z" />
+        <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2.4" android:strokeLineCap="round" android:fillColor="#00000000" android:pathData="M29,21 a6,6 0 0 1 0,12" />
+        <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2.4" android:strokeLineCap="round" android:fillColor="#00000000" android:pathData="M32,17 a9,9 0 0 1 0,20" />
+        <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2.4" android:strokeLineCap="round" android:fillColor="#00000000" android:pathData="M35,13 a11,11 0 0 1 0,22" />
+    </group>
+</vector>

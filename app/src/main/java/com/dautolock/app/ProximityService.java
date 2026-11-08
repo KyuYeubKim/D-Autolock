@@ -39,6 +39,10 @@ public final class ProximityService extends Service {
   private String beaconAddr = "";
   private String beaconName = "";
   private String primaryAddr = "";
+  // Watch-key BLE device — scanned only to log its advertisement RSSI (feasibility data for a future
+  // BLE-only proximity mode). It never feeds the lock/unlock engine.
+  private String watchKeyAddr = "";
+  private long lastWatchKeyAdv = -1;
   private int deviceType;
   private volatile String radioStatus = "BLE 검색 중";
   private final Runnable restartScan =
@@ -71,6 +75,8 @@ public final class ProximityService extends Service {
                   .setDeviceAddress(controller.settings.getString("address", ""))
                   .build());
           addBeaconFilters(filters);
+          watchKeyAddr = controller.watchKeyMac();
+          addWatchKeyFilter(filters);
           scanner.startScan(
               filters,
               new ScanSettings.Builder()
@@ -481,6 +487,17 @@ public final class ProximityService extends Service {
     String addr = result.getDevice().getAddress();
     android.bluetooth.le.ScanRecord record = result.getScanRecord();
     String name = record == null ? null : record.getDeviceName();
+    // Observation only (no return): log the watch-key device's advertisement RSSI, throttled. Tells us
+    // whether that device advertises a usable distance signal (a future BLE-only proximity mode). It
+    // does not steal the sample — the primary/beacon routing below still runs.
+    if (!watchKeyAddr.isEmpty()
+        && addr != null
+        && addr.equalsIgnoreCase(watchKeyAddr)
+        && now - lastWatchKeyAdv > 10000) {
+      lastWatchKeyAdv = now;
+      controller.diagnostics.record(
+          "WATCHKEY_ADV", "rssi=" + result.getRssi() + " ageMs=" + (now - sampleAt));
+    }
     if (beaconEngine != null
         && ((addr != null && addr.equalsIgnoreCase(beaconAddr))
             || (!beaconName.isEmpty() && beaconName.equals(name)))) {
@@ -563,6 +580,7 @@ public final class ProximityService extends Service {
           controller.beaconConfigured() ? controller.settings.getString("beaconAddress", "") : "";
       beaconName = beaconAddr.isEmpty() ? "" : controller.settings.getString("beaconName", "");
       primaryAddr = address;
+      watchKeyAddr = controller.watchKeyMac();
       beaconEngine = beaconAddr.isEmpty() ? null : controller.beaconProximityEngine();
       started = SystemClock.elapsedRealtime();
       lastScanAttempt = started;
@@ -572,6 +590,7 @@ public final class ProximityService extends Service {
       List<ScanFilter> filters = new ArrayList<>();
       filters.add(new ScanFilter.Builder().setDeviceAddress(address).build());
       addBeaconFilters(filters);
+      addWatchKeyFilter(filters);
       scanner.startScan(
           filters,
           new ScanSettings.Builder()
@@ -618,6 +637,11 @@ public final class ProximityService extends Service {
   /** The captured decision engine is still one of the live engines (not from a past scan session). */
   private boolean sameEngine(ProximityEngine e) {
     return scanning && (e == engine || e == beaconEngine);
+  }
+
+  private void addWatchKeyFilter(List<ScanFilter> filters) {
+    if (!watchKeyAddr.isEmpty() && BluetoothAdapter.checkBluetoothAddress(watchKeyAddr))
+      filters.add(new ScanFilter.Builder().setDeviceAddress(watchKeyAddr).build());
   }
 
   private void addBeaconFilters(List<ScanFilter> filters) {

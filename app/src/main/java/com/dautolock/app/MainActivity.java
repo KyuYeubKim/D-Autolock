@@ -64,6 +64,7 @@ public final class MainActivity extends Activity {
   private LinearLayout watchBleSection;
   private TextView watchBleStatus;
   private Button watchBleUnlock, watchBleLock;
+  private Switch watchKeyAutoSwitch;
   private com.dautolock.app.watchble.WatchBleClient watchBleRun;
   private TextView beaconDevice;
   private TextView updateStatus;
@@ -941,6 +942,33 @@ public final class MainActivity extends Activity {
     watchBleStatus.setTag("watchBleStatus");
     watchBleUnlock = primaryButton(watchBleSection, "BLE로 도어 열기", v -> runWatchBleTest(false));
     watchBleLock = button(watchBleSection, "BLE로 도어 잠그기", v -> runWatchBleTest(true));
+
+    // Stage C: use the watch BLE key as the actuator for automatic/manual lock·unlock·engine.
+    LinearLayout autoRow = new LinearLayout(this);
+    autoRow.setOrientation(LinearLayout.VERTICAL);
+    LinearLayout.LayoutParams ap =
+        new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+    ap.topMargin = dp(12);
+    watchBleSection.addView(autoRow, ap);
+    text(autoRow, "자동에서 블루투스 키 사용 (3단계)", 14, TEXT);
+    watchKeyAutoSwitch = new Switch(this);
+    watchKeyAutoSwitch.setTag("watchKeyAuto");
+    watchKeyAutoSwitch.setText("열기·잠금·시동에 블루투스 키 우선");
+    watchKeyAutoSwitch.setTextColor(TEXT);
+    watchKeyAutoSwitch.setMinHeight(dp(56));
+    watchKeyAutoSwitch.setChecked(controller.settings.getBoolean("watchKeyAuto", true));
+    autoRow.addView(watchKeyAutoSwitch);
+    watchKeyAutoSwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          if (updating) return;
+          controller.settings.edit().putBoolean("watchKeyAuto", on).apply();
+        });
+    text(
+        autoRow,
+        "켜면 자동/수동 도어 열기·잠금과 시동 켜기·끄기를 블루투스 키로 먼저 보냅니다(빠르고 인터넷 없이도 동작). 키가 멀거나 실패하면 자동으로 클라우드로 보냅니다. 거리 판정(근접/이탈)과 안전 검사(전원·기어·정차·이탈)는 그대로입니다. 끄면 전부 클라우드로만 보냅니다.",
+        12,
+        MUTED);
     return card;
   }
 
@@ -2352,6 +2380,8 @@ public final class MainActivity extends Activity {
           watchBleUnlock.setEnabled(true);
           watchBleLock.setEnabled(true);
         }
+        if (watchKeyAutoSwitch != null)
+          watchKeyAutoSwitch.setChecked(controller.settings.getBoolean("watchKeyAuto", true));
       }
     }
     updating = false;

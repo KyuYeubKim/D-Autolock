@@ -217,6 +217,102 @@ public class CommandFlowTest {
     assertFalse(c.busy());
   }
 
+  // --- Stage C: the watch BLE key as a fast local actuator (no real BLE in tests) ----------------
+  static final class FakeBle implements Controller.WatchBleSender {
+    boolean ready = true;
+    boolean succeed = true;
+    int calls = 0;
+    byte lastCode = 0;
+
+    @Override
+    public boolean ready() {
+      return ready;
+    }
+
+    @Override
+    public com.dautolock.app.watchkey.WatchKey.BleResult send(byte controlByte, long timeoutMs) {
+      calls++;
+      lastCode = controlByte;
+      return new com.dautolock.app.watchkey.WatchKey.BleResult(
+          succeed, succeed ? "ok" : "fail", succeed ? 255 : -1);
+    }
+  }
+
+  @Test
+  public void watchBleCodeMapsOnlyTheDoorAndEngineCommands() {
+    assertEquals(
+        Byte.valueOf(com.dautolock.app.watchble.WatchBleCodec.UNLOCK),
+        Controller.watchBleCode(CloudClient.Command.UNLOCK));
+    assertEquals(
+        Byte.valueOf(com.dautolock.app.watchble.WatchBleCodec.LOCK),
+        Controller.watchBleCode(CloudClient.Command.LOCK));
+    assertEquals(
+        Byte.valueOf(com.dautolock.app.watchble.WatchBleCodec.START_CLIMATE),
+        Controller.watchBleCode(CloudClient.Command.CLIMATE_ON));
+    assertEquals(
+        Byte.valueOf(com.dautolock.app.watchble.WatchBleCodec.STOP_CLIMATE),
+        Controller.watchBleCode(CloudClient.Command.CLIMATE_OFF));
+    assertNull(Controller.watchBleCode(CloudClient.Command.STOP));
+    assertNull(Controller.watchBleCode(CloudClient.Command.CLOSE_WINDOWS));
+    assertNull(Controller.watchBleCode(CloudClient.Command.FIND_CAR));
+  }
+
+  @Test
+  public void manualUnlockPrefersTheWatchBleKeyAndSkipsTheCloud() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    c.ble = fake;
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    complete(c);
+    assertEquals(1, fake.calls);
+    assertEquals(com.dautolock.app.watchble.WatchBleCodec.UNLOCK, fake.lastCode);
+    assertTrue("cloud must not be used when the BLE key sends it", p.commands.isEmpty());
+  }
+
+  @Test
+  public void watchBleFailureFallsBackToTheCloud() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    fake.succeed = false;
+    c.ble = fake;
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    complete(c);
+    assertEquals(1, fake.calls);
+    assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
+  }
+
+  @Test
+  public void automaticLockClaimsOnceThenFallsBackToCloudWhenBleFails() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    bridgeParked(c); // Live P present but not this phone's trip: it locks and never stops.
+    c.monitoring = c.autoEnabled = true;
+    FakeBle fake = new FakeBle();
+    fake.succeed = false; // BLE fails → the cloud must still send, with the claim consumed once.
+    c.ble = fake;
+    int[] claims = {0};
+    c.automaticCommand(
+        CloudClient.Command.LOCK,
+        () -> true,
+        () -> {
+          claims[0]++;
+          return claims[0] == 1;
+        },
+        () -> {},
+        () -> {},
+        true);
+    complete(c);
+    runDelayedStop(c, true);
+    assertEquals(1, fake.calls);
+    assertEquals("the engine claim must be consumed exactly once", 1, claims[0]);
+    assertEquals(Collections.singletonList("LOCKDOOR"), p.commands);
+  }
+
   private static final com.dautolock.link.LinkProtocol.Sample PARK =
       new com.dautolock.link.LinkProtocol.Sample(0, -1, 1, 3, -1, 0);
   private static final com.dautolock.link.LinkProtocol.Sample DRIVE =

@@ -33,6 +33,75 @@ final class Controller {
   private volatile long statusRequestedAt, nextStatusRead;
   private final Runnable statusRefreshTask = this::refreshStatusWhenNeeded;
   volatile CloudClient cloud;
+
+  /**
+   * Stage C: the watch BLE key as a fast local actuator. Lock/unlock/engine commands are sent over
+   * the issued key first (≈1.6 s, no cloud) and fall back to the cloud when the key is out of range
+   * or the handshake fails. Distance is still decided by the RSSI proximity engine, and every safety
+   * gate (live P, speed, door, departure, ownership) still comes from the cloud/Bridge snapshot — the
+   * BLE response only reports the door-lock state. Behind the watchKeyEnabled flag (default off) plus
+   * a watchKeyAuto toggle; a test may replace {@link #ble} with a fake. STOP (TURNOFFENGINE) has no
+   * BLE code, so the automatic Stop path is unchanged.
+   */
+  interface WatchBleSender {
+    boolean ready();
+
+    com.dautolock.app.watchkey.WatchKey.BleResult send(byte controlByte, long timeoutMs);
+  }
+
+  static final long WATCH_BLE_AUTO_TIMEOUT_MS = 8000;
+  private com.dautolock.app.watchkey.WatchKey watchKey;
+  WatchBleSender ble =
+      new WatchBleSender() {
+        @Override
+        public boolean ready() {
+          return settings.getBoolean(com.dautolock.app.watchkey.WatchKey.FLAG, false)
+              && settings.getBoolean("watchKeyAuto", true)
+              && watchKey().hasKey();
+        }
+
+        @Override
+        public com.dautolock.app.watchkey.WatchKey.BleResult send(byte controlByte, long timeoutMs) {
+          return watchKey().sendBleBlocking(controlByte, timeoutMs);
+        }
+      };
+
+  private com.dautolock.app.watchkey.WatchKey watchKey() {
+    if (watchKey == null)
+      watchKey = new com.dautolock.app.watchkey.WatchKey(context, settings, diagnostics);
+    return watchKey;
+  }
+
+  /**
+   * The car's watch-key BLE MAC when the feature is on and a key is issued, else empty. Used by the
+   * scanner to log the key device's advertisement RSSI — feasibility data for a future BLE-only
+   * proximity mode. Observation only; it drives no decision.
+   */
+  String watchKeyMac() {
+    if (!settings.getBoolean(com.dautolock.app.watchkey.WatchKey.FLAG, false)) return "";
+    try {
+      return watchKey().bleMac();
+    } catch (Exception e) {
+      return "";
+    }
+  }
+
+  /** The watch BLE control code for a command, or null if it has none (then the cloud is used). */
+  static Byte watchBleCode(CloudClient.Command command) {
+    switch (command) {
+      case UNLOCK:
+        return com.dautolock.app.watchble.WatchBleCodec.UNLOCK;
+      case LOCK:
+        return com.dautolock.app.watchble.WatchBleCodec.LOCK;
+      case CLIMATE_ON:
+        return com.dautolock.app.watchble.WatchBleCodec.START_CLIMATE;
+      case CLIMATE_OFF:
+        return com.dautolock.app.watchble.WatchBleCodec.STOP_CLIMATE;
+      default:
+        return null;
+    }
+  }
+
   volatile JSONArray vehicles = new JSONArray();
   volatile JSONObject capabilities = new JSONObject();
   volatile String vin = "", pinHash = "", vehicleName = "차량을 연결하세요";
@@ -1209,10 +1278,19 @@ final class Controller {
             long sentAt = System.currentTimeMillis();
             if (stop) cancelReadinessWatch("차량 종료 요청");
             boolean wasClosed = Boolean.TRUE.equals(snapshot.doorsClosed);
-            cloud.command(
-                target,
-                pinHash,
-                command,
+            // Consume the engine proposal at most once across a BLE-first then cloud-fallback send:
+            // claim() latches the engine as handled, so the second channel must reuse the result.
+            final AtomicInteger claimState = new AtomicInteger(0); // 0 unknown, 1 claimed, 2 refused
+            BooleanSupplier claimOnce =
+                () -> {
+                  int s = claimState.get();
+                  if (s != 0) return s == 1;
+                  boolean ok = claim.getAsBoolean();
+                  claimState.set(ok ? 1 : 2);
+                  return ok;
+                };
+            // Final safety recheck, re-evaluated fresh for whichever channel sends (no claim here).
+            BooleanSupplier dispatchReady =
                 () -> {
                   if (!valid.getAsBoolean()) return false;
                   if (prepared != null
@@ -1232,41 +1310,99 @@ final class Controller {
                     diagnostics.record("CONTROL_RECHECK_BLOCK", dispatchBlock);
                     return false;
                   }
-                  if (automatic && !claim.getAsBoolean()) return false;
-                  if (lock
-                      && automatic
-                      && Integer.valueOf(3).equals(checked.power)
-                      && "unavailable".equals(checked.epbStatus))
-                    diagnostics.record(
-                        "LOCK_GUARD",
-                        "basis=stationary_closed_fresh_departure epb=unavailable"
-                            + " stopAuthorized=false");
-                  if (stop && "unavailable".equals(checked.epbStatus))
-                    diagnostics.record(
-                        "STOP_GUARD", "basis=one_use_manual_parking_confirmation epb=unavailable");
-                  diagnostics.record("CONTROL_SEND", (automatic ? "AUTO " : "MANUAL ") + command);
+                  return true;
+                };
+            // Fast path: send over the issued watch BLE key (local, ≈1.6 s). Keeps every gate above —
+            // the same safety recheck and engine claim — and falls back to the cloud if the key is out
+            // of range or the handshake fails. STOP has no BLE code, so it always uses the cloud.
+            boolean sentByBle = false;
+            Byte bleCode = watchBleCode(command);
+            if (bleCode != null && ble.ready()) {
+              if (dispatchReady.getAsBoolean() && (!automatic || claimOnce.getAsBoolean())) {
+                com.dautolock.app.watchkey.WatchKey.BleResult r =
+                    ble.send(bleCode, WATCH_BLE_AUTO_TIMEOUT_MS);
+                if (r != null && r.success) {
+                  sentByBle = true;
+                  dispatched.set(true);
+                  diagnostics.record(
+                      "CONTROL_SEND",
+                      (automatic ? "AUTO " : "MANUAL ") + command + " source=ble doors=" + r.doors);
                   diagnostics.record(
                       "CONTROL_TIMING",
                       command
                           + " readyToSendMs="
                           + (SystemClock.elapsedRealtime() - readyAt)
-                          + " preflightSource="
-                          + (reused ? prepared.source : "fresh_query"));
-                  dispatched.set(true);
-                  lastControl = command.label + " · 전송 중";
+                          + " channel=ble");
+                  lastControl = command.label + " · 전송(BLE)";
                   changed();
-                  return true;
-                });
-            VehicleSnapshot after = cloud.snapshot(target);
-            observeSnapshot(after, false);
+                } else {
+                  diagnostics.record(
+                      "WATCHBLE_FALLBACK",
+                      command + " reason=" + (r == null ? "unavailable" : r.message));
+                }
+              } else {
+                note("거리 또는 설정이 바뀌어 제어를 취소했습니다");
+                return;
+              }
+            }
+            if (!sentByBle) {
+              cloud.command(
+                  target,
+                  pinHash,
+                  command,
+                  () -> {
+                    if (!dispatchReady.getAsBoolean()) return false;
+                    if (automatic && !claimOnce.getAsBoolean()) return false;
+                    if (lock
+                        && automatic
+                        && Integer.valueOf(3).equals(checked.power)
+                        && "unavailable".equals(checked.epbStatus))
+                      diagnostics.record(
+                          "LOCK_GUARD",
+                          "basis=stationary_closed_fresh_departure epb=unavailable"
+                              + " stopAuthorized=false");
+                    if (stop && "unavailable".equals(checked.epbStatus))
+                      diagnostics.record(
+                          "STOP_GUARD",
+                          "basis=one_use_manual_parking_confirmation epb=unavailable");
+                    diagnostics.record(
+                        "CONTROL_SEND",
+                        (automatic ? "AUTO " : "MANUAL ") + command + " source=cloud");
+                    diagnostics.record(
+                        "CONTROL_TIMING",
+                        command
+                            + " readyToSendMs="
+                            + (SystemClock.elapsedRealtime() - readyAt)
+                            + " preflightSource="
+                            + (reused ? prepared.source : "fresh_query"));
+                    dispatched.set(true);
+                    lastControl = command.label + " · 전송 중";
+                    changed();
+                    return true;
+                  });
+            }
+            VehicleSnapshot after;
+            try {
+              after = cloud.snapshot(target);
+              observeSnapshot(after, false);
+            } catch (Exception readbackError) {
+              if (!sentByBle) throw readbackError;
+              // BLE already actuated and the car confirmed it (result=1); a momentarily unavailable
+              // cloud read-back must not undo that. Keep the preflight snapshot as a base so the
+              // trip/arm/afterLock bookkeeping below still runs.
+              after = checked;
+              diagnostics.record(
+                  "READBACK_BLE_ONLY", command + " cloudReadbackFailed=" + readbackError.getMessage());
+            }
             diagnostics.record(
                 "READBACK", command + " " + after.diagnostic(System.currentTimeMillis()));
             boolean verified =
-                after.fresh(System.currentTimeMillis())
-                    && after.measuredAt >= sentAt
-                    && (stop
-                        ? Integer.valueOf(1).equals(after.power)
-                        : Boolean.valueOf(lock).equals(after.locked));
+                sentByBle
+                    || (after.fresh(System.currentTimeMillis())
+                        && after.measuredAt >= sentAt
+                        && (stop
+                            ? Integer.valueOf(1).equals(after.power)
+                            : Boolean.valueOf(lock).equals(after.locked)));
             lastControl =
                 (verified
                     ? command.label + " 완료 · 차량 상태 확인됨"
@@ -1329,17 +1465,37 @@ final class Controller {
     diagnostics.record("STOP_VIA_CLIMATE_OFF", "reason=" + bridgeBlock);
     cancelReadinessWatch("원격 시동 끄기 요청");
     long sentAt = System.currentTimeMillis();
-    cloud.command(
-        target,
-        pinHash,
-        CloudClient.Command.CLIMATE_OFF,
-        () -> {
-          if (!valid.getAsBoolean()) return false;
-          diagnostics.record("CONTROL_SEND", "MANUAL CLIMATE_OFF purpose=remote_shutdown");
-          lastControl = "원격 시동 끄기 · 전송 중";
-          changed();
-          return true;
-        });
+    // BLE-first: 시동 끄기 ends the remote climate (STOP_CLIMATE) over the watch key, else the cloud.
+    boolean sentByBle = false;
+    Byte bleCode = watchBleCode(CloudClient.Command.CLIMATE_OFF);
+    if (bleCode != null && ble.ready() && valid.getAsBoolean()) {
+      com.dautolock.app.watchkey.WatchKey.BleResult r = ble.send(bleCode, WATCH_BLE_AUTO_TIMEOUT_MS);
+      if (r != null && r.success) {
+        sentByBle = true;
+        diagnostics.record(
+            "CONTROL_SEND", "MANUAL CLIMATE_OFF purpose=remote_shutdown source=ble doors=" + r.doors);
+        lastControl = "원격 시동 끄기 · 전송(BLE)";
+        changed();
+      } else {
+        diagnostics.record(
+            "WATCHBLE_FALLBACK",
+            "CLIMATE_OFF purpose=remote_shutdown reason=" + (r == null ? "unavailable" : r.message));
+      }
+    }
+    if (!sentByBle) {
+      cloud.command(
+          target,
+          pinHash,
+          CloudClient.Command.CLIMATE_OFF,
+          () -> {
+            if (!valid.getAsBoolean()) return false;
+            diagnostics.record(
+                "CONTROL_SEND", "MANUAL CLIMATE_OFF purpose=remote_shutdown source=cloud");
+            lastControl = "원격 시동 끄기 · 전송 중";
+            changed();
+            return true;
+          });
+    }
     remoteShutdownVin = target;
     remoteShutdownSince = SystemClock.elapsedRealtime();
     remoteShutdownAt = sentAt;
@@ -2208,23 +2364,49 @@ final class Controller {
     AtomicBoolean sent = new AtomicBoolean();
     long[] sentAt = {0};
     note("공조 시작 요청 중 · 자동 OFF 없이 상태를 진단합니다");
+    // BLE-first: 시동 켜기 starts the remote climate (START_CLIMATE) over the watch key, else the cloud.
+    boolean sentByBle = false;
+    Byte bleCode = watchBleCode(CloudClient.Command.CLIMATE_ON);
+    if (bleCode != null
+        && ble.ready()
+        && valid.getAsBoolean()
+        && checked.climateBlock(System.currentTimeMillis()) == null) {
+      com.dautolock.app.watchkey.WatchKey.BleResult r = ble.send(bleCode, WATCH_BLE_AUTO_TIMEOUT_MS);
+      if (r != null && r.success) {
+        sentByBle = true;
+        sentAt[0] = System.currentTimeMillis();
+        sent.set(true);
+        diagnostics.record(
+            "CLIMATE_START_SEND",
+            "command=OPENAIR targetTemperatureC=23 automaticOff=false source=ble doors=" + r.doors);
+        climateStatus = "공조 시작 응답 수신(BLE) · 자동 OFF 없음 · READY 별도 확인";
+        diagnostics.record("CLIMATE_START_RESULT", "ack=true physicalStateVerified=false source=ble");
+        note(climateStatus);
+      } else {
+        diagnostics.record(
+            "WATCHBLE_FALLBACK", "CLIMATE_ON reason=" + (r == null ? "unavailable" : r.message));
+      }
+    }
     try {
-      cloud.command(
-          target,
-          pinHash,
-          CloudClient.Command.CLIMATE_ON,
-          () -> {
-            if (!valid.getAsBoolean() || checked.climateBlock(System.currentTimeMillis()) != null)
-              return false;
-            sentAt[0] = System.currentTimeMillis();
-            sent.set(true);
-            diagnostics.record(
-                "CLIMATE_START_SEND", "command=OPENAIR targetTemperatureC=23 automaticOff=false");
-            return true;
-          });
-      climateStatus = "공조 시작 응답 수신 · 자동 OFF 없음 · READY 별도 확인";
-      diagnostics.record("CLIMATE_START_RESULT", "ack=true physicalStateVerified=false");
-      note(climateStatus);
+      if (!sentByBle) {
+        cloud.command(
+            target,
+            pinHash,
+            CloudClient.Command.CLIMATE_ON,
+            () -> {
+              if (!valid.getAsBoolean() || checked.climateBlock(System.currentTimeMillis()) != null)
+                return false;
+              sentAt[0] = System.currentTimeMillis();
+              sent.set(true);
+              diagnostics.record(
+                  "CLIMATE_START_SEND",
+                  "command=OPENAIR targetTemperatureC=23 automaticOff=false source=cloud");
+              return true;
+            });
+        climateStatus = "공조 시작 응답 수신 · 자동 OFF 없음 · READY 별도 확인";
+        diagnostics.record("CLIMATE_START_RESULT", "ack=true physicalStateVerified=false");
+        note(climateStatus);
+      }
     } catch (Exception e) {
       climateStatus =
           "공조 시작 " + (sent.get() ? "결과 미확인 · 자동 재전송·OFF 없음 · " : "보류 · ") + e.getMessage();

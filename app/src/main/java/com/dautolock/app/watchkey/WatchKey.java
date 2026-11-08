@@ -6,7 +6,9 @@ import com.dautolock.app.api.BydConfig;
 import com.dautolock.app.core.DiagnosticLog;
 import com.dautolock.app.watchble.WatchBleClient;
 import com.dautolock.app.watchble.WatchBleCodec;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Facade for the Bluetooth (watch) key feature, used by the settings UI. Everything the feature
@@ -44,6 +46,11 @@ public final class WatchKey {
 
   public boolean hasKey() {
     return store.hasBleKey();
+  }
+
+  /** The car's BLE MAC for the issued key, or empty. Used to scan its advertisement RSSI (Stage C). */
+  public String bleMac() {
+    return store.hasBleKey() ? store.macAddress() : "";
   }
 
   public String statusLine() {
@@ -84,6 +91,60 @@ public final class WatchKey {
         lock ? WatchBleCodec.LOCK : WatchBleCodec.UNLOCK,
         listener);
     return client;
+  }
+
+  /** Result of one blocking BLE command: whether the car confirmed it, a message, and the door bitmap. */
+  public static final class BleResult {
+    public final boolean success;
+    public final String message;
+    public final int doors;
+
+    public BleResult(boolean success, String message, int doors) {
+      this.success = success;
+      this.message = message;
+      this.doors = doors;
+    }
+  }
+
+  /**
+   * Stage C: send one control over the issued watch BLE key and block until the car answers or the
+   * timeout elapses. Runs the same handshake as the manual test. Intended for the Controller's cloud
+   * worker thread (never the main thread): the GATT callbacks land on the main looper and release
+   * this latch. Returns a non-null result; {@code success} false means the caller should fall back to
+   * the cloud. Does nothing and reports failure when no key is issued.
+   */
+  public BleResult sendBleBlocking(byte controlByte, long timeoutMs) {
+    if (!store.hasBleKey()) return new BleResult(false, "no_key", -1);
+    final BleResult[] out = {null};
+    final CountDownLatch latch = new CountDownLatch(1);
+    final WatchBleClient client = new WatchBleClient(context, diagnostics::record);
+    client.start(
+        store.dkey(),
+        store.macAddress(),
+        store.keyNumber(),
+        controlByte,
+        new WatchBleClient.Listener() {
+          @Override
+          public void onProgress(String message) {}
+
+          @Override
+          public void onResult(boolean success, String message, int doorStates) {
+            out[0] = new BleResult(success, message, doorStates);
+            latch.countDown();
+          }
+        },
+        timeoutMs);
+    try {
+      if (!latch.await(timeoutMs + 1500, TimeUnit.MILLISECONDS)) {
+        client.cancel();
+        return new BleResult(false, "timeout", -1);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      client.cancel();
+      return new BleResult(false, "interrupted", -1);
+    }
+    return out[0] == null ? new BleResult(false, "no_result", -1) : out[0];
   }
 
   /** Wipe the stored key material. Used by the "키 삭제 / 초기화" button. */

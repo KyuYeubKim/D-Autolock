@@ -33,6 +33,8 @@ public final class WatchBleCodec {
   // Control codes (reference getControlCode).
   public static final byte UNLOCK = 5;
   public static final byte LOCK = 7;
+  public static final byte START_CLIMATE = 3; // remote climate ON = 시동 켜기 (reference START_CLIMATE 9003)
+  public static final byte STOP_CLIMATE = 8; // remote climate OFF = 시동 끄기 (reference STOP_CLIMATE 9009)
 
   private int sequence = 0;
   private byte[] appRandom = new byte[8];

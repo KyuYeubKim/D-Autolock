@@ -44,6 +44,8 @@ public final class WatchBleClient {
   private static final long RANDOM_FRAME_DELAY_MS = 200;
   private static final long AUTH_FRAME_DELAY_MS = 180;
 
+  private long overallTimeoutMs = OVERALL_TIMEOUT_MS;
+
   private enum Step {
     IDLE,
     CONNECTING,
@@ -85,6 +87,22 @@ public final class WatchBleClient {
 
   /** Begin the test. {@code controlByte} is {@link WatchBleCodec#UNLOCK}/{@link WatchBleCodec#LOCK}. */
   public void start(String dkey, String mac, String keyNumber, byte controlByte, Listener listener) {
+    start(dkey, mac, keyNumber, controlByte, listener, OVERALL_TIMEOUT_MS);
+  }
+
+  /**
+   * Begin with an explicit overall timeout. The automatic path passes a short one (the phone is
+   * already near, so the handshake is ~1.6 s) so a failed connection falls back to the cloud quickly
+   * instead of holding the worker for the full manual 35 s.
+   */
+  public void start(
+      String dkey,
+      String mac,
+      String keyNumber,
+      byte controlByte,
+      Listener listener,
+      long overallTimeoutMs) {
+    this.overallTimeoutMs = overallTimeoutMs > 0 ? overallTimeoutMs : OVERALL_TIMEOUT_MS;
     this.listener = listener;
     this.dkey = dkey == null ? "" : dkey.trim();
     this.controlByte = controlByte;
@@ -123,7 +141,7 @@ public final class WatchBleClient {
     step = Step.CONNECTING;
     progress("연결 중…");
     overallTimeout = this::onOverallTimeout;
-    main.postDelayed(overallTimeout, OVERALL_TIMEOUT_MS);
+    main.postDelayed(overallTimeout, overallTimeoutMs);
     try {
       gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE);
     } catch (SecurityException e) {

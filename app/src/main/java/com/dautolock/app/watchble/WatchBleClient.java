@@ -15,6 +15,7 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import java.util.Arrays;
 import java.util.UUID;
 import java.util.function.BiConsumer;
@@ -73,6 +74,8 @@ public final class WatchBleClient {
   private BluetoothGattCharacteristic recvCh;
   private volatile Step step = Step.IDLE;
   private boolean finished;
+  /** This client registered a session with {@link BleAirtime} that finish() must close. */
+  private boolean onAir;
 
   private final byte[] rxBuf = new byte[4096];
   private int rxLen;
@@ -142,6 +145,9 @@ public final class WatchBleClient {
     progress("연결 중…");
     overallTimeout = this::onOverallTimeout;
     main.postDelayed(overallTimeout, overallTimeoutMs);
+    // From here the car's advertiser may go quiet; finish() always closes this (timeout included).
+    onAir = true;
+    BleAirtime.begin(SystemClock.elapsedRealtime());
     try {
       gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE);
     } catch (SecurityException e) {
@@ -467,6 +473,10 @@ public final class WatchBleClient {
       // Best effort.
     }
     gatt = null;
+    if (onAir) {
+      onAir = false;
+      BleAirtime.end(SystemClock.elapsedRealtime());
+    }
     final Listener l = listener;
     if (l != null) l.onResult(success, message, doorStates);
   }

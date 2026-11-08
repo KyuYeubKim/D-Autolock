@@ -380,4 +380,62 @@ public class ProximityEngineTest {
   public void fiveDbGapIsAllowedForEarlierLocking() {
     new ProximityEngine(-75, -80); // near/far 5 dB apart: valid, locks closer.
   }
+
+  @Test
+  public void lossLockAtTheExactStaleBoundaryIsStillReportedAsALoss() {
+    // With a 5 s loss-lock the lock is due at exactly 5000 ms, where fresh() (<= 5000) still holds;
+    // gates that asked "!fresh" for "is this a signal-loss lock?" missed that moment.
+    ProximityEngine e = new ProximityEngine(-75, -85, 0, 2000, 5000);
+    feed(e, -50, 0, 3000);
+    e.alreadySatisfied(UNLOCK, 3000);
+    assertFalse(e.lossLockPending(7999));
+    assertTrue(e.fresh(8000));
+    assertEquals(LOCK, e.pending(8000));
+    assertTrue(e.lossLockPending(8000));
+  }
+
+  @Test
+  public void savedThresholdsDoNotReopenAnApproachAlreadyHandled() {
+    // Real log 11-08 17:48: unlocked, the car re-locked itself 30 s later, the user saved thresholds
+    // while standing at the car, and the rebuilt engine opened it again as a "new" approach.
+    ProximityEngine before = new ProximityEngine(-73, -83, 1000, 2000, 5000);
+    feed(before, -60, 0, 3000);
+    assertTrue(before.claim(UNLOCK, 3000));
+
+    ProximityEngine fresh = new ProximityEngine(-75, -85, 1000, 2000, 5000);
+    feed(fresh, -60, 40000, 43000);
+    assertEquals(UNLOCK, fresh.pending(43000)); // Without the carry-over: reopens (the bug).
+
+    ProximityEngine after = new ProximityEngine(-75, -85, 1000, 2000, 5000);
+    after.continueFrom(before);
+    assertEquals("NEAR", after.handled());
+    feed(after, -60, 40000, 43000);
+    assertEquals(NONE, after.pending(43000)); // Same visit, already handled.
+    // Walking away still locks under the new thresholds (the phone was near this visit); the
+    // carried unlock time keeps the 20 s anti-flap far dwell, as without the save.
+    feed(after, -95, 44000, 60000);
+    assertEquals(NONE, after.pending(60000));
+    feed(after, -95, 61000, 70000);
+    assertEquals(LOCK, after.pending(70000));
+    // And coming back after that opens again.
+    assertTrue(after.claim(LOCK, 70000));
+    feed(after, -60, 90000, 94000);
+    assertEquals(UNLOCK, after.pending(94000));
+  }
+
+  @Test
+  public void savedThresholdsDoNotCarryDepartureEvidenceForTheAutomaticStop() {
+    ProximityEngine before = new ProximityEngine(-60, -80, 0, 1000, 10000);
+    feed(before, -50, 0, 3000);
+    before.alreadySatisfied(UNLOCK, 3000);
+    feed(before, -100, 4000, 9000);
+    assertTrue(before.departureConfirmed(9000));
+    assertTrue(before.claim(LOCK, 9000));
+
+    ProximityEngine after = new ProximityEngine(-62, -82, 0, 1000, 10000);
+    after.continueFrom(before);
+    assertEquals("FAR", after.handled());
+    // The latch measured with the old values is gone until new far evidence arrives.
+    assertFalse(after.departureConfirmed(15000));
+  }
 }

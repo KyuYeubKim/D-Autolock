@@ -194,6 +194,15 @@ public final class ProximityEngine {
     return seenNear ? Action.LOCK : Action.NONE;
   }
 
+  /**
+   * The pending LOCK comes from a lost signal, not a far reading. Use this rather than {@code
+   * !fresh(now)}: with a 5 s loss-lock the lock is due at exactly 5000 ms, where {@code fresh}
+   * (≤ {@link #STALE_MS}) still holds, so a "not fresh" test missed that moment.
+   */
+  public synchronized boolean lossLockPending(long now) {
+    return lossLockReady(now);
+  }
+
   private boolean lossLockReady(long now) {
     return lastSample >= 0
         && now >= lastSample
@@ -224,6 +233,42 @@ public final class ProximityEngine {
     lastAction = action;
     unlockCheckUntil = -1;
     return true;
+  }
+
+  /**
+   * Carry the decision memory of the engine this one replaces (saving thresholds rebuilds it). A
+   * fresh engine would take a phone that was already handled at the car for a new approach and open
+   * the car again right after the save (real log 11-08 17:48: the car re-locked itself, the user
+   * saved thresholds, the app unlocked again). What was handled, the anti-flap/cooldown timing and
+   * whether the phone was near this session carry over; the signal itself (samples, smoothing,
+   * zones) restarts under the new thresholds. The departure latch is NOT carried: an automatic Stop
+   * needs departure evidence measured with the new values.
+   */
+  public void continueFrom(ProximityEngine previous) {
+    if (previous == null || previous == this) return;
+    Zone handledZone;
+    long dispatch;
+    Action action;
+    boolean near, stableOnce;
+    synchronized (previous) {
+      handledZone = previous.handled;
+      dispatch = previous.lastDispatch;
+      action = previous.lastAction;
+      near = previous.seenNear;
+      stableOnce = previous.everStable;
+    }
+    synchronized (this) {
+      handled = handledZone;
+      lastDispatch = dispatch;
+      lastAction = action;
+      seenNear = near;
+      everStable = stableOnce;
+    }
+  }
+
+  /** The zone whose request was last handled (UNKNOWN, FAR or NEAR), for diagnostics. */
+  public synchronized String handled() {
+    return handled.name();
   }
 
   public synchronized void alreadySatisfied(Action action, long now) {

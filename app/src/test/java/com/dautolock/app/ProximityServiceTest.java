@@ -183,6 +183,154 @@ public class ProximityServiceTest {
     assertTrue(Double.isNaN(c.averageRssi));
   }
 
+  /** A scanning service with automatic mode on and a fake cloud; samples go through the callback. */
+  private static final class Rig {
+    final DApplication app = (DApplication) RuntimeEnvironment.getApplication();
+    final Controller c = app.controller();
+    final BluetoothAdapter adapter;
+    final CommandFlowTest.Protocol protocol = new CommandFlowTest.Protocol();
+    final org.robolectric.android.controller.ServiceController<ProximityService> lifecycle;
+    final ProximityService service;
+    final android.bluetooth.le.ScanCallback callback;
+
+    Rig(java.util.function.Consumer<SharedPreferences.Editor> settings) throws Exception {
+      AccountPersistenceTest.await(c);
+      Shadows.shadowOf(app)
+          .grantPermissions(
+              Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT);
+      adapter = app.getSystemService(BluetoothManager.class).getAdapter();
+      Shadows.shadowOf(adapter).setState(BluetoothAdapter.STATE_ON);
+      SharedPreferences.Editor edit =
+          c.settings
+              .edit()
+              .putBoolean("setupRequired", false)
+              .putString("address", "AA:BB:CC:DD:EE:FF")
+              .putInt("nearWaitSeconds", 0);
+      settings.accept(edit);
+      edit.commit();
+      lifecycle = Robolectric.buildService(ProximityService.class).create();
+      service = lifecycle.get();
+      service.onStartCommand(
+          new Intent(app, ProximityService.class).putExtra("automatic", true), 0, 1);
+      Shadows.shadowOf(Looper.getMainLooper()).idle();
+      protocol.locked = true;
+      c.cloud = new com.dautolock.app.api.CloudClient(protocol);
+      c.vin = "test-car";
+      c.pinHash = "test-pin";
+      c.capabilities = new org.json.JSONObject().put("functionNo", "1006");
+      c.autoEnabled = true;
+      java.lang.reflect.Field field = ProximityService.class.getDeclaredField("callback");
+      field.setAccessible(true);
+      callback = (android.bluetooth.le.ScanCallback) field.get(service);
+    }
+
+    void sample(String address, int rssi) {
+      callback.onScanResult(
+          1,
+          new android.bluetooth.le.ScanResult(
+              adapter.getRemoteDevice(address),
+              null,
+              rssi,
+              android.os.SystemClock.elapsedRealtimeNanos()));
+      Shadows.shadowOf(Looper.getMainLooper()).idle();
+    }
+
+    /** One car sample per second (a phone standing by the car), letting the timers run. */
+    void standNear(int seconds) throws Exception {
+      for (int i = 0; i < seconds; i++) {
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(1));
+        sample("AA:BB:CC:DD:EE:FF", -50);
+        AccountPersistenceTest.await(c);
+      }
+    }
+
+    void idle(int seconds) throws Exception {
+      for (int i = 0; i < seconds; i++) {
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(1));
+        AccountPersistenceTest.await(c);
+      }
+    }
+
+    Object field(String name) throws Exception {
+      java.lang.reflect.Field f = ProximityService.class.getDeclaredField(name);
+      f.setAccessible(true);
+      return f.get(service);
+    }
+
+    void reconfigure() {
+      Intent reload = Shadows.shadowOf(app).getNextStartedService();
+      while (reload != null && !"RECONFIGURE".equals(reload.getAction()))
+        reload = Shadows.shadowOf(app).getNextStartedService(); // Skip unrelated service starts.
+      assertNotNull(reload);
+      service.onStartCommand(reload, 0, 2);
+      Shadows.shadowOf(Looper.getMainLooper()).idle();
+    }
+  }
+
+  @Test
+  public void savingThresholdsWhileStandingAtTheCarDoesNotReopenIt() throws Exception {
+    // Real log 11-08 17:47–17:48: auto-unlocked, the car re-locked itself ~30 s later (no door
+    // opened), the user saved thresholds at the car and the rebuilt engine unlocked it again.
+    Rig r = new Rig(e -> {});
+    r.standNear(4);
+    assertEquals(java.util.Collections.singletonList("OPENDOOR"), r.protocol.commands);
+    r.standNear(30); // Past the command cooldown, still at the car.
+    r.protocol.locked = true; // The car's own relock.
+    r.c.thresholds(-70, -85, 0, 5, 10);
+    r.reconfigure();
+    r.standNear(6);
+    assertEquals(java.util.Collections.singletonList("OPENDOOR"), r.protocol.commands);
+    assertEquals(
+        "NEAR", ((com.dautolock.app.core.ProximityEngine) r.field("engine")).handled());
+    r.lifecycle.destroy();
+  }
+
+  @Test
+  public void savedBeaconThresholdsApplyWithoutRestartingTheScan() throws Exception {
+    Rig r =
+        new Rig(
+            e ->
+                e.putString("beaconAddress", "DA:20:E8:F2:77:25")
+                    .putInt("beaconNear", -78)
+                    .putInt("beaconFar", -85));
+    Object before = r.field("beaconEngine");
+    assertNotNull(before);
+    r.c.beaconThresholds(-75, -88);
+    r.reconfigure();
+    com.dautolock.app.core.ProximityEngine after =
+        (com.dautolock.app.core.ProximityEngine) r.field("beaconEngine");
+    assertNotSame(before, after);
+    // −86 was "far" under the old −85 and is in between under the saved −88.
+    long now = android.os.SystemClock.elapsedRealtime();
+    after.sample(-86, now);
+    assertEquals("중간 거리", after.zone(now));
+    r.lifecycle.destroy();
+  }
+
+  @Test
+  public void ownBleKeySessionGapDoesNotLockTheCarButARealLossStillDoes() throws Exception {
+    // Real log 11-08: the car's advertiser (= the BLE-key module) goes quiet ~5 s during every
+    // BLE-key connection; with a 5 s loss-lock that read as "signal lost" next to the car.
+    com.dautolock.app.watchble.BleAirtime.reset();
+    try {
+      Rig r = new Rig(e -> e.putInt("lossLockSeconds", 5));
+      r.standNear(4);
+      assertEquals(java.util.Collections.singletonList("OPENDOOR"), r.protocol.commands);
+      r.standNear(11); // Past the command cooldown.
+      long session = android.os.SystemClock.elapsedRealtime();
+      com.dautolock.app.watchble.BleAirtime.begin(session); // e.g. a manual BLE-key command.
+      r.idle(2);
+      com.dautolock.app.watchble.BleAirtime.end(android.os.SystemClock.elapsedRealtime());
+      r.idle(6); // 8 s without a car sample: past the 5 s loss-lock, inside the BLE grace.
+      assertFalse(r.protocol.commands.contains("LOCKDOOR"));
+      r.idle(6); // Grace over and the signal never came back: a real loss still locks.
+      assertTrue(r.protocol.commands.contains("LOCKDOOR"));
+      r.lifecycle.destroy();
+    } finally {
+      com.dautolock.app.watchble.BleAirtime.reset();
+    }
+  }
+
   @Test
   public void observationPublishesDiagnosticsEvenWithoutAnySignal() throws Exception {
     DApplication app = (DApplication) RuntimeEnvironment.getApplication();

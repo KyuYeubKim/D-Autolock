@@ -11,6 +11,7 @@ import android.os.*;
 import com.dautolock.app.api.CloudClient;
 import com.dautolock.app.core.BeaconCombine;
 import com.dautolock.app.core.ProximityEngine;
+import com.dautolock.app.watchble.BleAirtime;
 import java.util.*;
 
 public final class ProximityService extends Service {
@@ -26,7 +27,7 @@ public final class ProximityService extends Service {
   private long watchdogIntervalMs = 120000;
   private String lastDiagnosticReason = "";
   private long nextPreflight, lastDiagnostic = -15000, lastCount = -1, started, lastIgnored = -5000;
-  private long lastIgnitionGraceLog = -15000, lastCarAudioLog = -15000;
+  private long lastIgnitionGraceLog = -15000, lastCarAudioLog = -15000, lastBleKeyGapLog = -15000;
   // After a lock was refused for an unconfirmed departure with the car ON: no new cloud check before
   // this time unless the departure is now sure (far for SURE_DEPARTURE_MS, or the signal lost).
   private long lockRetryAt;
@@ -301,7 +302,7 @@ public final class ProximityService extends Service {
     // genuinely gone signal once the grace ends.
     boolean ignitionGraceSkip =
         pending == ProximityEngine.Action.LOCK
-            && !engine.fresh(now)
+            && engine.lossLockPending(now)
             && engine.lastReadingNear()
             && controller.ignitionOffRecently();
     if (ignitionGraceSkip && now - lastIgnitionGraceLog >= 15000) {
@@ -309,7 +310,21 @@ public final class ProximityService extends Service {
           "LOSS_LOCK_SKIP", "reason=ignition_off_grace " + engine.diagnostic(now));
       lastIgnitionGraceLog = now;
     }
-    ProximityEngine.Action action = ignitionGraceSkip ? ProximityEngine.Action.NONE : pending;
+    // Our own BLE-key connection makes the car's advertiser (the vehicle-BLE distance signal) go
+    // quiet for ~5 s, so a signal loss during it or just after is not the phone leaving. Only the
+    // lost-signal lock is held off, and only briefly; a far (fresh) reading still locks normally.
+    boolean bleKeyGapSkip =
+        !ignitionGraceSkip
+            && pending == ProximityEngine.Action.LOCK
+            && engine.lossLockPending(now)
+            && BleAirtime.quiet(now);
+    if (bleKeyGapSkip && now - lastBleKeyGapLog >= 15000) {
+      controller.diagnostics.record(
+          "LOSS_LOCK_SKIP", "reason=ble_key_session " + engine.diagnostic(now));
+      lastBleKeyGapLog = now;
+    }
+    ProximityEngine.Action action =
+        ignitionGraceSkip || bleKeyGapSkip ? ProximityEngine.Action.NONE : pending;
     // Combine with the auxiliary beacon — open or lock on EITHER signal, but never lock while the
     // other one still has the phone at the car. A dead beacon neither blocks nor causes a lock, a
     // long hold locks anyway, and a beacon-only re-open is muted briefly after a lock. With no
@@ -549,11 +564,25 @@ public final class ProximityService extends Service {
       if (intent != null && "RECONFIGURE".equals(intent.getAction())) {
         controller.discardApproachPreflight();
         readyAction = ProximityEngine.Action.NONE;
+        // New thresholds, same visit: keep what was already handled so saving at the car does not
+        // reopen it. The beacon engine is rebuilt too — it used to keep its old thresholds/waits
+        // until the next full scan start, so a saved beacon value silently did nothing.
+        ProximityEngine previous = engine;
         engine = controller.proximityEngine();
+        engine.continueFrom(previous);
+        if (beaconEngine != null) {
+          ProximityEngine previousBeacon = beaconEngine;
+          beaconEngine = controller.beaconProximityEngine();
+          beaconEngine.continueFrom(previousBeacon);
+        }
         nextPreflight = 0;
         started = SystemClock.elapsedRealtime();
         controller.averageRssi = Double.NaN;
-        controller.diagnostics.record("SCAN_RECONFIGURE", "freshSamplesRequired=true");
+        controller.diagnostics.record(
+            "SCAN_RECONFIGURE",
+            "freshSamplesRequired=true handledKept="
+                + engine.handled()
+                + (beaconEngine != null ? " beaconHandledKept=" + beaconEngine.handled() : ""));
       }
       if (intent != null && "RESCAN".equals(intent.getAction())) restartScan.run();
       if (intent != null && intent.hasExtra("automatic")) controller.autoEnabled = automatic;

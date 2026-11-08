@@ -1497,7 +1497,14 @@ public final class MainActivity extends Activity {
     doorTitle.setTag("doorTitle");
     doorTitle.setSingleLine(true);
     doorTitle.setPadding(dp(12), 0, dp(8), 0);
-    doorTitle.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+    // The update time sits right of the title, next to the refresh button it belongs to.
+    checkedTime = text(row, "업데이트 대기", 12, MUTED);
+    checkedTime.setTag("statusCheckedTime");
+    checkedTime.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+    checkedTime.setPadding(0, 0, dp(10), 0);
+    checkedTime.setMaxLines(2); // Never cut the time off; wrap on narrow phones.
+    checkedTime.setEllipsize(android.text.TextUtils.TruncateAt.END);
+    checkedTime.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
     // The icon spins while reading, so the card shape lives on a still container behind it.
     FrameLayout refreshBox = new FrameLayout(this);
     refreshBox.setBackground(surface(14));
@@ -1518,21 +1525,6 @@ public final class MainActivity extends Activity {
         });
     refreshBox.addView(refreshIcon, new FrameLayout.LayoutParams(-1, -1));
     row.addView(refreshBox, new LinearLayout.LayoutParams(dp(40), dp(40)));
-    // Update time on the left, the odometer right-aligned on the same line.
-    LinearLayout meta = new LinearLayout(this);
-    meta.setGravity(Gravity.CENTER_VERTICAL);
-    meta.setPadding(dp(1), dp(8), 0, 0);
-    status.addView(meta);
-    checkedTime = text(meta, "업데이트 대기", 12, MUTED);
-    checkedTime.setTag("statusCheckedTime");
-    checkedTime.setPadding(0, 0, dp(8), 0);
-    checkedTime.setMaxLines(2); // Never cut the time off; wrap on narrow phones.
-    checkedTime.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
-    odometerText = text(meta, "", 12, SUBTLE);
-    odometerText.setTag("odometer");
-    odometerText.setPadding(0, 0, 0, 0);
-    odometerText.setSingleLine(true);
-    odometerText.setGravity(Gravity.END);
     message = text(status, "", 12, MUTED); // Recent alert text lives in the activity log now.
     message.setVisibility(View.GONE);
     status.setOnClickListener(v -> showVehicleDetails());
@@ -1609,6 +1601,17 @@ public final class MainActivity extends Activity {
     addParams.topMargin = dp(6);
     hero.addView(add, addParams);
     beaconAdd = add;
+    // The odometer rides in the picture's bottom-right corner, under the rear wheel.
+    odometerText = new TextView(this);
+    odometerText.setTag("odometer");
+    odometerText.setTextSize(11);
+    odometerText.setTextColor(SUBTLE);
+    odometerText.setSingleLine(true);
+    odometerText.setPadding(dp(8), dp(3), dp(8), dp(3));
+    odometerText.setBackground(background(0xb3ffffff, 10));
+    odometerText.setVisibility(View.GONE);
+    hero.addView(
+        odometerText, new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.END));
     LinearLayout.LayoutParams heroParams = new LinearLayout.LayoutParams(-1, -2);
     heroParams.topMargin = dp(12);
     body.addView(hero, heroParams);
@@ -2278,7 +2281,7 @@ public final class MainActivity extends Activity {
     readyDetails.setText(controller.readyStatus);
     long now = System.currentTimeMillis();
     String checked = DashboardStatus.updated(controller.snapshot, now);
-    checkedTime.setText(controller.statusReading ? "확인 중… · " + checked : checked);
+    checkedTime.setText(controller.statusReading ? "확인 중…" : checked);
     String odometer = DashboardStatus.odometer(controller.snapshot);
     odometerText.setText(odometer == null ? "" : odometer);
     odometerText.setVisibility(odometer == null ? View.GONE : View.VISIBLE);

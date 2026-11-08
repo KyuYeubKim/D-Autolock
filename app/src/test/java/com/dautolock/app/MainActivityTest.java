@@ -796,7 +796,7 @@ public class MainActivityTest {
   }
 
   @Test
-  public void odometerSitsRightOfTheUpdateTimeOnceReported() throws Exception {
+  public void odometerSitsUnderTheCarAndUpdateTimeBesideTheTitle() throws Exception {
     try (org.robolectric.android.controller.ActivityController<MainActivity> a =
         Robolectric.buildActivity(MainActivity.class).setup()) {
       Controller c = ((DApplication) a.get().getApplication()).controller();
@@ -812,8 +812,11 @@ public class MainActivityTest {
       org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle();
       assertEquals(View.VISIBLE, odometer.getVisibility());
       assertEquals("총 주행거리 13,042 km", odometer.getText().toString());
+      // v0.3.61: odometer in the picture's bottom-right corner, update time on the title line.
+      assertSame(root.findViewWithTag("signalCard"), odometer.getParent());
       TextView checked = root.findViewWithTag("statusCheckedTime");
-      assertSame(checked.getParent(), odometer.getParent()); // Same line as the update time.
+      assertSame(root.findViewWithTag("doorTitle").getParent(), checked.getParent());
+      assertSame(root.findViewWithTag("statusRefresh").getParent().getParent(), checked.getParent());
     }
   }
 

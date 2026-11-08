@@ -41,6 +41,12 @@ final class CarHeroView extends View {
   CarHeroView(Context context) {
     super(context);
     car = context.getDrawable(R.drawable.car_dolphin);
+    // Drawn at ~70% of its pixels: mipmaps keep the downscaled edges smooth instead of stepped.
+    if (car instanceof android.graphics.drawable.BitmapDrawable) {
+      Bitmap bitmap = ((android.graphics.drawable.BitmapDrawable) car).getBitmap();
+      if (bitmap != null) bitmap.setHasMipMap(true);
+      car.setFilterBitmap(true);
+    }
     float d = context.getResources().getDisplayMetrics().density;
     slop = 10 * d;
     dashed = new DashPathEffect(new float[] {3 * d, 3 * d}, 0);

@@ -61,6 +61,10 @@ public final class MainActivity extends Activity {
   private TextView watchKeyStatus;
   private ImageView watchKeyQr;
   private Button watchKeyRegister;
+  private LinearLayout watchBleSection;
+  private TextView watchBleStatus;
+  private Button watchBleUnlock, watchBleLock;
+  private com.dautolock.app.watchble.WatchBleClient watchBleRun;
   private TextView beaconDevice;
   private TextView updateStatus;
   private TextView bridgeStatus;
@@ -917,7 +921,75 @@ public final class MainActivity extends Activity {
         MUTED);
     watchKeyRegister = primaryButton(card, "블루투스 키 발급", v -> startWatchKeyRegister());
     button(card, "키 삭제 / 초기화", v -> clearWatchKey());
+
+    // Stage B: manual BLE lock/unlock test (only shown once a key is issued).
+    watchBleSection = new LinearLayout(this);
+    watchBleSection.setOrientation(LinearLayout.VERTICAL);
+    LinearLayout.LayoutParams sp =
+        new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+    sp.topMargin = dp(12);
+    card.addView(watchBleSection, sp);
+    text(watchBleSection, "수동 BLE 시험 (2단계)", 14, TEXT);
+    text(
+        watchBleSection,
+        "발급된 키로 차에 블루투스로 직접 연결해 한 번 잠그거나 엽니다. 실제로 차가 잠기고/열리며, 차에 블루투스 본딩이 남습니다. 자동 도어와는 무관한 수동 시험이고, 안 되면 평소처럼 클라우드로 동작합니다. 차 근처에서 눌러 주세요.",
+        12,
+        MUTED);
+    watchBleStatus = text(watchBleSection, "", 13, TEXT);
+    watchBleStatus.setPadding(0, dp(6), 0, 0);
+    watchBleStatus.setTag("watchBleStatus");
+    watchBleUnlock = primaryButton(watchBleSection, "BLE로 도어 열기", v -> runWatchBleTest(false));
+    watchBleLock = button(watchBleSection, "BLE로 도어 잠그기", v -> runWatchBleTest(true));
     return card;
+  }
+
+  private void runWatchBleTest(boolean lock) {
+    if (watchBleRun != null) return;
+    if (watchKey == null || !watchKey.hasKey()) {
+      Toast.makeText(this, "먼저 블루투스 키를 발급하세요", Toast.LENGTH_SHORT).show();
+      return;
+    }
+    new AlertDialog.Builder(this)
+        .setTitle(lock ? "BLE로 도어 잠그기" : "BLE로 도어 열기")
+        .setMessage(
+            (lock ? "지금 차를 블루투스로 잠급니다." : "지금 차를 블루투스로 엽니다.")
+                + " 차 근처에 있는지 확인하세요. 계속할까요?")
+        .setPositiveButton(
+            "실행",
+            (d, w) -> {
+              watchBleUnlock.setEnabled(false);
+              watchBleLock.setEnabled(false);
+              watchBleStatus.setText("시작…");
+              watchBleRun =
+                  watchKey.bleTest(
+                      lock,
+                      new com.dautolock.app.watchble.WatchBleClient.Listener() {
+                        @Override
+                        public void onProgress(String message) {
+                          runOnUiThread(() -> watchBleStatus.setText(message));
+                        }
+
+                        @Override
+                        public void onResult(boolean success, String message, int doorStates) {
+                          runOnUiThread(
+                              () -> {
+                                watchBleRun = null;
+                                watchBleStatus.setText((success ? "✓ " : "✗ ") + message);
+                                boolean has = watchKey != null && watchKey.hasKey();
+                                watchBleUnlock.setEnabled(has);
+                                watchBleLock.setEnabled(has);
+                              });
+                        }
+                      });
+              if (watchBleRun == null) {
+                boolean has = watchKey != null && watchKey.hasKey();
+                watchBleUnlock.setEnabled(has);
+                watchBleLock.setEnabled(has);
+              }
+            })
+        .setNegativeButton("취소", null)
+        .show();
   }
 
   private void startWatchKeyRegister() {
@@ -2273,6 +2345,14 @@ public final class MainActivity extends Activity {
       watchKeyRegister.setEnabled(watchKey.enabled() && watchKeyRun == null);
       if (watchKeyRun == null)
         watchKeyStatus.setText(watchKey.enabled() ? watchKey.statusLine() : "꺼짐");
+      if (watchBleSection != null) {
+        boolean showBle = watchKey.enabled() && watchKey.hasKey();
+        watchBleSection.setVisibility(showBle ? View.VISIBLE : View.GONE);
+        if (showBle && watchBleRun == null) {
+          watchBleUnlock.setEnabled(true);
+          watchBleLock.setEnabled(true);
+        }
+      }
     }
     updating = false;
     account.setText(

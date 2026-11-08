@@ -4,6 +4,8 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import com.dautolock.app.api.BydConfig;
 import com.dautolock.app.core.DiagnosticLog;
+import com.dautolock.app.watchble.WatchBleClient;
+import com.dautolock.app.watchble.WatchBleCodec;
 import java.util.concurrent.Executor;
 
 /**
@@ -62,6 +64,26 @@ public final class WatchKey {
         new WatchKeyProvision(client, store, main, diagnostics::record);
     provision.start(listener);
     return provision;
+  }
+
+  /**
+   * Stage B: run one manual BLE lock/unlock test with the issued key. Connects over BLE, does the
+   * dkey handshake and sends a single command; callbacks are posted on the main thread by the client.
+   * Manual only — never called from the automatic door logic. Returns the client so the UI can cancel.
+   */
+  public WatchBleClient bleTest(boolean lock, WatchBleClient.Listener listener) {
+    if (!store.hasBleKey()) {
+      if (listener != null) listener.onResult(false, "발급된 블루투스 키가 없습니다", -1);
+      return null;
+    }
+    WatchBleClient client = new WatchBleClient(context, diagnostics::record);
+    client.start(
+        store.dkey(),
+        store.macAddress(),
+        store.keyNumber(),
+        lock ? WatchBleCodec.LOCK : WatchBleCodec.UNLOCK,
+        listener);
+    return client;
   }
 
   /** Wipe the stored key material. Used by the "키 삭제 / 초기화" button. */

@@ -311,9 +311,14 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
         }
       }
 
-      // Envelope fills only what the business payload did not provide (e.g. a codeStatus that some
-      // responses carry at the envelope level when there is no encrypted respondData).
-      copyStrings(biz, merged);
+      // The envelope's own metadata (code / message / identifier="KR" / language) must NOT leak into
+      // the business object: the token's real identity is its userId, and an envelope identifier
+      // would mask it (the server then can't find the session → 9013). Pull only codeStatus as a
+      // fallback, for responses that carry it at the envelope level with no encrypted respondData.
+      if (!merged.has("codeStatus")) {
+        String cs = biz.optString("codeStatus", "");
+        if (!cs.isEmpty()) merged.put("codeStatus", cs);
+      }
 
       // Structure-only diagnostic for the token step (no secret VALUES — only field names, presence
       // and lengths), mirroring the reference's GainRawDiag. This is how we confirm the token fields

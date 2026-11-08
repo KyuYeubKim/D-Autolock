@@ -288,6 +288,7 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
       // Merge the decrypted business payload FIRST so it wins over the envelope. The envelope also
       // carries its own 'identifier' (="KR") and 'language' that must NOT mask the token's real
       // identifier; copyStrings is first-wins, so the decrypted fields have to go in first.
+      JSONObject decrypted = null;
       String respondData = biz.optString("respondData", "");
       if (respondData.isEmpty()) respondData = biz.optString("response", "");
       if (!respondData.isEmpty() && isHex(respondData)) {
@@ -296,7 +297,8 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
           if (plain != null) {
             String p = plain.trim();
             if (p.startsWith("{")) {
-              copyStrings(new JSONObject(p), merged);
+              decrypted = new JSONObject(p);
+              copyStrings(decrypted, merged);
             } else {
               if (p.length() >= 2 && p.startsWith("\"") && p.endsWith("\"")) {
                 p = p.substring(1, p.length() - 1);
@@ -312,6 +314,25 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
       // Envelope fills only what the business payload did not provide (e.g. a codeStatus that some
       // responses carry at the envelope level when there is no encrypted respondData).
       copyStrings(biz, merged);
+
+      // Structure-only diagnostic for the token step (no secret VALUES — only field names, presence
+      // and lengths), mirroring the reference's GainRawDiag. This is how we confirm the token fields
+      // we extract match what the server returns, since gain/vehicle rejecting the token as invalid
+      // (9013) points at the token values, not the request shape.
+      if (endpoint.endsWith("gain/token") && decrypted != null) {
+        JSONObject info = decrypted.optJSONObject("watchTokenInfo");
+        diag(
+            "WATCHKEY_TOKEN_RAW",
+            "topKeys=[" + keyNames(decrypted) + "]"
+                + (info != null ? " infoKeys=[" + keyNames(info) + "]" : "")
+                + " signLen=" + merged.optString("signToken", "").length()
+                + " encryLen=" + merged.optString("encryToken", "").length()
+                + " idLen=" + merged.optString("identifier", "").length()
+                + " idIsKR=" + "KR".equals(merged.optString("identifier", ""))
+                + " userType=" + merged.optString("userType", "")
+                + " vinLen=" + merged.optString("vin", "").length()
+                + " controlPwdLen=" + merged.optString("controlPwd", "").length());
+      }
       return merged;
     }
   }
@@ -335,6 +356,19 @@ public final class WatchKeyClientImpl implements WatchKeyClient {
         if (!dst.has(k)) dst.put(k, String.valueOf(v));
       }
     }
+  }
+
+  /** Comma-joined top-level key names of a JSON object (names only, never values). */
+  private static String keyNames(JSONObject obj) {
+    StringBuilder sb = new StringBuilder();
+    java.util.Iterator<String> it = obj.keys();
+    int i = 0;
+    while (it.hasNext() && i < 30) {
+      if (i > 0) sb.append(',');
+      sb.append(it.next());
+      i++;
+    }
+    return sb.toString();
   }
 
   private static String firstString(JSONObject obj, String... names) {

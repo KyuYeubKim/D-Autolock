@@ -124,30 +124,57 @@ public final class WatchKeyProvision {
         return;
       }
 
-      String vin = "";
-      try {
-        vin = client.gainVehicleVin(tokens);
-      } catch (Exception e) {
-        diag("WATCHKEY_VEHICLE_ERR", String.valueOf(e.getMessage()));
+      // Gain the vehicle + the BLE key. The first token right after approval can be reported as
+      // expired by these two steps (9013/9012/1002/1010) while the server finishes establishing the
+      // session; the reference recovers by refreshing the token (re-running gain/token from the same
+      // uuid, no re-scan) and retrying. Do the same once.
+      String vin = tokens.vin;
+      BleKey ble = null;
+      Exception lastError = null;
+      for (int attempt = 1; attempt <= 2 && (ble == null || !ble.valid()); attempt++) {
+        try {
+          try {
+            String v = client.gainVehicleVin(tokens);
+            if (v != null && !v.isEmpty()) vin = v;
+          } catch (Exception ve) {
+            diag("WATCHKEY_VEHICLE_ERR", String.valueOf(ve.getMessage()));
+            if (isTokenExpired(ve)) throw ve; // Let a token-expiry here trigger the refresh below.
+          }
+          ble = client.gainBluetooth(tokens);
+        } catch (Exception e) {
+          lastError = e;
+          if (attempt == 1 && isTokenExpired(e)) {
+            diag("WATCHKEY_TOKEN_REFRESH", "refresh+retry after " + e.getMessage());
+            post(() -> l.onStatus("세션 갱신 중…"));
+            sleep(1500);
+            if (cancelled) return;
+            WatchTokens refreshed = client.gainToken(qr.uuid);
+            if (refreshed != null && refreshed.valid()) {
+              tokens = refreshed;
+              if (!tokens.vin.isEmpty()) vin = tokens.vin;
+            }
+          } else {
+            break;
+          }
+        }
       }
-      final String boundVin = vin == null ? "" : vin;
-
-      BleKey ble = client.gainBluetooth(tokens);
       if (ble == null || !ble.valid()) {
-        fail(l, "블루투스 키를 받지 못했습니다.");
+        fail(l, lastError != null ? "발급 실패: " + lastError.getMessage() : "블루투스 키를 받지 못했습니다.");
         return;
       }
+      final BleKey issued = ble;
+      final String boundVin = vin == null ? "" : vin;
 
-      store.saveKey(ble.dkey, ble.keyNumber, ble.macAddress, tokens, boundVin);
+      store.saveKey(issued.dkey, issued.keyNumber, issued.macAddress, tokens, boundVin);
       diag(
           "WATCHKEY_ISSUED",
           "mac="
-              + mask(ble.macAddress)
+              + mask(issued.macAddress)
               + " keyNo="
-              + (ble.keyNumber.isEmpty() ? "?" : "set")
+              + (issued.keyNumber.isEmpty() ? "?" : "set")
               + " vin="
               + (boundVin.isEmpty() ? "?" : "set"));
-      post(() -> l.onIssued("블루투스 키 발급 완료 · " + mask(ble.macAddress)));
+      post(() -> l.onIssued("블루투스 키 발급 완료 · " + mask(issued.macAddress)));
     } catch (Exception e) {
       diag("WATCHKEY_ERROR", String.valueOf(e.getMessage()));
       fail(l, "발급 실패: " + e.getMessage());
@@ -174,6 +201,12 @@ public final class WatchKeyProvision {
       Thread.currentThread().interrupt();
       cancelled = true;
     }
+  }
+
+  /** Watch token/session-expiry codes (reference {@code isTokenExpiredError}): refresh and retry. */
+  static boolean isTokenExpired(Exception e) {
+    String m = e == null ? "" : String.valueOf(e.getMessage());
+    return m.contains("9013") || m.contains("9012") || m.contains("1002") || m.contains("1010");
   }
 
   /** A MAC with only the last two octets shown, for logs/UI. */

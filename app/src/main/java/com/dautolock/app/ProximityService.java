@@ -300,11 +300,7 @@ public final class ProximityService extends Service {
     // but only when the phone was still near as the signal dropped — a real departure weakens to far
     // first (real log: left while suppressed, had to lock by hand), and that still locks, as does a
     // genuinely gone signal once the grace ends.
-    boolean ignitionGraceSkip =
-        pending == ProximityEngine.Action.LOCK
-            && engine.lossLockPending(now)
-            && engine.lastReadingNear()
-            && controller.ignitionOffRecently();
+    boolean ignitionGraceSkip = ignitionGraceHolds(engine, pending, now);
     if (ignitionGraceSkip && now - lastIgnitionGraceLog >= 15000) {
       controller.diagnostics.record(
           "LOSS_LOCK_SKIP", "reason=ignition_off_grace " + engine.diagnostic(now));
@@ -406,13 +402,25 @@ public final class ProximityService extends Service {
               command,
               // canDispatch, not stillValid: after a failed BLE key attempt the cloud fallback runs
               // with the proposal already claimed (consumed) for this same command.
-              () ->
-                  sameEngine(checkedEngine)
-                      && checkedEngine.canDispatch(commandAction, SystemClock.elapsedRealtime()),
+              // Asked again after the state read: that read is often where the app first sees the
+              // power-off, after a lost-signal lock had already started (ignitionGraceHolds).
+              () -> {
+                long at = SystemClock.elapsedRealtime();
+                if (!sameEngine(checkedEngine) || !checkedEngine.canDispatch(commandAction, at))
+                  return false;
+                if (!ignitionGraceHolds(checkedEngine, commandAction, at)) return true;
+                controller.diagnostics.record(
+                    "LOSS_LOCK_SKIP",
+                    "reason=ignition_off_at_check " + checkedEngine.diagnostic(at));
+                return false;
+              },
               () ->
                   sameEngine(checkedEngine)
                       && checkedEngine.claim(commandAction, SystemClock.elapsedRealtime()),
-              () -> checkedEngine.alreadySatisfied(commandAction, SystemClock.elapsedRealtime()),
+              () -> {
+                if (sameEngine(checkedEngine))
+                  checkedEngine.alreadySatisfied(commandAction, SystemClock.elapsedRealtime());
+              },
               () ->
                   handler.post(
                       () -> {
@@ -666,6 +674,24 @@ public final class ProximityService extends Service {
   }
 
   /** The captured decision engine is still one of the live engines (not from a past scan session). */
+  /**
+   * A lost-signal lock of the vehicle engine within the ignition-off grace, while the phone was
+   * still near as the signal dropped: the Bluetooth cycling at power-off, not a departure. Checked in
+   * evaluate() and again right before sending, because the power-off is usually first seen in that
+   * lock's own state read (real log 11-09 10:52: turned off, both the car signal and the beacon went
+   * quiet together for 7–15 s, the lock started at −53 and the read showing power OFF came 4 s later
+   * — too late for evaluate(); that user did walk away, but one sitting on in the car would have
+   * been locked in). Once a reading comes back weaker than near, or it locks far, normal rules apply.
+   */
+  private boolean ignitionGraceHolds(ProximityEngine e, ProximityEngine.Action action, long now) {
+    return action == ProximityEngine.Action.LOCK
+        && e != null
+        && e == engine
+        && e.lossLockPending(now)
+        && e.lastReadingNear()
+        && controller.ignitionOffRecently();
+  }
+
   private boolean sameEngine(ProximityEngine e) {
     return scanning && (e == engine || e == beaconEngine);
   }

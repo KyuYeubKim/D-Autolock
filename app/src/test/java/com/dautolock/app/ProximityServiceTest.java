@@ -363,6 +363,35 @@ public class ProximityServiceTest {
   }
 
   @Test
+  public void lossLockWhosePreflightFirstShowsThePowerOffIsCancelled() throws Exception {
+    // Real log 11-09 10:52: sitting in the car (−53) with the power on, then key off. The car signal
+    // and the beacon went quiet together, the 5 s loss-lock started, and only its own state read
+    // showed the power OFF — so the ignition-off grace came too late and the car locked.
+    Rig r = new Rig(e -> e.putInt("lossLockSeconds", 5));
+    r.standNear(4);
+    assertEquals(java.util.Collections.singletonList("OPENDOOR"), r.protocol.commands);
+    r.protocol.power = 3;
+    r.standNear(130); // In the car: past the entry watch, the cooldowns and the anti-flap window.
+    r.c.refreshNow();
+    r.standNear(3);
+    assertEquals(Integer.valueOf(3), r.c.snapshot.power);
+    r.protocol.power = 1; // Key off; the app has not read it yet.
+    r.idle(12); // Both signals quiet: the loss-lock's preflight is where the power-off shows up.
+    assertFalse(r.protocol.commands.contains("LOCKDOOR"));
+    // Still sitting there: the signal comes back near and nothing happens.
+    r.standNear(5);
+    assertFalse(r.protocol.commands.contains("LOCKDOOR"));
+    // Walking away afterwards still locks on the weak readings.
+    for (int i = 0; i < 25 && !r.protocol.commands.contains("LOCKDOOR"); i++) {
+      Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(1));
+      r.sample("AA:BB:CC:DD:EE:FF", -95);
+      AccountPersistenceTest.await(r.c);
+    }
+    assertTrue(r.protocol.commands.contains("LOCKDOOR"));
+    r.lifecycle.destroy();
+  }
+
+  @Test
   public void observationPublishesDiagnosticsEvenWithoutAnySignal() throws Exception {
     DApplication app = (DApplication) RuntimeEnvironment.getApplication();
     Controller c = app.controller();

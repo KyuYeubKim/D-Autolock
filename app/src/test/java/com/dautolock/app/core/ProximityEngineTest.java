@@ -149,6 +149,34 @@ public class ProximityEngineTest {
   }
 
   @Test
+  public void alreadyOpenStaysHandledThroughAWobbleDuringTheRead() {
+    // Real log 11-09 10:40 (beacon): already unlocked, but the signal sat between the thresholds
+    // during the ~2 s read, so the zone was not marked; back near, the engine asked again and
+    // reopened the car after its own 30 s relock.
+    ProximityEngine e = new ProximityEngine(-75, -85, 1000, 2000, 5000);
+    feed(e, -60, 0, 4000);
+    assertEquals(UNLOCK, e.pending(4000));
+    e.beginCheck(UNLOCK, 4000);
+    feed(e, -84, 5000, 9000); // Between the thresholds, past the small-dip allowance.
+    assertFalse(e.stillValid(UNLOCK, 9000));
+    e.alreadySatisfied(UNLOCK, 9000);
+    e.endCheck();
+    assertEquals("NEAR", e.handled());
+    feed(e, -60, 10000, 16000);
+    assertEquals(NONE, e.pending(16000));
+  }
+
+  @Test
+  public void alreadyOpenIsNotMarkedWhenThePhoneTurnedAroundDuringTheRead() {
+    ProximityEngine e = new ProximityEngine(-75, -85, 1000, 2000, 5000);
+    feed(e, -60, 0, 4000);
+    e.beginCheck(UNLOCK, 4000);
+    feed(e, -95, 5000, 9000); // Walked away: a fresh far reading after the check began.
+    e.alreadySatisfied(UNLOCK, 9000);
+    assertEquals("UNKNOWN", e.handled());
+  }
+
+  @Test
   public void configuredDepartureDelayIsUsed() {
     ProximityEngine e = new ProximityEngine(-65, -80, 0, 3000, 10000);
     feed(e, -50, 0, 3000);

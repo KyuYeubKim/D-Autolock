@@ -1206,7 +1206,7 @@ final class Controller {
                     || (checked.speed != null && checked.speed > 0))) {
               boolean moving = checked.speed != null && checked.speed > 0;
               unlockInUseBlocks = 0;
-              if (valid.getAsBoolean()) alreadyDone.run();
+              alreadyDone.run(); // The engine decides whether the zone still counts (see below).
               diagnostics.record(
                   "AUTO_UNLOCK_RETIRED", "reason=" + (moving ? "moving" : "already_unlocked"));
               lastControl =
@@ -1244,7 +1244,10 @@ final class Controller {
             if (block != null) throw new Exception("제어 보류: " + block);
             if ((stop && Integer.valueOf(1).equals(snapshot.power))
                 || (!stop && Boolean.valueOf(lock).equals(snapshot.locked))) {
-              if (automatic && valid.getAsBoolean()) alreadyDone.run();
+              // Not gated on valid(): the signal often wobbles during the ~2 s read, and an
+              // unmarked engine asked again and reopened the car after its own relock (real log
+              // 11-09 10:40). The engine itself refuses if the phone has turned around.
+              if (automatic) alreadyDone.run();
               // Arriving together: another phone opened first while this phone also qualified
               // (automatic unlock is only evaluated with power OFF). Still needs this phone's
               // Bridge to see the drive, live P and the delayed re-check before any Stop.

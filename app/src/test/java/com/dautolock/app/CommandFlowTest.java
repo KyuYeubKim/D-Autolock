@@ -322,6 +322,25 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void alreadyOpenCarMarksTheEngineEvenIfTheSignalWobbledDuringTheRead() throws Exception {
+    // Real log 11-09 10:40: the beacon's unlock found the car already open, but the signal had
+    // dipped between the thresholds during the read, so valid() was false and the engine was never
+    // told; back near, it reopened the car after the car's own 30 s relock.
+    Protocol p = new Protocol();
+    p.locked = false;
+    Controller c = create(p);
+    c.monitoring = c.autoEnabled = true;
+    int[] done = {0};
+    boolean[] inZone = {true};
+    p.beforeStatus = () -> inZone[0] = false; // Dipped out of the zone while the state was read.
+    c.automaticCommand(
+        CloudClient.Command.UNLOCK, () -> inZone[0], () -> true, () -> done[0]++, () -> {}, true);
+    complete(c);
+    assertEquals(1, done[0]);
+    assertTrue(p.commands.isEmpty());
+  }
+
+  @Test
   public void automaticLockFallsBackToTheCloudWithTheEngineProposalAlreadyClaimed()
       throws Exception {
     // Real log 11-08 22:20: walking away, the BLE key was out of range (status=133) and the cloud

@@ -123,6 +123,9 @@ public final class WatchKey {
    * this latch. Returns a non-null result; {@code success} false means the caller should fall back to
    * the cloud. Does nothing and reports failure when no key is issued.
    */
+  /** Connection cap for commands sent by the app (not the settings test): see WatchBleClient. */
+  public static final long CONNECT_TIMEOUT_MS = 3000;
+
   public BleResult sendBleBlocking(byte controlByte, long timeoutMs) {
     if (!store.hasBleKey()) return new BleResult(false, "no_key", -1);
     final BleResult[] out = {null};
@@ -143,7 +146,8 @@ public final class WatchKey {
             latch.countDown();
           }
         },
-        timeoutMs);
+        timeoutMs,
+        CONNECT_TIMEOUT_MS);
     try {
       if (!latch.await(timeoutMs + 1500, TimeUnit.MILLISECONDS)) {
         client.cancel();

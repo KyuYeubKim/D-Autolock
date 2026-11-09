@@ -46,6 +46,8 @@ public final class WatchBleClient {
   private static final long AUTH_FRAME_DELAY_MS = 180;
 
   private long overallTimeoutMs = OVERALL_TIMEOUT_MS;
+  /** Give up on the GATT connection after this long (0: leave it to the stack / overall timeout). */
+  private long connectTimeoutMs;
 
   private enum Step {
     IDLE,
@@ -87,6 +89,7 @@ public final class WatchBleClient {
 
   private Runnable stepTimeout;
   private Runnable overallTimeout;
+  private Runnable connectTimeout;
 
   public WatchBleClient(Context context, BiConsumer<String, String> diag) {
     this.context = context.getApplicationContext();
@@ -110,7 +113,25 @@ public final class WatchBleClient {
       byte controlByte,
       Listener listener,
       long overallTimeoutMs) {
+    start(dkey, mac, keyNumber, controlByte, listener, overallTimeoutMs, 0);
+  }
+
+  /**
+   * Also cap the connection step. Out of range the stack only reports status 133 after 5–7 s, while
+   * every connection that worked came up within 1 s (real log 11-09: departure locks spent 5–7 s
+   * here before the cloud took over). Nothing has been sent to the car before the connection, so
+   * giving up early is always safe to follow with the cloud.
+   */
+  public void start(
+      String dkey,
+      String mac,
+      String keyNumber,
+      byte controlByte,
+      Listener listener,
+      long overallTimeoutMs,
+      long connectTimeoutMs) {
     this.overallTimeoutMs = overallTimeoutMs > 0 ? overallTimeoutMs : OVERALL_TIMEOUT_MS;
+    this.connectTimeoutMs = Math.max(0, connectTimeoutMs);
     this.listener = listener;
     this.dkey = dkey == null ? "" : dkey.trim();
     this.controlByte = controlByte;
@@ -150,6 +171,10 @@ public final class WatchBleClient {
     progress("연결 중…");
     overallTimeout = this::onOverallTimeout;
     main.postDelayed(overallTimeout, overallTimeoutMs);
+    if (this.connectTimeoutMs > 0) {
+      connectTimeout = this::onConnectTimeout;
+      main.postDelayed(connectTimeout, this.connectTimeoutMs);
+    }
     // From here the car's advertiser may go quiet; finish() always closes this (timeout included).
     onAir = true;
     BleAirtime.begin(SystemClock.elapsedRealtime());
@@ -476,6 +501,13 @@ public final class WatchBleClient {
     if (!finished) fail("시간 초과 (step=" + step + ")");
   }
 
+  private void onConnectTimeout() {
+    connectTimeout = null;
+    if (finished || step != Step.CONNECTING) return;
+    diag("WATCHBLE_GATT", "connect_timeout ms=" + connectTimeoutMs);
+    fail("연결 시간 초과 (" + connectTimeoutMs + "ms)");
+  }
+
   private void fail(String message) {
     finish(false, message, -1);
   }
@@ -488,6 +520,10 @@ public final class WatchBleClient {
     if (overallTimeout != null) {
       main.removeCallbacks(overallTimeout);
       overallTimeout = null;
+    }
+    if (connectTimeout != null) {
+      main.removeCallbacks(connectTimeout);
+      connectTimeout = null;
     }
     diag("WATCHBLE_RESULT", (success ? "ok" : "fail") + " · " + message);
     try {

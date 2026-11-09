@@ -33,6 +33,9 @@ public final class ProximityEngine {
   private long departedAt = -1;
   public static final long DEPARTURE_LATCH_MS = 5 * 60 * 1000;
   private long unlockCheckUntil = -1;
+  /** The command whose state check is running (beginCheck → endCheck), and since when. */
+  private Action checkAction = Action.NONE;
+  private long checkSince = -1;
   /**
    * Anti-flap: right after an automatic unlock a phone standing by the car often dips far for a
    * few seconds (body/pocket shadowing). Real logs showed unlock→lock→unlock within 90 s.
@@ -48,10 +51,14 @@ public final class ProximityEngine {
   /** Qualify at the configured threshold, then tolerate a small dip during cloud preflight. */
   public synchronized void beginCheck(Action action, long now) {
     unlockCheckUntil = action == Action.UNLOCK && pending(now) == action ? now + 10000 : -1;
+    checkAction = action;
+    checkSince = now;
   }
 
   public synchronized void endCheck() {
     unlockCheckUntil = -1;
+    checkAction = Action.NONE;
+    checkSince = -1;
   }
 
   public ProximityEngine(int near, int far) {
@@ -302,8 +309,21 @@ public final class ProximityEngine {
     return handled.name();
   }
 
+  /**
+   * The car was already in the requested state: this zone is handled. Also when the signal wobbled
+   * out of the zone during the ~2 s state read, as long as the phone has not actually turned around
+   * (a fresh reading in the opposite zone since the check began). Otherwise the engine asks again as
+   * soon as it is back, and after the car's own 30 s relock that opened the car a second time (real
+   * log 11-09 10:40: beacon −84 during the read, back to −71, the car had re-locked, opened again).
+   */
   public synchronized void alreadySatisfied(Action action, long now) {
-    if (stillValid(action, now)) {
+    if (action == Action.NONE) return;
+    Zone opposite = action == Action.LOCK ? Zone.NEAR : Zone.FAR;
+    boolean checkedNoTurn =
+        checkAction == action
+            && checkSince >= 0
+            && !(lastSample >= checkSince && fresh(now) && candidate == opposite);
+    if (stillValid(action, now) || checkedNoTurn) {
       handled = action == Action.LOCK ? Zone.FAR : Zone.NEAR;
       unlockCheckUntil = -1;
     }

@@ -21,10 +21,13 @@ final class VehicleLink {
   // gear sample is caught quickly), back off to the normal interval while the phone is away and
   // connects keep failing, and stretch it far once the phone has been away a long time (e.g. parked
   // overnight), all to spare the battery.
-  private static final long RECONNECT_MIN_MS = 1500, RECONNECT_MAX_MS = 5000;
+  static final long RECONNECT_MIN_MS = 1500, RECONNECT_MAX_MS = 5000;
   // After this long with no delivered sample, treat the phone as away-for-a-while and cap the
   // reconnect interval at the longer value below. Returning to range reconnects within that interval.
-  private static final long AWAY_AFTER_MS = 180000, RECONNECT_AWAY_MS = 45000;
+  static final long AWAY_AFTER_MS = 180000, RECONNECT_AWAY_MS = 45000;
+  // Reconnect waits are cut short when the car's audio connects (the head unit just came up).
+  private final Object pace = new Object();
+  private boolean wakeRequested;
   private Thread thread;
   private BluetoothSocket socket;
   volatile String status = "차량 보조 앱 미등록";
@@ -167,6 +170,10 @@ final class VehicleLink {
     while (ticket == epoch) {
       BluetoothSocket active = null;
       boolean delivered = false;
+      long nextMs = RECONNECT_MAX_MS;
+      synchronized (pace) {
+        wakeRequested = false; // Connecting now anyway.
+      }
       try {
         if (android.os.Build.VERSION.SDK_INT >= 31
             && controller.context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
@@ -223,10 +230,20 @@ final class VehicleLink {
       } catch (Exception e) {
         synchronized (this) {
           if (ticket != epoch) break;
-          state.lost(SystemClock.elapsedRealtime());
+          long now = SystemClock.elapsedRealtime();
+          state.lost(now);
+          if (delivered) lastDeliveredAt = now;
+          Boolean carOn = controller.carAudio.carOn();
+          nextMs = retryDelayMs(retryMs, delivered, now - lastDeliveredAt, carOn);
           status = "차량 보조 앱 미연결 · 전원·페어링·QR 확인 (" + e.getClass().getSimpleName() + ")";
           controller.diagnostics.record(
-              "VEHICLE_LINK_DISCONNECTED", "reason=" + e.getClass().getSimpleName());
+              "VEHICLE_LINK_DISCONNECTED",
+              "reason="
+                  + e.getClass().getSimpleName()
+                  + " carAudio="
+                  + (carOn == null ? "unknown" : carOn ? "on" : "off")
+                  + " nextMs="
+                  + nextMs);
         }
         controller.changed();
       } finally {
@@ -240,22 +257,64 @@ final class VehicleLink {
       }
       if (ticket == epoch)
         try {
-          if (delivered) {
-            lastDeliveredAt = SystemClock.elapsedRealtime();
+          retryMs = nextMs;
+          if (pause(retryMs)) {
             retryMs = RECONNECT_MIN_MS;
-          } else {
-            // Away a long time (parked overnight): stretch the interval. A productive drop stays fast
-            // so a driving gear sample is recaught; returning to range reconnects within this cap.
-            long cap =
-                SystemClock.elapsedRealtime() - lastDeliveredAt >= AWAY_AFTER_MS
-                    ? RECONNECT_AWAY_MS
-                    : RECONNECT_MAX_MS;
-            retryMs = Math.min(cap, retryMs * 2);
+            controller.diagnostics.record("VEHICLE_LINK_WAKE", "reason=car_audio_connected");
           }
-          Thread.sleep(retryMs);
         } catch (InterruptedException e) {
           break;
         }
+    }
+  }
+
+  /**
+   * How long to wait before the next connect after one ended.
+   *
+   * <p>A productive drop reconnects fast so a driving gear sample is recaught; failing connects back
+   * off to {@link #RECONNECT_MAX_MS}, and to {@link #RECONNECT_AWAY_MS} after a long time away (parked
+   * overnight). While the car's audio is connected the head unit is up and the phone is at it, so the
+   * short cap applies even after a long absence. Once that audio has dropped the car is off (or the
+   * phone left it): nothing answers, and each failed connect keeps the phone's Bluetooth paging the
+   * head unit for ~6 s, during which the BLE scan barely runs — real logs 11-08..11-10: next to a car
+   * just switched off, the car's BLE and the beacon fell silent together 3-6x more often during those
+   * attempts, long enough to start loss-locks beside the car. So it waits the long interval at once;
+   * {@link #wake} reconnects as soon as the audio comes back.
+   *
+   * @param carOn {@link CarAudio#carOn()}
+   */
+  static long retryDelayMs(long retryMs, boolean delivered, long sinceDeliveredMs, Boolean carOn) {
+    if (Boolean.FALSE.equals(carOn)) return RECONNECT_AWAY_MS;
+    if (delivered) return RECONNECT_MIN_MS;
+    long cap =
+        Boolean.TRUE.equals(carOn) || sinceDeliveredMs < AWAY_AFTER_MS
+            ? RECONNECT_MAX_MS
+            : RECONNECT_AWAY_MS;
+    return Math.min(cap, retryMs * 2);
+  }
+
+  /** The car's audio just connected: the head unit is up, so connect now instead of waiting. */
+  void wake() {
+    synchronized (pace) {
+      wakeRequested = true;
+      pace.notifyAll();
+    }
+  }
+
+  /** Whether a {@link #wake} is waiting to be picked up (tests). */
+  boolean wakePending() {
+    synchronized (pace) {
+      return wakeRequested;
+    }
+  }
+
+  /** Waits up to {@code ms}; true when {@link #wake} cut the wait short. */
+  boolean pause(long ms) throws InterruptedException {
+    synchronized (pace) {
+      if (!wakeRequested) pace.wait(ms);
+      boolean woke = wakeRequested;
+      wakeRequested = false;
+      return woke;
     }
   }
 

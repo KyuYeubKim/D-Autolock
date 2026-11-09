@@ -116,6 +116,8 @@ public class CommandFlowTest {
     boolean doorOpen, openOnUnlock, rejectClimate, rejectHvac, windowOpen, climateOffPowersDown;
     Object okLight = JSONObject.NULL;
     int statusRequests, hvacRequests, configRequests;
+    /** Status reads after the first command that come back without the door-lock fields. */
+    int lockGapReads;
     Runnable beforeStatus = () -> {};
     final List<String> commands = new ArrayList<>();
 
@@ -150,10 +152,12 @@ public class CommandFlowTest {
           if (chargeState != null) s.put("chargeState", chargeState);
           if (fullHour != null) s.put("fullHour", fullHour).put("fullMinute", fullMinute);
           if (soc != null) s.put("soc", soc);
+          boolean lockGap = !commands.isEmpty() && lockGapReads > 0;
+          if (lockGap) lockGapReads--;
           for (String side : new String[] {"leftFront", "rightFront", "leftRear", "rightRear"}) {
             s.put(side + "Door", doorOpen ? 1 : 0)
-                .put(side + "DoorLock", locked ? 2 : 1)
                 .put(side + "Window", windowOpen && side.equals("leftFront") ? 2 : 1);
+            if (!lockGap) s.put(side + "DoorLock", locked ? 2 : 1);
           }
           cb.onSuccess(s);
         } else if (endpoint.endsWith("getLatestConfig")) {
@@ -956,6 +960,7 @@ public class CommandFlowTest {
     Protocol p = new Protocol();
     p.power = 3;
     p.epb = 1;
+    p.windowOpen = true;
     Controller c = create(p);
     c.departureFinish();
     settle(c);
@@ -1317,13 +1322,78 @@ public class CommandFlowTest {
   }
 
   @Test
-  public void manualLockSendsCloseWindowsEvenIfCloudAlreadyReportsClosed() throws Exception {
+  public void manualLockSkipsCloseWindowsWhenTheLockedReadShowsThemClosed() throws Exception {
+    // Real log 11-09 20:59/21:57: the redundant CLOSEWINDOW went unanswered for 20 s and left
+    // "result unknown · check the car" although BYD reported every window closed.
     Protocol p = new Protocol();
+    Controller c = create(p);
+    c.command(CloudClient.Command.LOCK, false, () -> true);
+    complete(c);
+    assertEquals(Collections.singletonList("LOCKDOOR"), p.commands);
+    assertTrue(c.windowsStatus, c.windowsStatus.contains("생략"));
+    assertTrue(log(c).contains("WINDOWS_SKIP | lockedRead=true cloudClosed=true"));
+  }
+
+  @Test
+  public void manualLockStillClosesAWindowReportedOpen() throws Exception {
+    Protocol p = new Protocol();
+    p.windowOpen = true;
     Controller c = create(p);
     c.command(CloudClient.Command.LOCK, false, () -> true);
     complete(c);
     assertEquals(Arrays.asList("LOCKDOOR", "CLOSEWINDOW"), p.commands);
     assertTrue(c.windowsStatus.contains("요청 완료"));
+  }
+
+  @Test
+  public void lockReadBackWithoutTheLockStateIsReadAgainNotResent() throws Exception {
+    // Real log 11-09 21:08: the cloud acknowledged LOCK but the read-back came without the lock
+    // state, so the result stayed "unconfirmed" for 46 min.
+    Protocol p = new Protocol();
+    p.lockGapReads = 1;
+    Controller c = create(p);
+    c.readbackRetryMs = 10;
+    c.command(CloudClient.Command.LOCK, false, () -> true);
+    complete(c);
+    assertEquals(Collections.singletonList("LOCKDOOR"), p.commands);
+    assertEquals(3, p.statusRequests); // Preflight, gap read-back, one more read.
+    assertTrue(c.lastControl, c.lastControl.contains("완료 · 차량 상태 확인됨"));
+    assertTrue(log(c).contains("READBACK_RETRY | LOCK attempt=1"));
+  }
+
+  @Test
+  public void lockReadBackThatNeverShowsTheStateStaysUnconfirmedAfterTwoMoreReads()
+      throws Exception {
+    Protocol p = new Protocol();
+    p.lockGapReads = 10;
+    Controller c = create(p);
+    c.readbackRetryMs = 10;
+    c.command(CloudClient.Command.LOCK, false, () -> true);
+    complete(c);
+    assertEquals(Collections.singletonList("LOCKDOOR"), p.commands); // Never resent.
+    assertEquals(4, p.statusRequests); // Preflight, read-back, two more reads, then stop asking.
+    assertTrue(c.lastControl, c.lastControl.contains("미확인"));
+  }
+
+  @Test
+  public void readbackPendingOnlyForGapsNotForAnAnswer() throws Exception {
+    long sent = System.currentTimeMillis();
+    JSONObject base =
+        new JSONObject().put("time", sent + 2000).put("speed", 0).put("powerGear", 1);
+    com.dautolock.app.core.VehicleSnapshot noLock =
+        new com.dautolock.app.core.VehicleSnapshot(new JSONObject(base.toString()), sent);
+    assertTrue(Controller.readbackPending(noLock, false, sent));
+    assertFalse(Controller.readbackPending(noLock, true, sent)); // Stop reads power, present here.
+    JSONObject unlocked = new JSONObject(base.toString());
+    for (String side : new String[] {"leftFront", "rightFront", "leftRear", "rightRear"})
+      unlocked.put(side + "DoorLock", 1);
+    assertFalse( // An answer (still unlocked) is not a gap: not asked again.
+        Controller.readbackPending(
+            new com.dautolock.app.core.VehicleSnapshot(unlocked, sent), false, sent));
+    unlocked.put("time", sent - 5000);
+    assertTrue( // Measured before the command: cannot judge it.
+        Controller.readbackPending(
+            new com.dautolock.app.core.VehicleSnapshot(unlocked, sent), false, sent));
   }
 
   @Test
@@ -1539,6 +1609,42 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void carAudioTellsTheBridgeLinkWhetherTheCarIsOn() throws Exception {
+    Controller c = create(new Protocol());
+    bridgeParked(c);
+    assertNull(c.carAudio.carOn()); // Never connected in this run: nothing known.
+    carAudio(c, HEAD_UNIT, true);
+    assertEquals(Boolean.TRUE, c.carAudio.carOn());
+    assertTrue("the head unit came up: reconnect now", c.vehicleLink.wakePending());
+    carAudio(c, HEAD_UNIT, false);
+    assertEquals(Boolean.FALSE, c.carAudio.carOn()); // Switched off (or the phone left it).
+    c.carAudio.clear();
+    assertNull(c.carAudio.carOn());
+  }
+
+  @Test
+  public void aWakeCutsTheBridgeReconnectWaitShort() throws Exception {
+    Controller c = create(new Protocol());
+    java.util.concurrent.CompletableFuture<Boolean> woke = new java.util.concurrent.CompletableFuture<>();
+    long started = System.nanoTime();
+    Thread waiter =
+        new Thread(
+            () -> {
+              try {
+                woke.complete(c.vehicleLink.pause(60000));
+              } catch (InterruptedException e) {
+                woke.completeExceptionally(e);
+              }
+            });
+    waiter.start();
+    Thread.sleep(100);
+    c.vehicleLink.wake();
+    assertTrue(woke.get(5, java.util.concurrent.TimeUnit.SECONDS));
+    assertTrue((System.nanoTime() - started) / 1_000_000 < 5000);
+    assertFalse(c.vehicleLink.wakePending()); // Picked up once.
+  }
+
+  @Test
   public void automaticStopIsNotSentWhileThePhoneIsOnTheCarsAudio() throws Exception {
     Protocol p = new Protocol();
     p.power = 3;
@@ -1560,6 +1666,7 @@ public class CommandFlowTest {
     Protocol p = new Protocol();
     p.power = 3;
     p.locked = true;
+    p.windowOpen = true;
     Controller c = create(p);
     c.manualStopAfterParkingConfirmation();
     complete(c);

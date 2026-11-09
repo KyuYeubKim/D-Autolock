@@ -55,6 +55,19 @@ final class Controller {
    * unanswered BLE command was measured after the command began.
    */
   static final long BLE_PROBE_CLOCK_SLACK_MS = 3000;
+  /** Extra state reads when the first read after a door/Stop command does not show the result yet. */
+  static final int READBACK_RETRIES = 2;
+  volatile long readbackRetryMs = 3000; // Shortened by tests.
+
+  /**
+   * Whether a read taken after a command cannot judge it yet: measured before the command was sent,
+   * or without the field that shows the result (lock state; power for Stop). A read that does show
+   * the opposite state is an answer, not a gap, and is not asked again.
+   */
+  static boolean readbackPending(VehicleSnapshot s, boolean stop, long sentAt) {
+    return s == null || s.measuredAt < sentAt || (stop ? s.power == null : s.locked == null);
+  }
+
   private com.dautolock.app.watchkey.WatchKey watchKey;
   WatchBleSender ble =
       new WatchBleSender() {
@@ -1434,6 +1447,31 @@ final class Controller {
               else {
                 after = cloud.snapshot(target);
                 observeSnapshot(after, false);
+                // BYD sometimes answers the first read after a command without the lock (or power)
+                // field, or with a measurement from before it (real log 11-09 21:08: LOCK
+                // acknowledged, read-back locked=null, the result stayed "unconfirmed" for 46 min).
+                // Ask again a couple of times. Reads only: the command itself is never resent.
+                for (int retry = 1;
+                    retry <= READBACK_RETRIES && readbackPending(after, stop, sentAt);
+                    retry++) {
+                  diagnostics.record(
+                      "READBACK_RETRY",
+                      command
+                          + " attempt="
+                          + retry
+                          + " "
+                          + after.diagnostic(System.currentTimeMillis()));
+                  Thread.sleep(readbackRetryMs);
+                  try {
+                    VehicleSnapshot again = cloud.snapshot(target);
+                    observeSnapshot(again, false);
+                    after = again;
+                  } catch (Exception retryError) {
+                    diagnostics.record(
+                        "READBACK_RETRY_FAILED", command + " " + retryError.getMessage());
+                    break;
+                  }
+                }
               }
             } catch (Exception readbackError) {
               if (!sentByBle) throw readbackError;
@@ -2224,6 +2262,15 @@ final class Controller {
           || snapshot.speed == null
           || snapshot.speed != 0d
           || !Boolean.TRUE.equals(snapshot.locked)) throw new Exception("최신 정차·잠금 상태 미확인");
+      // This read already shows the car locked, so it was taken after the lock: if it reports all
+      // four windows shut there is nothing to close. Sending anyway only risked a scary "result
+      // unknown · check the car" when BYD never answered the redundant request (real log 11-09
+      // 20:59 and 21:57, both with every window reported closed). Open or unknown still sends once.
+      if (Boolean.TRUE.equals(snapshot.windowsClosed)) {
+        windowsStatus = "창문 닫기 생략 · BYD 조회상 모두 닫힘";
+        diagnostics.record("WINDOWS_SKIP", "lockedRead=true cloudClosed=true");
+        return;
+      }
       diagnostics.record(
           "WINDOWS_PREFLIGHT", "cloudClosed=" + snapshot.windowsClosed + " sendOnce=true");
       long sent = System.currentTimeMillis();

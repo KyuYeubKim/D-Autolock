@@ -24,7 +24,7 @@ final class CarAudio {
     BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED, BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED
   };
   private final Controller controller;
-  private volatile boolean a2dp, headset;
+  private volatile boolean a2dp, headset, everConnected;
 
   CarAudio(Controller controller) {
     this.controller = controller;
@@ -32,6 +32,17 @@ final class CarAudio {
 
   boolean connected() {
     return a2dp || headset;
+  }
+
+  /**
+   * Whether the car is on as far as its audio tells: TRUE while the head unit's audio is connected,
+   * FALSE once it has been connected in this run and dropped again (the car was switched off or the
+   * phone left it), null while it has never connected (a phone that does not use the car's audio, or
+   * nothing seen yet), so nothing can be concluded.
+   */
+  Boolean carOn() {
+    if (connected()) return Boolean.TRUE;
+    return everConnected ? Boolean.FALSE : null;
   }
 
   /** A profile connection broadcast; only the car's head unit counts. */
@@ -89,7 +100,7 @@ final class CarAudio {
   }
 
   void clear() {
-    a2dp = headset = false;
+    a2dp = headset = everConnected = false;
   }
 
   private synchronized void set(int profile, boolean on) {
@@ -97,9 +108,12 @@ final class CarAudio {
     if (profile == BluetoothProfile.A2DP) a2dp = on;
     else headset = on;
     if (before == connected()) return;
+    if (connected()) everConnected = true;
     controller.diagnostics.record(
         "CAR_AUDIO",
         "connected=" + connected() + " profile=" + (profile == BluetoothProfile.A2DP ? "A2DP" : "HFP"));
+    // The head unit is up: the 차량 보조 앱 link need not wait out its reconnect interval.
+    if (connected()) controller.vehicleLink.wake();
     controller.changed();
   }
 }

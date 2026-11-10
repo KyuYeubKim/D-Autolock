@@ -766,6 +766,23 @@ public final class MainActivity extends Activity {
         "충전 중이면 차가 알려준 완료 예상 시각에 한 번만 상태를 확인하고, 차가 잠긴 채 충전이 끝났으면 알려줍니다. 계속 조회하지 않습니다.",
         12,
         MUTED);
+    Switch parkedOnSwitch = new Switch(this);
+    parkedOnSwitch.setTag("parkedOnNotify");
+    parkedOnSwitch.setText("P 상태로 5분 넘게 시동 켜짐 알림");
+    parkedOnSwitch.setTextColor(TEXT);
+    parkedOnSwitch.setMinHeight(dp(56));
+    parkedOnSwitch.setChecked(controller.parkedOnNotify());
+    notify.addView(parkedOnSwitch);
+    parkedOnSwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          controller.settings.edit().putBoolean("parkedOnNotify", on).apply();
+          if (!on) DoorNotifications.cancelParkedOn(this);
+        });
+    text(
+        notify,
+        "차량 보조 앱이 기어 P를 확인한 뒤 5분이 지나면 BYD 상태를 한 번 조회해, 시동이 아직 켜져 있으면 알려줍니다. 차를 두고 내려도 알려주지만, 휴대폰이 차 안에서 P를 확인한 적이 있어야 합니다.",
+        12,
+        MUTED);
     text(
         notify,
         "알림을 허용하고 앱 배터리를 ‘제한 없음’으로 두면 화면을 꺼도 자동 도어가 계속 동작하고, 열기·잠금 결과를 알림으로 받을 수 있습니다.",
@@ -1193,6 +1210,7 @@ public final class MainActivity extends Activity {
     menuSubs.get("notify").setText(
         (DoorNotifications.enabled(this) ? "알림 허용" : "알림 꺼짐")
             + (controller.chargeNotify() ? " · 충전 완료 알림" : "")
+            + (controller.parkedOnNotify() ? " · P 시동 알림" : "")
             + " · 배터리 설정");
     menuSubs.get("logs").setText("활동 보기 · 진단 공유 · 파일 저장");
     if (menuSubs.containsKey("watchkey"))

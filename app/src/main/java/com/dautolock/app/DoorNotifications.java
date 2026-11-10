@@ -161,6 +161,38 @@ final class DoorNotifications {
     }
   }
 
+  static final int PARKED_ON_ID = 12;
+
+  /** The car has stayed ON in P for 5 minutes. Opens the app; nothing is sent from here. */
+  static void parkedOn(Context context, String detail) {
+    channels(context);
+    if (!enabled(context)) return;
+    NotificationManager manager = context.getSystemService(NotificationManager.class);
+    NotificationChannel channel =
+        new NotificationChannel("parked_on", "P 상태 시동 켜짐", NotificationManager.IMPORTANCE_DEFAULT);
+    channel.enableVibration(true);
+    manager.createNotificationChannel(channel);
+    try {
+      manager.notify(
+          PARKED_ON_ID,
+          new Notification.Builder(context, "parked_on")
+              .setSmallIcon(R.drawable.ic_power)
+              .setContentTitle("P 상태로 5분 넘게 시동이 켜져 있어요")
+              .setContentText(detail)
+              .setStyle(new Notification.BigTextStyle().bigText(detail))
+              .setContentIntent(open(context))
+              .setAutoCancel(true)
+              .setCategory(Notification.CATEGORY_STATUS)
+              .setVisibility(Notification.VISIBILITY_PRIVATE)
+              .build());
+    } catch (SecurityException ignored) {
+    }
+  }
+
+  static void cancelParkedOn(Context context) {
+    context.getSystemService(NotificationManager.class).cancel(PARKED_ON_ID);
+  }
+
   static void cancelSecurityAlert(Context context) {
     context.getSystemService(NotificationManager.class).cancel(SECURITY_ID);
   }

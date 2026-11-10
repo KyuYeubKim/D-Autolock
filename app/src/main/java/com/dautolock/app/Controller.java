@@ -18,6 +18,7 @@ final class Controller {
   final VehicleLink vehicleLink;
   final CarAudio carAudio = new CarAudio(this);
   private final ParkUnlockTrigger parkUnlock = new ParkUnlockTrigger();
+  private final ParkedOnWatch parkedOn = new ParkedOnWatch();
   private final SecureStore store;
   private final Supplier<CloudClient> clients;
   volatile String loginUser = "";
@@ -664,7 +665,8 @@ final class Controller {
     readStatus("manual_refresh");
   }
 
-  private void readStatus(String source) {
+  /** One read-only status read on the worker; false if another request held the worker. */
+  private boolean readStatus(String source) {
     boolean manual = source.equals("manual_refresh");
     int ticket = generation.get(), refreshTicket = statusRevision.get();
     String target = vin;
@@ -721,6 +723,7 @@ final class Controller {
       statusReading = false;
       if (manual) note("차량 요청 처리 중 · 완료 후 다시 새로고침하세요");
     }
+    return started;
   }
 
   void logout() {
@@ -820,6 +823,101 @@ final class Controller {
     }
     chargeWatch(next);
     remoteShutdownWatch(next);
+    parkedOnWatch(next);
+  }
+
+  // "Left ON in P" notice. The 5 minutes are counted from the Bridge's live gear; one status read at
+  // the 5-minute mark confirms the power is still ON (a live Bridge alone does not prove it, and the
+  // phone may have walked away from a car left running). No polling.
+  static final long PARKED_ON_RETRY_MS = 30000;
+  static final int PARKED_ON_MAX_TRIES = 6, PARKED_ON_MAX_READS = 3;
+  private volatile long parkedOnSinceWall, parkedOnAskedAt = -1;
+  private volatile int parkedOnAskedRun = -1;
+
+  boolean parkedOnNotify() {
+    return settings.getBoolean("parkedOnNotify", true);
+  }
+
+  /** Called with each new P run from the Bridge thread: check once when it has lasted 5 minutes. */
+  private void parkedOnStarted() {
+    int run = parkedOn.run();
+    parkedOnSinceWall = System.currentTimeMillis();
+    diagnostics.record("PARKED_ON_START", "run=" + run);
+    main.postDelayed(() -> parkedOnCheck(run, 0, 0), ParkedOnWatch.HOLD_MS);
+  }
+
+  /** A read since P began that shows the car OFF or moving ends the run without another read. */
+  private boolean parkedOnOver(VehicleSnapshot s) {
+    return s != null
+        && s.receivedAt >= parkedOnSinceWall
+        && s.measuredAt >= parkedOnSinceWall
+        && (Integer.valueOf(1).equals(s.power) || (s.speed != null && s.speed > 0));
+  }
+
+  private void parkedOnCheck(int run, int tries, int reads) {
+    if (!parkedOn.due(run, SystemClock.elapsedRealtime())) return; // Ended, newer run, or reported.
+    if (!parkedOnNotify() || vin.isEmpty()) return;
+    VehicleSnapshot seen = snapshot;
+    if (parkedOnOver(seen)) {
+      parkedOn.end();
+      diagnostics.record(
+          "PARKED_ON_SKIP", "reason=off_seen power=" + seen.power + " speed=" + seen.speed);
+      return;
+    }
+    // A read asked earlier came back without a usable answer, or none could be asked: try again a
+    // few times, then give up quietly rather than keep reading.
+    if (tries >= PARKED_ON_MAX_TRIES || reads >= PARKED_ON_MAX_READS) {
+      parkedOnAskedAt = -1;
+      diagnostics.record("PARKED_ON_SKIP", "reason=no_answer tries=" + tries + " reads=" + reads);
+      return;
+    }
+    boolean free =
+        !initializing
+            && !busy()
+            && !statusReading
+            && cloud.backoffMillis() <= 0
+            && (cloud.protocol.isLoggedIn() || hasSavedLogin());
+    int nextReads = reads;
+    if (free) {
+      parkedOnAskedRun = run;
+      parkedOnAskedAt = System.currentTimeMillis();
+      com.dautolock.link.LinkProtocol.Sample live =
+          vehicleLink.state.fresh(SystemClock.elapsedRealtime());
+      diagnostics.record(
+          "PARKED_ON_CHECK",
+          "run=" + run + " bridge=" + (live == null ? "lost" : "live_" + live.gearLabel()));
+      if (readStatus("parked_on_check")) nextReads++;
+      else parkedOnAskedAt = -1;
+    }
+    int nextTries = tries + 1, readsSoFar = nextReads;
+    main.postDelayed(() -> parkedOnCheck(run, nextTries, readsSoFar), PARKED_ON_RETRY_MS);
+  }
+
+  private void parkedOnWatch(VehicleSnapshot next) {
+    long now = System.currentTimeMillis();
+    if (!next.fresh(now) || !parkedOn.active()) return;
+    if (parkedOnOver(next)) {
+      boolean reported = parkedOn.end();
+      if (parkedOnAskedAt > 0 || reported)
+        diagnostics.record(
+            "PARKED_ON_END", "power=" + next.power + " speed=" + next.speed + " reported=" + reported);
+      parkedOnAskedAt = -1;
+      if (reported) DoorNotifications.cancelParkedOn(context);
+      return;
+    }
+    long asked = parkedOnAskedAt;
+    int run = parkedOnAskedRun;
+    if (asked < 0 || next.receivedAt < asked || run != parkedOn.run()) return;
+    parkedOnAskedAt = -1;
+    boolean on = Integer.valueOf(3).equals(next.power);
+    diagnostics.record(
+        "PARKED_ON_RESULT", "power=" + next.power + " locked=" + next.locked + " notify=" + on);
+    if (!on || !parkedOnNotify() || !parkedOn.markNotified(run)) return;
+    DoorNotifications.parkedOn(
+        context,
+        "주차(P)에서 시동이 켜진 지 5분이 지났습니다"
+            + (next.locked == null ? "" : next.locked ? " · 도어 잠김" : " · 도어 열림")
+            + (next.battery == null ? "" : " · 배터리 " + Math.round(next.battery) + "%"));
   }
 
   /** Reports how a remote 시동 끄기 (CLOSEAIR) ended, from the status reads it scheduled. */
@@ -1957,6 +2055,9 @@ final class Controller {
       diagnostics.record("PARK_UNLOCK", "trigger=bridge_P gear=" + s.gearLabel());
       main.post(this::unlockOnPark);
     }
+    int parked = parkedOn.onSample(s.gear, s.quality, now);
+    if (parked == ParkedOnWatch.STARTED) parkedOnStarted();
+    else if (parked == ParkedOnWatch.ENDED) DoorNotifications.cancelParkedOn(context);
     boolean moving =
         s.quality == 0
             && s.gear != com.dautolock.link.LinkProtocol.UNKNOWN

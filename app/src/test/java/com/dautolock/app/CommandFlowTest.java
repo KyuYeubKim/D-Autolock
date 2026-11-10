@@ -740,6 +740,99 @@ public class CommandFlowTest {
         .getNotification(DoorNotifications.CHARGE_ID);
   }
 
+  private static android.app.Notification parkedOnNotice() {
+    return org.robolectric.Shadows.shadowOf(
+            RuntimeEnvironment.getApplication()
+                .getSystemService(android.app.NotificationManager.class))
+        .getNotification(DoorNotifications.PARKED_ON_ID);
+  }
+
+  /** The Bridge reports P on a powered car; nothing has been read yet. */
+  private Controller parkedOn(Protocol p) throws Exception {
+    org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication())
+        .grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS);
+    p.power = 3;
+    Controller c = create(p);
+    c.vehicleSample(PARK);
+    return c;
+  }
+
+  private static void idleMinutes(long minutes) {
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofMinutes(minutes));
+  }
+
+  @Test
+  public void carLeftOnInPForFiveMinutesIsReadOnceAndNotified() throws Exception {
+    Protocol p = new Protocol();
+    p.soc = 62.0;
+    Controller c = parkedOn(p);
+    idleMinutes(4);
+    assertEquals(0, p.statusRequests); // Nothing is read while the 5 minutes run.
+    idleMinutes(1);
+    completeRead(c);
+    assertEquals(1, p.statusRequests); // One read at the 5-minute mark confirms the power.
+    android.app.Notification notice = parkedOnNotice();
+    assertNotNull(notice);
+    String text =
+        String.valueOf(notice.extras.getCharSequence(android.app.Notification.EXTRA_TEXT));
+    assertTrue(text, text.contains("5분") && text.contains("62%"));
+    idleMinutes(10);
+    completeRead(c);
+    assertEquals(1, p.statusRequests); // Reported once; no further reads while it stays ON.
+    p.power = 1; // Switched off: the next read withdraws the notice.
+    c.refreshNow();
+    completeRead(c);
+    assertNull(parkedOnNotice());
+    assertTrue(log(c).contains("PARKED_ON_END"));
+  }
+
+  @Test
+  public void aReadShowingTheCarOffBeforeFiveMinutesSavesTheCheck() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = parkedOn(p);
+    idleMinutes(1);
+    p.power = 1; // Switched off; a read that happens anyway (e.g. the departure lock) sees it.
+    c.refreshNow();
+    completeRead(c);
+    assertEquals(1, p.statusRequests);
+    idleMinutes(5);
+    completeRead(c);
+    assertEquals(1, p.statusRequests); // No extra read at the 5-minute mark.
+    assertNull(parkedOnNotice());
+  }
+
+  @Test
+  public void carFoundOffAtTheCheckSaysNothing() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = parkedOn(p);
+    p.power = 1; // Switched off with no read in between.
+    idleMinutes(5);
+    completeRead(c);
+    assertEquals(1, p.statusRequests);
+    assertNull(parkedOnNotice());
+    idleMinutes(5);
+    completeRead(c);
+    assertEquals(1, p.statusRequests); // The run is over: no more reads.
+  }
+
+  @Test
+  public void shiftingOutOfPOrTurningTheNoticeOffSkipsTheCheck() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = parkedOn(p);
+    idleMinutes(3);
+    c.vehicleSample(DRIVE); // Drove off before 5 minutes.
+    idleMinutes(5);
+    completeRead(c);
+    assertEquals(0, p.statusRequests);
+    c.settings.edit().putBoolean("parkedOnNotify", false).commit();
+    c.vehicleSample(PARK);
+    idleMinutes(6);
+    completeRead(c);
+    assertEquals(0, p.statusRequests);
+    assertNull(parkedOnNotice());
+  }
+
   /** A locked, OFF car charging with 2 h to go, read once by a normal status refresh. */
   private Controller charging(Protocol p) throws Exception {
     org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication())

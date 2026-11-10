@@ -297,7 +297,7 @@ public final class CloudClient {
     if (serial.isEmpty()) throw new Exception("차량 상태 요청 번호가 없습니다");
     VehicleSnapshot last = null;
     for (int i = 0; i < 6; i++) {
-      Thread.sleep(1500);
+      Thread.sleep(protocol.pollIntervalMs());
       m = protocol.buildInnerBaseMap(vin, serial);
       m.put("energyType", "0");
       m.put("tboxVersion", "3");
@@ -341,7 +341,7 @@ public final class CloudClient {
       }
       if (state == -1) throw new Exception("차량에서 명령을 거부했습니다. 공유 권한과 제어 PIN을 확인하세요");
       if (serial.isEmpty()) break;
-      Thread.sleep(1500);
+      Thread.sleep(protocol.pollIntervalMs());
       m = protocol.buildInnerBaseMap(vin, serial);
       m.put("commandPwd", pinHash);
       m.put("commandType", command.wire);

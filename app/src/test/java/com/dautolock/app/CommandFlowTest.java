@@ -128,6 +128,12 @@ public class CommandFlowTest {
       setSignToken("test-session");
     }
 
+    /** Answers at once: no need to wait out BYD's 1.5 s between request and result. */
+    @Override
+    protected long pollIntervalMs() {
+      return 10;
+    }
+
     @Override
     public void postTokenSecure(
         String endpoint, Map<String, Object> data, String vin, BydApiCallback<JSONObject> cb) {

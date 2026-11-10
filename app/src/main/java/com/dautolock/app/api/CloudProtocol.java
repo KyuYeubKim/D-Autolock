@@ -136,6 +136,14 @@ public class CloudProtocol {
     return sb.toString();
   }
 
+  /**
+   * Wait between a status/command request and each poll for its result. BYD needs about 1.5 s; a
+   * test's fake cloud answers at once and shortens it (the app's timing is unchanged).
+   */
+  protected long pollIntervalMs() {
+    return 1500;
+  }
+
   public boolean isLoggedIn() {
     return signToken != null && !signToken.isEmpty();
   }

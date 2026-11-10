@@ -31,6 +31,12 @@ public class AccountPersistenceTest {
       super(BydConfig.fromRegion("KR"));
     }
 
+    /** Answers at once: no need to wait out BYD's 1.5 s between request and result. */
+    @Override
+    protected long pollIntervalMs() {
+      return 10;
+    }
+
     @Override
     public void login(String user, String password, BydApiCallback<String> cb) {
       logins++;

@@ -391,6 +391,85 @@ public class ProximityServiceTest {
     r.lifecycle.destroy();
   }
 
+  /** The car's head-unit audio connects (car on) and drops (car switched off). */
+  private static void carAudio(Controller c, boolean connected) throws Exception {
+    String headUnit = "00:11:22:33:44:55";
+    // Paired with the 차량 보조 앱 for this car: that pairing names the head unit.
+    java.lang.reflect.Field pairing = VehicleLink.class.getDeclaredField("pairing");
+    pairing.setAccessible(true);
+    pairing.set(c.vehicleLink, com.dautolock.link.Pairing.create());
+    java.lang.reflect.Field vehicle = VehicleLink.class.getDeclaredField("vehicle");
+    vehicle.setAccessible(true);
+    vehicle.set(c.vehicleLink, c.vin);
+    java.lang.reflect.Field field = VehicleLink.class.getDeclaredField("address");
+    field.setAccessible(true);
+    field.set(c.vehicleLink, headUnit);
+    c.carAudio.onBroadcast(
+        new Intent(android.bluetooth.BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+            .putExtra(
+                android.bluetooth.BluetoothDevice.EXTRA_DEVICE,
+                BluetoothAdapter.getDefaultAdapter().getRemoteDevice(headUnit))
+            .putExtra(
+                android.bluetooth.BluetoothProfile.EXTRA_STATE,
+                connected
+                    ? android.bluetooth.BluetoothProfile.STATE_CONNECTED
+                    : android.bluetooth.BluetoothProfile.STATE_DISCONNECTED));
+  }
+
+  @Test
+  public void switchingOffWithNoReadStillHoldsTheLostSignalLock() throws Exception {
+    // Real log 11-10 21:29–21:34: the whole drive had no status read, so the power-off was never seen
+    // and the lost-signal lock started 5 s after switching off (an open door held it). The car's
+    // audio dropping now starts the grace by itself.
+    Rig r = new Rig(e -> e.putInt("lossLockSeconds", 5));
+    r.standNear(4);
+    assertEquals(java.util.Collections.singletonList("OPENDOOR"), r.protocol.commands);
+    r.standNear(130); // In and around the car, past every cooldown; the app never reads the power.
+    carAudio(r.c, true);
+    carAudio(r.c, false); // Switched off.
+    r.idle(12); // The car signal went quiet with the power-off.
+    assertFalse(r.protocol.commands.contains("LOCKDOOR"));
+    // Walking away afterwards still locks on the weak readings.
+    for (int i = 0; i < 25 && !r.protocol.commands.contains("LOCKDOOR"); i++) {
+      Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(1));
+      r.sample("AA:BB:CC:DD:EE:FF", -95);
+      AccountPersistenceTest.await(r.c);
+    }
+    assertTrue(r.protocol.commands.contains("LOCKDOOR"));
+    r.lifecycle.destroy();
+  }
+
+  @Test
+  public void aBeaconSettledFarEndsThePowerOffGraceEarly() throws Exception {
+    // Same switch-off, but the trunk beacon reads far for 8 s: the user has walked away, so the lock
+    // does not wait out the grace (real log 11-10 21:34: beacon −84 while the car signal was silent).
+    Rig r =
+        new Rig(
+            e ->
+                e.putInt("lossLockSeconds", 5)
+                    .putString("beaconAddress", "DA:20:E8:F2:77:25")
+                    .putInt("beaconNear", -60)
+                    .putInt("beaconFar", -78));
+    r.standNear(4);
+    assertEquals(java.util.Collections.singletonList("OPENDOOR"), r.protocol.commands);
+    r.standNear(130);
+    carAudio(r.c, true);
+    carAudio(r.c, false);
+    for (int i = 0; i < 6; i++) {
+      Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(1));
+      r.sample("DA:20:E8:F2:77:25", -92);
+      AccountPersistenceTest.await(r.c);
+    }
+    assertFalse(r.protocol.commands.contains("LOCKDOOR")); // Far only briefly: still the grace.
+    for (int i = 0; i < 8 && !r.protocol.commands.contains("LOCKDOOR"); i++) {
+      Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(1));
+      r.sample("DA:20:E8:F2:77:25", -92);
+      AccountPersistenceTest.await(r.c);
+    }
+    assertTrue(r.protocol.commands.contains("LOCKDOOR"));
+    r.lifecycle.destroy();
+  }
+
   @Test
   public void observationPublishesDiagnosticsEvenWithoutAnySignal() throws Exception {
     DApplication app = (DApplication) RuntimeEnvironment.getApplication();

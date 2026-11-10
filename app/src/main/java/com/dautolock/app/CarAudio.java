@@ -114,6 +114,8 @@ final class CarAudio {
         "connected=" + connected() + " profile=" + (profile == BluetoothProfile.A2DP ? "A2DP" : "HFP"));
     // The head unit is up: the 차량 보조 앱 link need not wait out its reconnect interval.
     if (connected()) controller.vehicleLink.wake();
+    // It went down: the car was just switched off — the start of the power-off grace.
+    else controller.carAudioDropped();
     controller.changed();
   }
 }

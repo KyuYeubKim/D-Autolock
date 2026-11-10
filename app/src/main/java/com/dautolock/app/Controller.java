@@ -106,6 +106,68 @@ final class Controller {
   }
 
   /**
+   * The key module has not advertised for this long while the scanner watched for it: it is out of
+   * range, or another connection holds it (it stops advertising while connected). Real log 11-10
+   * 21:29–21:35: the official BYD app's key held it through a whole drive; our lock then got a 34 ms
+   * "connection" on that link, no answer, and 6 s were lost before the cloud. Such a send can only
+   * fail, so the cloud is used straight away.
+   */
+  static final long KEY_SILENT_SKIP_MS = 60000;
+  private volatile long keyWatchSince = -1, keyAdvertAt = -1;
+  private final java.util.concurrent.atomic.AtomicBoolean keySilentLogged =
+      new java.util.concurrent.atomic.AtomicBoolean();
+
+  /** The scanner started watching for the key module's advertisement (elapsed clock). */
+  void keyWatchStarted(long now) {
+    keyWatchSince = now;
+    keySilentLogged.set(false);
+  }
+
+  void keyWatchStopped() {
+    keyWatchSince = -1;
+  }
+
+  void keyAdvertSeen(long now) {
+    keyAdvertAt = now;
+    keySilentLogged.set(false);
+  }
+
+  /** How long the watched key module has been silent, or -1 when the scanner is not watching it. */
+  long keySilentMs(long now) {
+    long since = keyWatchSince;
+    return since < 0 ? -1 : Math.max(0, now - Math.max(since, keyAdvertAt));
+  }
+
+  /** True once per silent stretch, for a single diagnostic line. */
+  boolean firstKeySilentReport() {
+    return keySilentLogged.compareAndSet(false, true);
+  }
+
+  /**
+   * Whether this phone holds a Bluetooth LE link to the key module right now, by any app: "yes",
+   * "no" or "unknown". Diagnostic only — tells a module held by another app from one out of range.
+   */
+  @android.annotation.SuppressLint("MissingPermission")
+  String keyLinked() {
+    String mac = watchKeyMac();
+    if (mac.isEmpty()) return "unknown";
+    try {
+      if (android.os.Build.VERSION.SDK_INT >= 31
+          && context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
+              != android.content.pm.PackageManager.PERMISSION_GRANTED) return "unknown";
+      android.bluetooth.BluetoothManager manager =
+          context.getSystemService(android.bluetooth.BluetoothManager.class);
+      if (manager == null) return "unknown";
+      for (android.bluetooth.BluetoothDevice d :
+          manager.getConnectedDevices(android.bluetooth.BluetoothProfile.GATT))
+        if (mac.equalsIgnoreCase(d.getAddress())) return "yes";
+      return "no";
+    } catch (RuntimeException e) {
+      return "unknown";
+    }
+  }
+
+  /**
    * The watch BLE control code for a command, or null if it has none (then the cloud is used). Only
    * the doors: the Korean Dolphin authenticated the key and then never answered START_CLIMATE (3)
    * — three times out of three, and the climate did not start (real log 11-08 19:11, 19:15, 22:02).
@@ -790,6 +852,26 @@ final class Controller {
     return at > 0 && System.currentTimeMillis() - at < IGNITION_OFF_GRACE_MS;
   }
 
+  /** Where the last power-off came from, for the skip log: "status" (a read) or "car_audio". */
+  String ignitionOffSource() {
+    return powerOffSource;
+  }
+
+  private volatile String powerOffSource = "status";
+
+  /**
+   * The car's audio/call Bluetooth just dropped: the car was switched off (or the phone left it).
+   * Starts the same grace as a power-off seen in a read. Needed because a drive may have no read at
+   * all (real log 11-10 21:29–21:34: no read during the drive, so the OFF went unseen and a
+   * lost-signal lock started 5 s after switching off — held only by an open door; sitting on with the
+   * doors shut would have been locked in). Free: no network, the broadcast is already received.
+   */
+  void carAudioDropped() {
+    powerOffAt = System.currentTimeMillis();
+    powerOffSource = "car_audio";
+    diagnostics.record("IGNITION_OFF", "source=car_audio graceMs=" + IGNITION_OFF_GRACE_MS);
+  }
+
   private void observeSnapshot(VehicleSnapshot next, boolean announce) {
     unlockPreflight.observed();
     VehicleSnapshot previous = snapshot;
@@ -801,7 +883,10 @@ final class Controller {
     if (previous != null
         && Integer.valueOf(3).equals(previous.power)
         && Integer.valueOf(1).equals(next.power)
-        && next.fresh(System.currentTimeMillis())) powerOffAt = System.currentTimeMillis();
+        && next.fresh(System.currentTimeMillis())) {
+      powerOffAt = System.currentTimeMillis();
+      powerOffSource = "status";
+    }
     if (securityAlert != null
         && next.fresh(System.currentTimeMillis())
         && Boolean.TRUE.equals(next.locked)
@@ -1368,9 +1453,11 @@ final class Controller {
               if (command == CloudClient.Command.UNLOCK) {
                 if (recentlyPowered()) {
                   diagnostics.record("ENTRY_SKIP", "reason=recent_power_on alreadyUnlocked=true");
-                } else if (Integer.valueOf(1).equals(snapshot.power)
+                } else if (!preserveTrip
+                    && Integer.valueOf(1).equals(snapshot.power)
                     && validSession(ticket, target))
-                  startTrip(automatic ? "approach_already_unlocked" : "manual_already_unlocked");
+                  // (Kept under 32 characters with "reason=": the log masks longer runs as secrets.)
+                  startTrip(automatic ? "approach_already_open" : "manual_already_open");
                 // The boarding watch follows only this phone's own unlock command.
                 if (automatic && settings.getBoolean("autoReady", false))
                   climateStatus = "공조 연동 · 이미 열린 차량이라 탑승 감시 안 함";
@@ -1438,6 +1525,13 @@ final class Controller {
             boolean sentByBle = false;
             VehicleSnapshot bleProbe = null;
             Byte bleCode = watchBleCode(command);
+            long keySilent = keySilentMs(SystemClock.elapsedRealtime());
+            if (bleCode != null && keySilent >= KEY_SILENT_SKIP_MS && ble.ready()) {
+              diagnostics.record(
+                  "WATCHBLE_SKIP",
+                  command + " reason=no_advert silentMs=" + keySilent + " linked=" + keyLinked());
+              bleCode = null;
+            }
             if (bleCode != null && ble.ready()) {
               if (dispatchReady.getAsBoolean() && (!automatic || claimOnce.getAsBoolean())) {
                 long bleStartedWall = System.currentTimeMillis();
@@ -2053,7 +2147,7 @@ final class Controller {
     // below, since parking engages the brake). Default off; independent of the automation switch.
     if (settings.getBoolean("unlockOnPark", false) && parkUnlock.onSample(s.gear, s.quality, now)) {
       diagnostics.record("PARK_UNLOCK", "trigger=bridge_P gear=" + s.gearLabel());
-      main.post(this::unlockOnPark);
+      main.post(() -> unlockOnPark(now, 0));
     }
     int parked = parkedOn.onSample(s.gear, s.quality, now);
     if (parked == ParkedOnWatch.STARTED) parkedOnStarted();
@@ -2062,6 +2156,7 @@ final class Controller {
         s.quality == 0
             && s.gear != com.dautolock.link.LinkProtocol.UNKNOWN
             && s.gear != com.dautolock.link.LinkProtocol.P;
+    if (moving) outOfParkAt = now;
     if (!moving && s.brake != 0) return;
     vehicleActivityAt = SystemClock.elapsedRealtime();
     if (moving && tripUnlockedAt >= 0 && !tripDriven) {
@@ -2080,19 +2175,43 @@ final class Controller {
    * Unlock the doors because the driver just shifted to P (feature {@code unlockOnPark}). Uses the
    * manual unlock path: parking usually leaves the engine ON (power=3), which the automatic unlock
    * gate blocks, whereas the manual gate allows unlock once the car is confirmed stopped — exactly
-   * the parked state here. Skipped if the last known state is already unlocked.
+   * the parked state here. Skipped if a current reading already shows it unlocked; waits briefly
+   * for a busy worker; dropped if the car leaves P meanwhile.
    */
-  private void unlockOnPark() {
+  static final long PARK_UNLOCK_RETRY_MS = 3000;
+  /** Last trusted Bridge gear other than P (elapsed). */
+  private volatile long outOfParkAt = -1;
+  static final int PARK_UNLOCK_MAX_WAITS = 5;
+
+  private void unlockOnPark(long triggeredAt, int waits) {
+    // Shifted out of P since (the trigger itself was a P sample): the moment has passed.
+    if (outOfParkAt >= triggeredAt) {
+      diagnostics.record("PARK_UNLOCK_SKIP", "reason=moved_again waits=" + waits);
+      return;
+    }
+    // Another request held the worker (real log 11-10 21:23: the climate READY watch read): wait for
+    // it a little instead of dropping the unlock.
     if (busy()) {
-      diagnostics.record("PARK_UNLOCK_SKIP", "reason=busy");
+      if (waits >= PARK_UNLOCK_MAX_WAITS) {
+        diagnostics.record("PARK_UNLOCK_SKIP", "reason=busy waits=" + waits);
+        return;
+      }
+      if (waits == 0) diagnostics.record("PARK_UNLOCK_WAIT", "reason=busy retryMs=" + PARK_UNLOCK_RETRY_MS);
+      main.postDelayed(() -> unlockOnPark(triggeredAt, waits + 1), PARK_UNLOCK_RETRY_MS);
       return;
     }
     if (vin.isEmpty() || pinHash.isEmpty()) {
       diagnostics.record("PARK_UNLOCK_SKIP", "reason=not_configured");
       return;
     }
-    if (snapshot != null && Boolean.FALSE.equals(snapshot.locked)) {
-      diagnostics.record("PARK_UNLOCK_SKIP", "reason=already_unlocked");
+    // Only a current reading may say "already open": the car locks itself once it drives off, so an
+    // old "unlocked" says nothing (real log 11-10 21:34: skipped on an 11-minute-old reading). An
+    // older one goes the normal way — that path reads first and skips if the car really is open.
+    VehicleSnapshot known = snapshot;
+    long wall = System.currentTimeMillis();
+    if (known != null && Boolean.FALSE.equals(known.locked) && known.fresh(wall)) {
+      diagnostics.record(
+          "PARK_UNLOCK_SKIP", "reason=already_unlocked ageMs=" + (wall - known.measuredAt));
       return;
     }
     note("주차(P) 감지 · 도어 잠금 해제");

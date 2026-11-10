@@ -48,6 +48,12 @@ public final class WatchBleClient {
   private long overallTimeoutMs = OVERALL_TIMEOUT_MS;
   /** Give up on the GATT connection after this long (0: leave it to the stack / overall timeout). */
   private long connectTimeoutMs;
+  /**
+   * When connectGatt was called. A "connection" within a few tens of ms means the phone already had a
+   * link to the key module (another app, e.g. the official BYD app's key, held it — real log 11-10
+   * 21:34: 34 ms, then no answer); a fresh connection takes 0.27–0.9 s.
+   */
+  private long connectStartedAt;
 
   private enum Step {
     IDLE,
@@ -177,7 +183,8 @@ public final class WatchBleClient {
     }
     // From here the car's advertiser may go quiet; finish() always closes this (timeout included).
     onAir = true;
-    BleAirtime.begin(SystemClock.elapsedRealtime());
+    connectStartedAt = SystemClock.elapsedRealtime();
+    BleAirtime.begin(connectStartedAt);
     try {
       gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE);
     } catch (SecurityException e) {
@@ -217,7 +224,12 @@ public final class WatchBleClient {
               () -> {
                 if (finished) return;
                 if (newState == BluetoothGatt.STATE_CONNECTED) {
-                  diag("WATCHBLE_GATT", "connected status=" + status);
+                  diag(
+                      "WATCHBLE_GATT",
+                      "connected status="
+                          + status
+                          + " connectMs="
+                          + (SystemClock.elapsedRealtime() - connectStartedAt));
                   step = Step.DISCOVERING;
                   progress("서비스 확인 중…");
                   safeDiscover();

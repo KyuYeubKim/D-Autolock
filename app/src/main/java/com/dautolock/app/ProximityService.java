@@ -85,6 +85,10 @@ public final class ProximityService extends Service {
                   .setReportDelay(0)
                   .build(),
               this.callback);
+          // A restart does not end a silent stretch; only a key that appears or vanishes changes it.
+          if (watchKeyAddr.isEmpty()) controller.keyWatchStopped();
+          else if (controller.keySilentMs(SystemClock.elapsedRealtime()) < 0)
+            controller.keyWatchStarted(SystemClock.elapsedRealtime());
           radioStatus = "BLE 검색 중";
           controller.diagnostics.record("SCAN_RESTART", "requested=true");
         } catch (SecurityException e) {
@@ -138,6 +142,22 @@ public final class ProximityService extends Service {
         public void run() {
           if (!scanning) return;
           long now = SystemClock.elapsedRealtime();
+          // One line per silent stretch of the key module: is another app holding it (linked=yes),
+          // or is it out of range? (11-10 21:29: silent for a whole drive with the phone in the car.)
+          long keySilent = controller.keySilentMs(now);
+          if (keySilent >= Controller.KEY_SILENT_SKIP_MS && controller.firstKeySilentReport())
+            controller.diagnostics.record(
+                "CAR_KEY_SILENT",
+                "silentMs="
+                    + keySilent
+                    + " linked="
+                    + controller.keyLinked()
+                    + " beacon="
+                    + (beaconEngine != null && beaconEngine.fresh(now)
+                        ? Math.round(beaconEngine.rssi())
+                        : "none")
+                    + " carAudio="
+                    + controller.carAudio.connected());
           if ((engine.age(now) >= 60000 || (engine.count() == 0 && now - started >= 60000))
               && now - lastScanAttempt >= watchdogIntervalMs) {
             lastScanAttempt = now;
@@ -303,7 +323,11 @@ public final class ProximityService extends Service {
     boolean ignitionGraceSkip = ignitionGraceHolds(engine, pending, now);
     if (ignitionGraceSkip && now - lastIgnitionGraceLog >= 15000) {
       controller.diagnostics.record(
-          "LOSS_LOCK_SKIP", "reason=ignition_off_grace " + engine.diagnostic(now));
+          "LOSS_LOCK_SKIP",
+          "reason=ignition_off_grace source="
+              + controller.ignitionOffSource()
+              + " "
+              + engine.diagnostic(now));
       lastIgnitionGraceLog = now;
     }
     // Our own BLE-key connection makes the car's advertiser (the vehicle-BLE distance signal) go
@@ -515,6 +539,8 @@ public final class ProximityService extends Service {
     // Observation only (no return): log the watch-key device's advertisement RSSI, throttled. Tells us
     // whether that device advertises a usable distance signal (a future BLE-only proximity mode). It
     // does not steal the sample — the primary/beacon routing below still runs.
+    if (!watchKeyAddr.isEmpty() && addr != null && addr.equalsIgnoreCase(watchKeyAddr))
+      controller.keyAdvertSeen(now);
     if (!watchKeyAddr.isEmpty()
         && addr != null
         && addr.equalsIgnoreCase(watchKeyAddr)
@@ -620,6 +646,8 @@ public final class ProximityService extends Service {
       beaconName = beaconAddr.isEmpty() ? "" : controller.settings.getString("beaconName", "");
       primaryAddr = address;
       watchKeyAddr = controller.watchKeyMac();
+      if (watchKeyAddr.isEmpty()) controller.keyWatchStopped();
+      else controller.keyWatchStarted(SystemClock.elapsedRealtime());
       beaconEngine = beaconAddr.isEmpty() ? null : controller.beaconProximityEngine();
       started = SystemClock.elapsedRealtime();
       lastScanAttempt = started;
@@ -689,7 +717,20 @@ public final class ProximityService extends Service {
         && e == engine
         && e.lossLockPending(now)
         && e.lastReadingNear()
-        && controller.ignitionOffRecently();
+        && controller.ignitionOffRecently()
+        && !beaconSaysAway(now);
+  }
+
+  /**
+   * The trunk beacon has read far, without a break, for {@link #SURE_DEPARTURE_MS}: the phone has
+   * walked away, so the power-off grace has nothing to protect. In the car it reads −38~−71 (one
+   * momentary dip, never a settled far). Real log 11-10 21:34: the car signal stayed silent after
+   * switching off while the beacon read −84 as the user left — that lock should not wait out the grace.
+   */
+  private boolean beaconSaysAway(long now) {
+    return beaconEngine != null
+        && controller.settings.getBoolean("beaconCombine", true)
+        && beaconEngine.farFor(now) >= SURE_DEPARTURE_MS;
   }
 
   private boolean sameEngine(ProximityEngine e) {
@@ -730,6 +771,7 @@ public final class ProximityService extends Service {
   @Override
   public void onDestroy() {
     scanning = false;
+    controller.keyWatchStopped();
     controller.discardApproachPreflight();
     handler.removeCallbacksAndMessages(null);
     if (scanner != null)

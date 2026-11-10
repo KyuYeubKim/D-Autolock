@@ -118,6 +118,8 @@ public class CommandFlowTest {
     int statusRequests, hvacRequests, configRequests;
     /** Status reads after the first command that come back without the door-lock fields. */
     int lockGapReads;
+    /** Added to the measurement time of status reads (negative: an old reading). */
+    long measuredShiftMs;
     Runnable beforeStatus = () -> {};
     final List<String> commands = new ArrayList<>();
 
@@ -144,7 +146,7 @@ public class CommandFlowTest {
           beforeStatus.run();
           JSONObject s =
               new JSONObject()
-                  .put("time", System.currentTimeMillis())
+                  .put("time", System.currentTimeMillis() + measuredShiftMs)
                   .put("speed", speed)
                   .put("powerGear", power)
                   .put("okLight", okLight)
@@ -489,6 +491,173 @@ public class CommandFlowTest {
     assertEquals(Collections.singletonList("OPENDOOR"), p.commands); // It unlocked.
     // The driven trip must survive the park-unlock, so a later departure lock still auto-Stops.
     assertNull(c.ownershipBlock());
+  }
+
+  /** Two trusted P samples 3 s apart: the park-unlock trigger fires (the drive came before). */
+  private void parkNow(Controller c) {
+    c.vehicleSample(PARK);
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(3));
+    c.vehicleSample(PARK);
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+  }
+
+  @Test
+  public void anOldUnlockedReadingDoesNotSkipTheParkUnlock() throws Exception {
+    // Real log 11-10 21:34: skipped as "already unlocked" on an 11-minute-old reading, although the
+    // car locks itself once it drives off.
+    Protocol p = new Protocol(); // Unlocked when last read, two minutes ago.
+    Controller c = create(p);
+    c.settings.edit().putBoolean("unlockOnPark", true).commit();
+    p.measuredShiftMs = -120000;
+    c.refreshNow();
+    completeRead(c);
+    assertEquals(Boolean.FALSE, c.snapshot.locked);
+    p.measuredShiftMs = 0;
+    p.locked = true; // Locked itself while driving; nothing read since.
+    ownTrip(c);
+    parkNow(c);
+    complete(c);
+    assertEquals(log(c), Collections.singletonList("OPENDOOR"), p.commands);
+    assertFalse(log(c).contains("reason=already_unlocked"));
+  }
+
+  @Test
+  public void aBusyWorkerDelaysTheParkUnlockInsteadOfDroppingIt() throws Exception {
+    // Real log 11-10 21:23: P came while the climate READY watch read was running; the unlock was
+    // dropped (the car happened to open itself at power-off).
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.settings.edit().putBoolean("unlockOnPark", true).commit();
+    ownTrip(c);
+    java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+    p.beforeStatus =
+        () -> {
+          try {
+            release.await(10, java.util.concurrent.TimeUnit.SECONDS);
+          } catch (InterruptedException ignored) {
+          }
+        };
+    c.refreshNow(); // Another read holds the worker.
+    long limit = System.currentTimeMillis() + 5000;
+    while (!c.busy() && System.currentTimeMillis() < limit) Thread.sleep(10);
+    assertTrue(c.busy());
+    parkNow(c);
+    assertTrue(log(c).contains("PARK_UNLOCK_WAIT"));
+    p.beforeStatus = () -> {};
+    release.countDown();
+    completeRead(c);
+    assertTrue(p.commands.isEmpty());
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofSeconds(4));
+    complete(c);
+    assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
+  }
+
+  @Test
+  public void parkUnlockOfAnAlreadyOpenCarKeepsTheDrivenTrip() throws Exception {
+    // Nothing to send, but the "already open" path used to restart the trip — clearing the drive so
+    // the departure lock afterwards would skip the auto-Stop.
+    Protocol p = new Protocol(); // Open, power OFF.
+    Controller c = create(p);
+    c.settings.edit().putBoolean("unlockOnPark", true).commit();
+    ownTrip(c);
+    assertNull(c.ownershipBlock());
+    parkNow(c);
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertTrue(log(c).contains("CONTROL_SKIP_STATE"));
+    assertNull(c.ownershipBlock());
+  }
+
+  @Test
+  public void parkUnlockIsDroppedOnceTheCarDrivesOffAgain() throws Exception {
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    c.settings.edit().putBoolean("unlockOnPark", true).commit();
+    ownTrip(c);
+    java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+    p.beforeStatus =
+        () -> {
+          try {
+            release.await(10, java.util.concurrent.TimeUnit.SECONDS);
+          } catch (InterruptedException ignored) {
+          }
+        };
+    c.refreshNow();
+    long limit = System.currentTimeMillis() + 5000;
+    while (!c.busy() && System.currentTimeMillis() < limit) Thread.sleep(10);
+    parkNow(c); // Waits for the worker...
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(1));
+    c.vehicleSample(DRIVE); // ...and the driver pulls away meanwhile.
+    p.beforeStatus = () -> {};
+    release.countDown();
+    completeRead(c);
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofSeconds(4));
+    complete(c);
+    assertTrue(p.commands.isEmpty());
+    assertTrue(log(c), log(c).contains("reason=moved_again"));
+  }
+
+  @Test
+  public void theCarAudioDroppingStartsThePowerOffGrace() throws Exception {
+    // Real log 11-10 21:29–21:34: no read during the drive, so the switch-off went unseen and the
+    // lost-signal lock started 5 s later; the car's audio dropping marks that moment for free.
+    Controller c = create(new Protocol());
+    bridgeParked(c); // The head unit is known from the 차량 보조 앱 pairing.
+    carAudio(c, HEAD_UNIT, true);
+    assertFalse(c.ignitionOffRecently());
+    carAudio(c, HEAD_UNIT, false);
+    assertTrue(c.ignitionOffRecently());
+    assertEquals("car_audio", c.ignitionOffSource());
+    assertTrue(log(c).contains("IGNITION_OFF"));
+  }
+
+  @Test
+  public void aSilentKeyModuleSendsStraightThroughTheCloud() throws Exception {
+    // Real log 11-10 21:34: the key module had been silent for 5 minutes (another app held it); the
+    // BLE attempt got a 34 ms "connection", no answer, and cost 6 s before the cloud.
+    Protocol p = new Protocol();
+    p.locked = true;
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    c.ble = fake;
+    c.keyWatchStarted(android.os.SystemClock.elapsedRealtime());
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61));
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    complete(c);
+    assertEquals(0, fake.calls);
+    assertEquals(Collections.singletonList("OPENDOOR"), p.commands);
+    assertTrue(log(c).contains("reason=no_advert"));
+    // It advertises again: the key is used again.
+    c.keyAdvertSeen(android.os.SystemClock.elapsedRealtime());
+    p.commands.clear();
+    p.locked = true;
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    complete(c);
+    assertEquals(1, fake.calls);
+    assertTrue(p.commands.isEmpty());
+    c.keyWatchStopped();
+  }
+
+  @Test
+  public void keySilenceIsMeasuredOnlyWhileTheScannerWatchesForIt() throws Exception {
+    Controller c = create(new Protocol());
+    long now = android.os.SystemClock.elapsedRealtime();
+    assertEquals(-1, c.keySilentMs(now)); // Not watching: unknown, never a reason to skip the key.
+    c.keyWatchStarted(now);
+    assertEquals(0, c.keySilentMs(now));
+    long later = now + Controller.KEY_SILENT_SKIP_MS + 1000;
+    assertTrue(c.keySilentMs(later) >= Controller.KEY_SILENT_SKIP_MS);
+    assertTrue(c.firstKeySilentReport());
+    assertFalse(c.firstKeySilentReport()); // One diagnostic line per silent stretch.
+    c.keyAdvertSeen(later);
+    assertEquals(0, c.keySilentMs(later));
+    assertTrue(c.firstKeySilentReport()); // A new stretch may report again.
+    c.keyWatchStopped();
+    assertEquals(-1, c.keySilentMs(later));
   }
 
   @Test

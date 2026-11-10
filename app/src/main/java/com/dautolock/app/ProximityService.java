@@ -144,6 +144,9 @@ public final class ProximityService extends Service {
           long now = SystemClock.elapsedRealtime();
           // One line per silent stretch of the key module: is another app holding it (linked=yes),
           // or is it out of range? (11-10 21:29: silent for a whole drive with the phone in the car.)
+          // A held start-authorization key connection ends once the beacon has the phone away.
+          if (com.dautolock.app.watchble.BleAirtime.holding(now) && beaconSaysAway(now))
+            controller.releaseKeyHold("beacon_far");
           long keySilent = controller.keySilentMs(now);
           if (keySilent >= Controller.KEY_SILENT_SKIP_MS && controller.firstKeySilentReport())
             controller.diagnostics.record(

@@ -127,10 +127,44 @@ public final class WatchKey {
   public static final long CONNECT_TIMEOUT_MS = 3000;
 
   public BleResult sendBleBlocking(byte controlByte, long timeoutMs) {
+    return send(controlByte, timeoutMs, 0, 0);
+  }
+
+  /**
+   * Like {@link #sendBleBlocking}, but on success the authenticated link stays open up to {@code
+   * holdMs} (start authorization), closing early on {@link #releaseHold}, a disconnect, or three
+   * connected-RSSI readings at or below {@code releaseBelowRssi}. Returns once the car answered.
+   */
+  public BleResult sendBleAndHold(
+      byte controlByte, long timeoutMs, long holdMs, int releaseBelowRssi) {
+    return send(controlByte, timeoutMs, holdMs, releaseBelowRssi);
+  }
+
+  /** The link kept open by {@link #sendBleAndHold}, if any. */
+  private volatile WatchBleClient held;
+
+  /** Close a held link; true if there was one. */
+  public boolean releaseHold(String reason) {
+    WatchBleClient h = held;
+    held = null;
+    if (h == null || !h.holding()) return false;
+    h.release(reason);
+    return true;
+  }
+
+  private BleResult send(byte controlByte, long timeoutMs, long holdMs, int releaseBelowRssi) {
     if (!store.hasBleKey()) return new BleResult(false, "no_key", -1);
+    // One link at a time: a held start-authorization link gives way to the next command.
+    if (releaseHold("next_command"))
+      try {
+        Thread.sleep(400); // Let the module drop our previous link before connecting again.
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
     final BleResult[] out = {null};
     final CountDownLatch latch = new CountDownLatch(1);
     final WatchBleClient client = new WatchBleClient(context, diagnostics::record);
+    if (holdMs > 0) client.holdAfterSuccess(holdMs, releaseBelowRssi);
     client.start(
         store.dkey(),
         store.macAddress(),
@@ -158,6 +192,7 @@ public final class WatchKey {
       client.cancel();
       return new BleResult(false, "interrupted", -1, client.controlSent());
     }
+    if (out[0] != null && out[0].success && client.holding()) held = client;
     return out[0] == null ? new BleResult(false, "no_result", -1) : out[0];
   }
 

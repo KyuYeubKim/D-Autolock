@@ -34,6 +34,12 @@
             android:foregroundServiceType="connectedDevice" />
         <activity android:name=".BridgeQrActivity" android:exported="false" android:screenOrientation="fullSensor" android:theme="@style/ScannerTheme" />
         <receiver android:name=".DoorActionReceiver" android:exported="false" />
+        <receiver android:name=".DoorWidget" android:exported="true" android:label="도어 열기·잠금">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/door_widget_info" />
+        </receiver>
         <provider android:name=".DiagnosticsShareProvider"
             android:authorities="com.dautolock.app.diagnostics"
             android:exported="false" android:grantUriPermissions="true" />

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Door widget button after the first tap: tap again within 3 s to send (Palette.ACCENT). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#FF1D5BD6" />
+    <corners android:radius="16dp" />
+</shape>

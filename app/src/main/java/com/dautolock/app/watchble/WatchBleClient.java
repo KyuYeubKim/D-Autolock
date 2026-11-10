@@ -97,6 +97,21 @@ public final class WatchBleClient {
   private Runnable overallTimeout;
   private Runnable connectTimeout;
 
+  /**
+   * Keep the authenticated connection open this long after a successful control (0: close at once,
+   * the normal case). Used for start authorization: the car started only after a key unlock and
+   * while that key stayed connected — the official app keeps its link through a drive (real logs
+   * 11-10 21:29, 11-11 07:25). Ends early on {@link #release}, a disconnect, or a weak link.
+   */
+  private long holdMs;
+  /** Close a held link after three connected-RSSI readings at or below this (walking away). */
+  private int releaseBelowRssi = -127;
+  private volatile boolean holding;
+  private boolean reported;
+  private long holdStartedAt, lastHoldRssiLog;
+  private int weakRssi, lastRssi = 0;
+  private Runnable holdTimeout, rssiPoll;
+
   public WatchBleClient(Context context, BiConsumer<String, String> diag) {
     this.context = context.getApplicationContext();
     this.diag = diag;
@@ -196,6 +211,22 @@ public final class WatchBleClient {
     main.post(() -> finish(false, "취소됨", -1));
   }
 
+  /** Before {@link #start}: keep the link open after success (see {@link #holdMs}). */
+  public void holdAfterSuccess(long holdMs, int releaseBelowRssi) {
+    this.holdMs = Math.max(0, holdMs);
+    this.releaseBelowRssi = releaseBelowRssi;
+  }
+
+  /** The link is being held open after a successful control. */
+  public boolean holding() {
+    return holding;
+  }
+
+  /** End a held link now (the car came on, another command needs the key, the phone left). */
+  public void release(String reason) {
+    main.post(() -> endHold(reason));
+  }
+
   /** True once the control frame was written: a failure after this point is unconfirmed, not unsent. */
   public boolean controlSent() {
     return controlSent;
@@ -234,6 +265,10 @@ public final class WatchBleClient {
                   progress("서비스 확인 중…");
                   safeDiscover();
                 } else if (newState == BluetoothGatt.STATE_DISCONNECTED) {
+                  if (holding) {
+                    endHold("disconnected status=" + status);
+                    return;
+                  }
                   diag("WATCHBLE_GATT", "disconnected status=" + status + " step=" + step);
                   if (!finished) fail("연결이 끊겼습니다 (status=" + status + ")");
                 }
@@ -277,6 +312,11 @@ public final class WatchBleClient {
           byte[] v = ch.getValue();
           final byte[] copy = v == null ? new byte[0] : Arrays.copyOf(v, v.length);
           main.post(() -> onNotify(copy));
+        }
+
+        @Override
+        public void onReadRemoteRssi(BluetoothGatt g, int rssi, int status) {
+          main.post(() -> onHoldRssi(rssi, status));
         }
       };
 
@@ -421,7 +461,9 @@ public final class WatchBleClient {
       diag("WATCHBLE_CONTROL", "code=" + code + " result=" + result + " doors=" + doors);
       clearStepTimeout();
       if (result == 1) {
-        finish(true, (controlByte == WatchBleCodec.LOCK ? "잠금" : "해제") + " 성공 (BLE)", doors);
+        String done = (controlByte == WatchBleCodec.LOCK ? "잠금" : "해제") + " 성공 (BLE)";
+        if (holdMs > 0) beginHold(done, doors);
+        else finish(true, done, doors);
       } else {
         finish(false, "차량이 명령을 거부했습니다 (result=" + result + ")", doors);
       }
@@ -524,10 +566,10 @@ public final class WatchBleClient {
     finish(false, message, -1);
   }
 
-  private void finish(boolean success, String message, int doorStates) {
-    if (finished) return;
-    finished = true;
-    step = Step.DONE;
+  /** Report success now but keep the authenticated link open (start authorization). */
+  private void beginHold(String message, int doorStates) {
+    holding = true;
+    holdStartedAt = SystemClock.elapsedRealtime();
     clearStepTimeout();
     if (overallTimeout != null) {
       main.removeCallbacks(overallTimeout);
@@ -537,7 +579,73 @@ public final class WatchBleClient {
       main.removeCallbacks(connectTimeout);
       connectTimeout = null;
     }
-    diag("WATCHBLE_RESULT", (success ? "ok" : "fail") + " · " + message);
+    diag("WATCHBLE_RESULT", "ok · " + message + " · 연결 유지 " + holdMs / 1000 + "초");
+    diag("WATCHBLE_HOLD", "start holdMs=" + holdMs + " releaseBelow=" + releaseBelowRssi);
+    BleAirtime.holdUntil(holdStartedAt + holdMs);
+    holdTimeout = () -> endHold("timeout");
+    main.postDelayed(holdTimeout, holdMs);
+    rssiPoll = this::pollRssi;
+    main.postDelayed(rssiPoll, 1000);
+    reported = true;
+    Listener l = listener;
+    if (l != null) l.onResult(true, message, doorStates);
+  }
+
+  private void pollRssi() {
+    if (!holding || finished || gatt == null) return;
+    try {
+      gatt.readRemoteRssi();
+    } catch (Throwable ignore) {
+      // Best effort: the hold still ends on its timer.
+    }
+    main.postDelayed(rssiPoll, 1000);
+  }
+
+  private void onHoldRssi(int rssi, int status) {
+    if (!holding || status != BluetoothGatt.GATT_SUCCESS) return;
+    lastRssi = rssi;
+    weakRssi = rssi <= releaseBelowRssi ? weakRssi + 1 : 0;
+    long now = SystemClock.elapsedRealtime();
+    if (now - lastHoldRssiLog >= 10000) {
+      lastHoldRssiLog = now;
+      diag("WATCHBLE_HOLD", "rssi=" + rssi + " heldMs=" + (now - holdStartedAt));
+    }
+    if (weakRssi >= 3) endHold("weak_rssi rssi=" + rssi);
+  }
+
+  private void endHold(String reason) {
+    if (!holding || finished) return;
+    diag(
+        "WATCHBLE_HOLD",
+        "end reason="
+            + reason
+            + " heldMs="
+            + (SystemClock.elapsedRealtime() - holdStartedAt)
+            + (lastRssi != 0 ? " lastRssi=" + lastRssi : ""));
+    finish(true, "연결 유지 종료", -1);
+  }
+
+  private void finish(boolean success, String message, int doorStates) {
+    if (finished) return;
+    finished = true;
+    step = Step.DONE;
+    clearStepTimeout();
+    if (holding) {
+      holding = false;
+      if (holdTimeout != null) main.removeCallbacks(holdTimeout);
+      if (rssiPoll != null) main.removeCallbacks(rssiPoll);
+      holdTimeout = rssiPoll = null;
+      BleAirtime.holdUntil(-1);
+    }
+    if (overallTimeout != null) {
+      main.removeCallbacks(overallTimeout);
+      overallTimeout = null;
+    }
+    if (connectTimeout != null) {
+      main.removeCallbacks(connectTimeout);
+      connectTimeout = null;
+    }
+    if (!reported) diag("WATCHBLE_RESULT", (success ? "ok" : "fail") + " · " + message);
     try {
       if (gatt != null) {
         gatt.disconnect();
@@ -551,6 +659,8 @@ public final class WatchBleClient {
       onAir = false;
       BleAirtime.end(SystemClock.elapsedRealtime());
     }
+    if (reported) return; // A held link already reported its result when the hold began.
+    reported = true;
     final Listener l = listener;
     if (l != null) l.onResult(success, message, doorStates);
   }

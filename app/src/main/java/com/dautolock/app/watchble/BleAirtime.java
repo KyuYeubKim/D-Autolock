@@ -22,6 +22,11 @@ public final class BleAirtime {
   private static int active;
   private static long activeSince = -1;
   private static long lastEnd = -1;
+  /**
+   * A key connection deliberately kept open (start authorization) counts as on air until this time:
+   * longer than {@link #MAX_SESSION_MS}, but always a fixed end, so the fail-safe still holds.
+   */
+  private static long holdUntil = -1;
 
   private BleAirtime() {}
 
@@ -42,7 +47,17 @@ public final class BleAirtime {
   public static synchronized boolean quiet(long now) {
     boolean connected = active > 0 && now >= activeSince && now - activeSince < MAX_SESSION_MS;
     boolean settling = lastEnd >= 0 && now >= lastEnd && now - lastEnd < AFTER_MS;
-    return connected || settling;
+    return connected || settling || holding(now);
+  }
+
+  /** A held key connection is open until {@code until} (or ended early with -1). */
+  public static synchronized void holdUntil(long until) {
+    holdUntil = until;
+  }
+
+  /** A key connection is being held open on purpose right now. */
+  public static synchronized boolean holding(long now) {
+    return holdUntil >= 0 && now < holdUntil;
   }
 
   /** Test-only: the state is static and Robolectric reuses the JVM between tests. */
@@ -50,5 +65,6 @@ public final class BleAirtime {
     active = 0;
     activeSince = -1;
     lastEnd = -1;
+    holdUntil = -1;
   }
 }

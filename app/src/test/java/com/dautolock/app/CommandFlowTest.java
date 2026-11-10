@@ -245,10 +245,27 @@ public class CommandFlowTest {
     Runnable effect = () -> {};
     int calls = 0;
     byte lastCode = 0;
+    /** The hold asked for by the last sendAndHold (-1: none), and the last releaseHold reason. */
+    long holdMs = -1;
+    int releaseBelow;
+    String released;
 
     @Override
     public boolean ready() {
       return ready;
+    }
+
+    @Override
+    public com.dautolock.app.watchkey.WatchKey.BleResult sendAndHold(
+        byte controlByte, long timeoutMs, long holdMs, int releaseBelowRssi) {
+      this.holdMs = holdMs;
+      this.releaseBelow = releaseBelowRssi;
+      return send(controlByte, timeoutMs);
+    }
+
+    @Override
+    public void releaseHold(String reason) {
+      released = reason;
     }
 
     @Override
@@ -625,6 +642,7 @@ public class CommandFlowTest {
   public void aSilentKeyModuleSendsStraightThroughTheCloud() throws Exception {
     // Real log 11-10 21:34: the key module had been silent for 5 minutes (another app held it); the
     // BLE attempt got a 34 ms "connection", no answer, and cost 6 s before the cloud.
+    com.dautolock.app.watchble.BleAirtime.reset(); // No key session of ours from another test.
     Protocol p = new Protocol();
     p.locked = true;
     Controller c = create(p);
@@ -649,7 +667,94 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void manualUnlockOfAnOpenSwitchedOffCarAuthorizesTheStartOverTheKey() throws Exception {
+    // Real logs 11-10 21:29 and 11-11 07:25: the car was open but would not start; our 도어 열기
+    // sent nothing ("이미 잠금 해제") and only the official app's unlock let it start.
+    Protocol p = new Protocol(); // Open, power OFF.
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    c.ble = fake;
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    complete(c);
+    assertEquals(1, fake.calls);
+    assertEquals(com.dautolock.app.watchble.WatchBleCodec.UNLOCK, fake.lastCode);
+    assertEquals(Controller.START_AUTH_HOLD_MS, fake.holdMs); // The key stays connected meanwhile.
+    assertEquals(Controller.DEFAULT_FAR, fake.releaseBelow);
+    assertTrue(p.commands.isEmpty()); // No cloud command: the car stays as it was, open.
+    assertTrue(log(c).contains("purpose=start_auth"));
+    assertTrue(c.lastControl, c.lastControl.contains("시동 인증"));
+  }
+
+  @Test
+  public void startAuthorizationIsOnlyForAManualUnlockOfASwitchedOffCar() throws Exception {
+    Protocol p = new Protocol();
+    p.power = 3; // Already on: nothing to authorize.
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    c.ble = fake;
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    complete(c);
+    assertEquals(0, fake.calls);
+    p.power = 1;
+    c.monitoring = c.autoEnabled = true;
+    assertTrue( // The automation never sends to an open car.
+        c.automaticCommand(CloudClient.Command.UNLOCK, () -> true, () -> true, () -> {}, () -> {}));
+    complete(c);
+    assertEquals(0, fake.calls);
+    c.settings.edit().putBoolean("unlockOnPark", true).commit();
+    ownTrip(c);
+    parkNow(c); // Nor the park unlock.
+    complete(c);
+    assertEquals(0, fake.calls);
+    assertTrue(p.commands.isEmpty());
+  }
+
+  @Test
+  public void aFailedStartAuthorizationSaysSoAndSendsNothingElse() throws Exception {
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    fake.succeed = false;
+    c.ble = fake;
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    complete(c);
+    assertEquals(1, fake.calls);
+    assertTrue(p.commands.isEmpty());
+    assertTrue(log(c).contains("START_AUTH_FAIL"));
+    assertTrue(c.lastControl, c.lastControl.contains("실패"));
+  }
+
+  @Test
+  public void aKeyHeldByAnotherAppIsLeftAlone() throws Exception {
+    // The official app holding the module (CAR_KEY_SILENT linked=yes): that key is present already.
+    com.dautolock.app.watchble.BleAirtime.reset();
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    c.ble = fake;
+    c.keyWatchStarted(android.os.SystemClock.elapsedRealtime());
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61));
+    c.command(CloudClient.Command.UNLOCK, false, () -> true);
+    complete(c);
+    assertEquals(0, fake.calls);
+    assertTrue(log(c).contains("START_AUTH_SKIP"));
+    assertTrue(log(c).contains("CONTROL_SKIP_STATE"));
+    c.keyWatchStopped();
+  }
+
+  @Test
+  public void theCarComingOnReleasesTheHeldKey() throws Exception {
+    Controller c = create(new Protocol());
+    FakeBle fake = new FakeBle();
+    c.ble = fake;
+    bridgeParked(c);
+    carAudio(c, HEAD_UNIT, true);
+    assertEquals("car_on", fake.released);
+  }
+
+  @Test
   public void keySilenceIsMeasuredOnlyWhileTheScannerWatchesForIt() throws Exception {
+    com.dautolock.app.watchble.BleAirtime.reset();
     Controller c = create(new Protocol());
     long now = android.os.SystemClock.elapsedRealtime();
     assertEquals(-1, c.keySilentMs(now)); // Not watching: unknown, never a reason to skip the key.

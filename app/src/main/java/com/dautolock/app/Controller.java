@@ -48,6 +48,15 @@ final class Controller {
     boolean ready();
 
     com.dautolock.app.watchkey.WatchKey.BleResult send(byte controlByte, long timeoutMs);
+
+    /** Send, and on success keep the key connected up to {@code holdMs} (start authorization). */
+    default com.dautolock.app.watchkey.WatchKey.BleResult sendAndHold(
+        byte controlByte, long timeoutMs, long holdMs, int releaseBelowRssi) {
+      return send(controlByte, timeoutMs);
+    }
+
+    /** End a held key connection, if any. */
+    default void releaseHold(String reason) {}
   }
 
   static final long WATCH_BLE_AUTO_TIMEOUT_MS = 8000;
@@ -83,7 +92,24 @@ final class Controller {
         public com.dautolock.app.watchkey.WatchKey.BleResult send(byte controlByte, long timeoutMs) {
           return watchKey().sendBleBlocking(controlByte, timeoutMs);
         }
+
+        @Override
+        public com.dautolock.app.watchkey.WatchKey.BleResult sendAndHold(
+            byte controlByte, long timeoutMs, long holdMs, int releaseBelowRssi) {
+          return watchKey().sendBleAndHold(controlByte, timeoutMs, holdMs, releaseBelowRssi);
+        }
+
+        @Override
+        public void releaseHold(String reason) {
+          com.dautolock.app.watchkey.WatchKey key = watchKey;
+          if (key != null) key.releaseHold(reason);
+        }
       };
+
+  /** End a start-authorization key connection (the car came on, or the phone has left). */
+  void releaseKeyHold(String reason) {
+    ble.releaseHold(reason);
+  }
 
   private com.dautolock.app.watchkey.WatchKey watchKey() {
     if (watchKey == null)
@@ -135,7 +161,11 @@ final class Controller {
   /** How long the watched key module has been silent, or -1 when the scanner is not watching it. */
   long keySilentMs(long now) {
     long since = keyWatchSince;
-    return since < 0 ? -1 : Math.max(0, now - Math.max(since, keyAdvertAt));
+    if (since < 0) return -1;
+    // Our own key connection keeps it quiet (a held start authorization lasts up to 2 minutes):
+    // that is not silence, and the key is ours to use.
+    if (com.dautolock.app.watchble.BleAirtime.quiet(now)) return 0;
+    return Math.max(0, now - Math.max(since, keyAdvertAt));
   }
 
   /** True once per silent stretch, for a single diagnostic line. */
@@ -1462,6 +1492,13 @@ final class Controller {
                 if (automatic && settings.getBoolean("autoReady", false))
                   climateStatus = "공조 연동 · 이미 열린 차량이라 탑승 감시 안 함";
               }
+              // Start authorization: a manual 도어 열기 on an open, switched-off car still goes out
+              // over the BLE key (see startAuthorization). Not for the park unlock or automation.
+              if (command == CloudClient.Command.UNLOCK
+                  && !automatic
+                  && !preserveTrip
+                  && !Integer.valueOf(3).equals(snapshot.power)
+                  && startAuthorization()) return;
               lastControl = "BYD 조회상 이미 " + command.label + " 상태 · 명령 생략";
               if (stop) stopStatus = "차량 종료 · BYD 조회상 이미 전원 OFF";
               diagnostics.record(
@@ -1728,6 +1765,59 @@ final class Controller {
         },
         finished,
         automatic);
+  }
+
+  /** How long a start-authorization key connection stays open at most. */
+  static final long START_AUTH_HOLD_MS = 120000;
+
+  /**
+   * The car was open but would not start until a key unlocked it again (real logs 11-10 21:29 and
+   * 11-11 07:25): neither BYD's own unlock at switch-off nor our key unlock ten minutes earlier let it
+   * start, and our 도어 열기 sent nothing because the car was already open. The official app's
+   * unlock did — and its key stayed connected through the drive (CAR_KEY_SILENT linked=yes). So the
+   * unlock goes out over our BLE key anyway (an open car stays open; nothing else changes) and the
+   * key stays connected up to {@link #START_AUTH_HOLD_MS}, until the car comes on, the phone walks
+   * away (weak link, or the beacon settled far), or another key command needs it. Returns false only
+   * when the key cannot be used (then the plain "already open" path runs).
+   */
+  private boolean startAuthorization() {
+    if (!ble.ready()) return false;
+    long silent = keySilentMs(SystemClock.elapsedRealtime());
+    if (silent >= KEY_SILENT_SKIP_MS) {
+      // Another app holds the key module — then that key is present already.
+      diagnostics.record(
+          "START_AUTH_SKIP", "reason=no_advert silentMs=" + silent + " linked=" + keyLinked());
+      return false;
+    }
+    int releaseBelow = settings.getInt("far", DEFAULT_FAR);
+    diagnostics.record(
+        "START_AUTH", "holdMs=" + START_AUTH_HOLD_MS + " releaseBelow=" + releaseBelow);
+    lastControl = "이미 열림 · 블루투스 키로 시동 인증 중…";
+    changed();
+    com.dautolock.app.watchkey.WatchKey.BleResult r =
+        ble.sendAndHold(
+            com.dautolock.app.watchble.WatchBleCodec.UNLOCK,
+            WATCH_BLE_AUTO_TIMEOUT_MS,
+            START_AUTH_HOLD_MS,
+            releaseBelow);
+    if (r != null && r.success) {
+      diagnostics.record(
+          "CONTROL_SEND", "MANUAL UNLOCK source=ble doors=" + r.doors + " purpose=start_auth");
+      lastControl = "이미 열림 · 블루투스 키로 시동 인증 · 2분 동안 키 연결 유지";
+      note(lastControl);
+      DoorNotifications.result(
+          context, "시동 인증 완료", "블루투스 키로 다시 열었습니다. 지금 시동을 걸어 보세요 (2분 동안 키 연결 유지)");
+      changed();
+      return true;
+    }
+    String reason = r == null ? "unavailable" : r.message;
+    diagnostics.record(
+        "START_AUTH_FAIL", "reason=" + reason + " controlSent=" + (r != null && r.controlSent));
+    lastControl = "이미 열림 · 블루투스 키 시동 인증 실패 (" + reason + ")";
+    note(lastControl);
+    DoorNotifications.result(context, lastControl, "공식 BYD 앱의 도어 열기로 시동을 걸어 보세요");
+    changed();
+    return true;
   }
 
   /**

@@ -13,6 +13,11 @@ public final class DoorActionReceiver extends BroadcastReceiver {
       controller.chargeWatchDue();
       return;
     }
+    // Home-screen widget buttons (this receiver is not exported; see DoorWidget).
+    if (DoorWidget.TAP_UNLOCK.equals(action) || DoorWidget.TAP_LOCK.equals(action)) {
+      DoorWidget.onTap(context, action, goAsync());
+      return;
+    }
     if (DoorNotifications.CANCEL_STOP.equals(action)) {
       controller.diagnostics.record("NOTIFICATION_ACTION", "CANCEL_STOP");
       controller.cancelPendingStop("알림에서 사용자 취소");

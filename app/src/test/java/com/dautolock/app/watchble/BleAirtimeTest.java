@@ -56,4 +56,20 @@ public class BleAirtimeTest {
     BleAirtime.end(101_000);
     assertFalse(BleAirtime.quiet(50_000)); // e.g. a reset test clock.
   }
+
+  @Test
+  public void aHeldStartAuthorizationStaysQuietPastTheSessionCapUntilItEnds() {
+    // The key is kept connected up to 2 minutes; the module stays silent all that time.
+    BleAirtime.begin(1000);
+    BleAirtime.holdUntil(1000 + 120000);
+    assertTrue(BleAirtime.holding(1000 + 60000));
+    assertTrue(BleAirtime.quiet(1000 + BleAirtime.MAX_SESSION_MS + 5000)); // Past the 40 s cap.
+    assertFalse(BleAirtime.holding(1000 + 120000)); // A fixed end: never suppressed for good.
+    // Released early (the car came on): only the usual settling time is left.
+    BleAirtime.holdUntil(-1);
+    BleAirtime.end(70000);
+    assertFalse(BleAirtime.holding(70001));
+    assertTrue(BleAirtime.quiet(70000 + BleAirtime.AFTER_MS - 1));
+    assertFalse(BleAirtime.quiet(70000 + BleAirtime.AFTER_MS + 1));
+  }
 }

@@ -1503,7 +1503,7 @@ final class Controller {
                   && !automatic
                   && !preserveTrip
                   && !Integer.valueOf(3).equals(snapshot.power)
-                  && startAuthorization()) return;
+                  && startAuthorization(false)) return;
               lastControl = "BYD 조회상 이미 " + command.label + " 상태 · 명령 생략";
               if (stop) stopStatus = "차량 종료 · BYD 조회상 이미 전원 OFF";
               diagnostics.record(
@@ -1614,6 +1614,7 @@ final class Controller {
                 if (r != null && r.success) {
                   sentByBle = true;
                   dispatched.set(true);
+                  lastKeyAuthAt = SystemClock.elapsedRealtime();
                   diagnostics.record(
                       "CONTROL_SEND",
                       (automatic ? "AUTO " : "MANUAL ")
@@ -1784,19 +1785,26 @@ final class Controller {
    * key stays connected up to {@link #START_AUTH_HOLD_MS}, until the car comes on, the phone walks
    * away (the link drops, or the beacon settled far), or another key command needs it. The car
    * started 3 s after the first one (real log 11-11 11:10). Returns false only
-   * when the key cannot be used (then the plain "already open" path runs).
+   * when the key cannot be used (then the plain "already open" path runs). {@code auto}: from
+   * {@link #boarding} (no pop-up notification; the activity log says it).
    */
-  private boolean startAuthorization() {
+  private boolean startAuthorization(boolean auto) {
     if (!ble.ready()) return false;
     long silent = keySilentMs(SystemClock.elapsedRealtime());
     if (silent >= KEY_SILENT_SKIP_MS) {
       // Another app holds the key module — then that key is present already.
       diagnostics.record(
-          "START_AUTH_SKIP", "reason=no_advert silentMs=" + silent + " linked=" + keyLinked());
+          "START_AUTH_SKIP",
+          (auto ? "auto=true " : "")
+              + "reason=no_advert silentMs="
+              + silent
+              + " linked="
+              + keyLinked());
       return false;
     }
-    diagnostics.record("START_AUTH", "holdMs=" + START_AUTH_HOLD_MS);
-    lastControl = "이미 열림 · 블루투스 키로 시동 인증 중…";
+    String head = auto ? "차에 탄 것을 감지 · " : "이미 열림 · ";
+    diagnostics.record("START_AUTH", (auto ? "auto=true " : "") + "holdMs=" + START_AUTH_HOLD_MS);
+    lastControl = head + "블루투스 키로 시동 인증 중…";
     changed();
     com.dautolock.app.watchkey.WatchKey.BleResult r =
         ble.sendAndHold(
@@ -1804,23 +1812,146 @@ final class Controller {
             WATCH_BLE_AUTO_TIMEOUT_MS,
             START_AUTH_HOLD_MS);
     if (r != null && r.success) {
+      lastKeyAuthAt = SystemClock.elapsedRealtime();
       diagnostics.record(
-          "CONTROL_SEND", "MANUAL UNLOCK source=ble doors=" + r.doors + " purpose=start_auth");
-      lastControl = "이미 열림 · 블루투스 키로 시동 인증 · 2분 동안 키 연결 유지";
+          "CONTROL_SEND",
+          (auto ? "AUTO" : "MANUAL") + " UNLOCK source=ble doors=" + r.doors + " purpose=start_auth");
+      lastControl = head + "블루투스 키로 시동 인증 · 2분 동안 키 연결 유지";
       note(lastControl);
-      DoorNotifications.result(
-          context, "시동 인증 완료", "블루투스 키로 다시 열었습니다. 지금 시동을 걸어 보세요 (2분 동안 키 연결 유지)");
+      if (!auto)
+        DoorNotifications.result(
+            context, "시동 인증 완료", "블루투스 키로 다시 열었습니다. 지금 시동을 걸어 보세요 (2분 동안 키 연결 유지)");
       changed();
       return true;
     }
     String reason = r == null ? "unavailable" : r.message;
     diagnostics.record(
-        "START_AUTH_FAIL", "reason=" + reason + " controlSent=" + (r != null && r.controlSent));
-    lastControl = "이미 열림 · 블루투스 키 시동 인증 실패 (" + reason + ")";
+        "START_AUTH_FAIL",
+        (auto ? "auto=true " : "")
+            + "reason="
+            + reason
+            + " controlSent="
+            + (r != null && r.controlSent));
+    lastControl = head + "블루투스 키 시동 인증 실패 (" + reason + ")";
     note(lastControl);
-    DoorNotifications.result(context, lastControl, "공식 BYD 앱의 도어 열기로 시동을 걸어 보세요");
+    if (!auto)
+      DoorNotifications.result(context, lastControl, "공식 BYD 앱의 도어 열기로 시동을 걸어 보세요");
     changed();
     return true;
+  }
+
+  /**
+   * Automatic start authorization (step 2): the same key unlock + hold when the phone settles in
+   * the car. The car BLE and the trunk beacon both read {@link #IN_CAR_MARGIN_DB} above their open
+   * thresholds for {@link #IN_CAR_SETTLE_MS} (real log 11-11: in the car the car BLE read −52…−61 and
+   * the beacon −42…−58; standing by the car for 35 min the beacon stayed −56…−71). Once per
+   * boarding: armed only after the phone has been out of the car for {@link #OUT_OF_CAR_MS} and
+   * disarmed while the car is on — so not at each parking while still seated, but on getting back
+   * in after standing by the open car (real logs 11-10 21:29, 11-11 07:25 and 11:10). Not while
+   * this phone's key authorized within {@link #KEY_AUTH_FRESH_MS} (the normal approach unlock; it
+   * waits, and authorizes only if the start has not come by then), and only after a fresh read
+   * shows the car open, switched off and standing.
+   */
+  static final int IN_CAR_MARGIN_DB = 8;
+
+  static final long IN_CAR_SETTLE_MS = 5000, OUT_OF_CAR_MS = 15000, KEY_AUTH_FRESH_MS = 60000;
+  /** When this phone's key last authorized a command (elapsed clock; -1: not in this run). */
+  volatile long lastKeyAuthAt = -1;
+
+  private volatile boolean boardingArmed;
+  private long inCarSince = -1, outOfCarSince = -1;
+
+  /** Fed by the scanner about once a second; {@code inCar}: both signals read that strong. */
+  void boarding(long now, boolean inCar) {
+    if (carSeemsOn()) {
+      if (boardingArmed) diagnostics.record("BOARDING", "armed=false reason=car_on");
+      boardingArmed = false;
+      inCarSince = outOfCarSince = -1;
+      return;
+    }
+    // Our own key link silences the car BLE: that is neither getting in nor getting out.
+    if (com.dautolock.app.watchble.BleAirtime.quiet(now)) return;
+    if (!inCar) {
+      inCarSince = -1;
+      if (outOfCarSince < 0) outOfCarSince = now;
+      if (!boardingArmed && now - outOfCarSince >= OUT_OF_CAR_MS) {
+        boardingArmed = true;
+        diagnostics.record("BOARDING", "armed=true");
+      }
+      return;
+    }
+    outOfCarSince = -1;
+    if (inCarSince < 0) inCarSince = now;
+    if (boardingArmed && now - inCarSince >= IN_CAR_SETTLE_MS && autoStartAuthorization(now))
+      boardingArmed = false;
+  }
+
+  boolean boardingArmed() {
+    return boardingArmed;
+  }
+
+  private boolean carSeemsOn() {
+    if (carAudio.connected() || vehicleLink.connected()) return true;
+    VehicleSnapshot s = snapshot;
+    return s != null && Integer.valueOf(3).equals(s.power) && s.fresh(System.currentTimeMillis());
+  }
+
+  /** True when this boarding is dealt with (a check started, or nothing to do); false: try again. */
+  private boolean autoStartAuthorization(long now) {
+    if (!settings.getBoolean("autoStartAuth", true) || !ble.ready()) return true;
+    if (!monitoring || !autoEnabled) return true;
+    if (initializing || busy()) return false;
+    if (lastKeyAuthAt >= 0 && now - lastKeyAuthAt < KEY_AUTH_FRESH_MS) return false;
+    long silent = keySilentMs(now);
+    if (silent >= KEY_SILENT_SKIP_MS) {
+      diagnostics.record(
+          "START_AUTH_SKIP",
+          "auto=true reason=no_advert silentMs=" + silent + " linked=" + keyLinked());
+      return true;
+    }
+    VehicleSnapshot known = snapshot;
+    if (known != null
+        && known.fresh(System.currentTimeMillis())
+        && (Boolean.TRUE.equals(known.locked) || Integer.valueOf(3).equals(known.power))) {
+      diagnostics.record(
+          "START_AUTH_SKIP",
+          "auto=true reason=car_state locked=" + known.locked + " power=" + known.power);
+      return true;
+    }
+    int ticket = generation.get();
+    String target = vin;
+    diagnostics.record("START_AUTH_CHECK", "auto=true trigger=in_car");
+    return run(
+        () -> {
+          if (!validSession(ticket, target)) return;
+          requireVehicle();
+          VehicleSnapshot s = cloud.snapshot(target);
+          if (!validSession(ticket, target)) return;
+          observeSnapshot(s, true);
+          if (!s.fresh(System.currentTimeMillis())
+              || !Boolean.FALSE.equals(s.locked)
+              || !Integer.valueOf(1).equals(s.power)
+              || (s.speed != null && s.speed > 0)) {
+            diagnostics.record(
+                "START_AUTH_SKIP",
+                "auto=true reason=car_state fresh="
+                    + s.fresh(System.currentTimeMillis())
+                    + " locked="
+                    + s.locked
+                    + " power="
+                    + s.power);
+            return;
+          }
+          if (!monitoring || !autoEnabled || carAudio.connected()) return;
+          startAuthorization(true);
+        },
+        () -> {},
+        true);
+  }
+
+  /** Monitoring resumes with automation after a restart when the user had left it on. */
+  boolean autoStartWanted() {
+    return settings.getBoolean("autoStart", true) && !setupPending();
   }
 
   /**

@@ -75,6 +75,58 @@ public class ProximityServiceTest {
   }
 
   @Test
+  public void aRestartBySystemResumesWatchingWithTheSavedAutomation() throws Exception {
+    // Real log 11-11 11:59: a low-memory kill mid-drive left the app off for 15 minutes, until it
+    // was opened. A sticky service is re-created by the system with no intent.
+    DApplication app = (DApplication) RuntimeEnvironment.getApplication();
+    Controller c = app.controller();
+    AccountPersistenceTest.await(c);
+    Shadows.shadowOf(app)
+        .grantPermissions(
+            Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT);
+    Shadows.shadowOf(app.getSystemService(BluetoothManager.class).getAdapter())
+        .setState(BluetoothAdapter.STATE_ON);
+    c.settings
+        .edit()
+        .putBoolean("setupRequired", false)
+        .putBoolean("autoStart", true)
+        .putString("address", "AA:BB:CC:DD:EE:FF")
+        .commit();
+    com.dautolock.app.api.CloudProtocol p =
+        new com.dautolock.app.api.CloudProtocol(com.dautolock.app.api.BydConfig.fromRegion("KR")) {
+          @Override
+          public void postTokenSecure(
+              String endpoint,
+              java.util.Map<String, Object> data,
+              String vin,
+              com.dautolock.app.api.BydApiCallback<org.json.JSONObject> callback) {
+            callback.onSuccess(new org.json.JSONObject());
+          }
+        };
+    p.setSignToken("test-session");
+    c.cloud = new com.dautolock.app.api.CloudClient(p);
+    c.vin = "test-car";
+    c.pinHash = "test-pin";
+    c.monitoring = c.autoEnabled = false;
+    org.robolectric.android.controller.ServiceController<ProximityService> lifecycle =
+        Robolectric.buildService(ProximityService.class).create();
+    ProximityService service = lifecycle.get();
+    assertEquals(android.app.Service.START_STICKY, service.onStartCommand(null, 0, 1));
+    Shadows.shadowOf(Looper.getMainLooper()).idle();
+    assertTrue(c.monitoring);
+    assertTrue(c.autoEnabled); // As the user had it, not observe-only.
+    // Re-entries keep it sticky; only the user's stop ends it for good.
+    assertEquals(
+        android.app.Service.START_STICKY,
+        service.onStartCommand(
+            new Intent(app, ProximityService.class).putExtra("automatic", true), 0, 2));
+    assertEquals(
+        android.app.Service.START_NOT_STICKY,
+        service.onStartCommand(new Intent(app, ProximityService.class).setAction("STOP"), 0, 3));
+    lifecycle.destroy();
+  }
+
+  @Test
   public void serviceReconfiguresWithoutTurningOffRequestedAutomaticMode() throws Exception {
     DApplication app = (DApplication) RuntimeEnvironment.getApplication();
     Controller c = app.controller();

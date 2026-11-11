@@ -162,6 +162,15 @@ public final class ProximityEngine {
     return !Double.isNaN(smoothed) && smoothed >= near;
   }
 
+  /** Receiving now, with the smoothed signal at least {@code db} (used for "sitting in the car"). */
+  public synchronized boolean strongerThan(int db, long now) {
+    return fresh(now) && !Double.isNaN(smoothed) && smoothed >= db;
+  }
+
+  public int near() {
+    return near;
+  }
+
   /**
    * Still valid after claiming a lock. Loss alone never qualifies; loss right after a confirmed FAR
    * departure does (real log: the phone left range during the 6 s lock command and the departure

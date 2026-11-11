@@ -749,6 +749,91 @@ public class CommandFlowTest {
     assertEquals("car_on", fake.released);
   }
 
+  /** Out of the car long enough to arm, then settled in it; returns the last feed time. */
+  private static long boardAgain(Controller c, long t) {
+    c.boarding(t, false);
+    c.boarding(t + Controller.OUT_OF_CAR_MS, false);
+    long in = t + Controller.OUT_OF_CAR_MS + 1000;
+    c.boarding(in, true);
+    c.boarding(in + Controller.IN_CAR_SETTLE_MS, true);
+    return in + Controller.IN_CAR_SETTLE_MS;
+  }
+
+  @Test
+  public void gettingBackIntoTheOpenSwitchedOffCarAuthorizesTheStartOnce() throws Exception {
+    // Real logs 11-10 21:29, 11-11 07:25 and 11:10: after standing by the open car, the car would
+    // not start on getting back in until a key unlocked it again.
+    com.dautolock.app.watchble.BleAirtime.reset();
+    Protocol p = new Protocol(); // Open, power OFF.
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    c.ble = fake;
+    c.monitoring = c.autoEnabled = true;
+    long t = android.os.SystemClock.elapsedRealtime();
+    c.boarding(t, true);
+    c.boarding(t + 10000, true);
+    complete(c);
+    assertEquals(0, fake.calls); // Seated since the start (as right after parking): not armed.
+    long now = boardAgain(c, t + 10000);
+    complete(c);
+    assertEquals(1, fake.calls);
+    assertEquals(com.dautolock.app.watchble.WatchBleCodec.UNLOCK, fake.lastCode);
+    assertEquals(Controller.START_AUTH_HOLD_MS, fake.holdMs);
+    assertTrue(p.commands.isEmpty()); // Nothing over the cloud; the open car stays open.
+    String log = log(c);
+    assertTrue(log, log.contains("AUTO UNLOCK source=ble doors=") && log.contains("purpose=start_auth"));
+    c.boarding(now + 30000, true); // Staying in the car: once per boarding.
+    complete(c);
+    assertEquals(1, fake.calls);
+  }
+
+  @Test
+  public void automaticStartAuthorizationWaitsOutAFreshKeyAndNeverOpensALockedCar()
+      throws Exception {
+    com.dautolock.app.watchble.BleAirtime.reset();
+    Protocol p = new Protocol();
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    c.ble = fake;
+    c.monitoring = c.autoEnabled = true;
+    long t = android.os.SystemClock.elapsedRealtime();
+    c.lastKeyAuthAt = t; // The approach unlock just went over this key: nothing to authorize yet.
+    boardAgain(c, t);
+    complete(c);
+    assertEquals(0, fake.calls);
+    assertTrue(c.boardingArmed()); // Still waiting; acts only if the start has not come by then.
+    c.boarding(t + Controller.KEY_AUTH_FRESH_MS, true);
+    complete(c);
+    assertEquals(1, fake.calls);
+    // The car locked itself meanwhile: a locked car is never opened this way.
+    p.locked = true;
+    boardAgain(c, t + Controller.KEY_AUTH_FRESH_MS + 1000);
+    complete(c);
+    assertEquals(1, fake.calls);
+    assertTrue(log(c).contains("reason=car_state"));
+    assertFalse(c.boardingArmed());
+  }
+
+  @Test
+  public void aRunningCarDisarmsTheBoardingCheck() throws Exception {
+    com.dautolock.app.watchble.BleAirtime.reset();
+    Protocol p = new Protocol();
+    p.power = 3;
+    Controller c = create(p);
+    FakeBle fake = new FakeBle();
+    c.ble = fake;
+    c.monitoring = c.autoEnabled = true;
+    c.refreshNow();
+    complete(c);
+    boardAgain(c, android.os.SystemClock.elapsedRealtime());
+    complete(c);
+    assertFalse(c.boardingArmed());
+    assertEquals(0, fake.calls);
+    String log = log(c);
+    assertFalse(log, log.contains("BOARDING armed=true")); // Never armed while the car is on,
+    assertFalse(log, log.contains("START_AUTH")); // so not even a check.
+  }
+
   @Test
   public void keySilenceIsMeasuredOnlyWhileTheScannerWatchesForIt() throws Exception {
     com.dautolock.app.watchble.BleAirtime.reset();

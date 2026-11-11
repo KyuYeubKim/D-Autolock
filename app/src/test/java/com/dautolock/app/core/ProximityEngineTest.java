@@ -7,6 +7,16 @@ import org.junit.Test;
 
 public class ProximityEngineTest {
   @Test
+  public void strongerThanNeedsAFreshReadingAtThatLevel() {
+    ProximityEngine e = new ProximityEngine(-70, -80);
+    assertFalse(e.strongerThan(-62, 1000)); // Nothing received yet.
+    e.sample(-55, 1000);
+    assertTrue(e.strongerThan(-62, 1000));
+    assertFalse(e.strongerThan(-50, 1000));
+    assertFalse(e.strongerThan(-62, 1000 + 6000)); // Not receiving any more.
+  }
+
+  @Test
   public void preparationStartsBeforeUnlockButDoesNotRelaxUnlockThreshold() {
     ProximityEngine e = new ProximityEngine(-65, -80, 1000, 2000, 10000);
     e.sample(-72, 0);

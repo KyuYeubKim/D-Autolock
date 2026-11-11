@@ -62,7 +62,7 @@ public final class MainActivity extends Activity {
   private LinearLayout watchBleSection;
   private TextView watchBleStatus;
   private Button watchBleUnlock, watchBleLock;
-  private Switch watchKeyAutoSwitch;
+  private Switch watchKeyAutoSwitch, autoStartAuthSwitch;
   private com.dautolock.app.watchble.WatchBleClient watchBleRun;
   private TextView beaconDevice;
   private TextView updateStatus;
@@ -969,7 +969,7 @@ public final class MainActivity extends Activity {
     text(autoRow, "자동에서 블루투스 키 사용 (3단계)", 14, TEXT);
     watchKeyAutoSwitch = new Switch(this);
     watchKeyAutoSwitch.setTag("watchKeyAuto");
-    watchKeyAutoSwitch.setText("열기·잠금·시동에 블루투스 키 우선");
+    watchKeyAutoSwitch.setText("열기·잠금에 블루투스 키 우선");
     watchKeyAutoSwitch.setTextColor(TEXT);
     watchKeyAutoSwitch.setMinHeight(dp(56));
     watchKeyAutoSwitch.setChecked(controller.settings.getBoolean("watchKeyAuto", true));
@@ -981,7 +981,24 @@ public final class MainActivity extends Activity {
         });
     text(
         autoRow,
-        "켜면 자동/수동 도어 열기·잠금과 시동 켜기·끄기를 블루투스 키로 먼저 보냅니다(빠르고 인터넷 없이도 동작). 키가 멀거나 실패하면 자동으로 클라우드로 보냅니다. 거리 판정(근접/이탈)과 안전 검사(전원·기어·정차·이탈)는 그대로입니다. 끄면 전부 클라우드로만 보냅니다.",
+        "켜면 자동/수동 도어 열기·잠금을 블루투스 키로 먼저 보냅니다(빠르고 인터넷 없이도 동작). 키가 멀거나 실패하면 자동으로 클라우드로 보냅니다. 시동 켜기·끄기는 클라우드로 보냅니다. 거리 판정(근접/이탈)과 안전 검사(전원·기어·정차·이탈)는 그대로입니다. 끄면 전부 클라우드로만 보냅니다.",
+        12,
+        MUTED);
+    autoStartAuthSwitch = new Switch(this);
+    autoStartAuthSwitch.setTag("autoStartAuth");
+    autoStartAuthSwitch.setText("차에 타면 자동으로 시동 인증");
+    autoStartAuthSwitch.setTextColor(TEXT);
+    autoStartAuthSwitch.setMinHeight(dp(56));
+    autoStartAuthSwitch.setChecked(controller.settings.getBoolean("autoStartAuth", true));
+    autoRow.addView(autoStartAuthSwitch);
+    autoStartAuthSwitch.setOnCheckedChangeListener(
+        (b, on) -> {
+          if (updating) return;
+          controller.settings.edit().putBoolean("autoStartAuth", on).apply();
+        });
+    text(
+        autoRow,
+        "시동이 꺼진 열린 차에 다시 타면(차량 BLE와 트렁크 비콘이 둘 다 아주 가까움) 블루투스 키로 한 번 다시 열고 2분 동안 키 연결을 유지해 바로 시동을 걸 수 있게 합니다. 보조 비콘이 필요합니다. 차에서 내렸다가 다시 탈 때만 보내고, 차가 잠겨 있거나 시동이 켜져 있으면 보내지 않습니다. 앱이나 위젯의 '도어 열기'로도 같은 인증을 할 수 있습니다.",
         12,
         MUTED);
     return card;
@@ -2381,6 +2398,8 @@ public final class MainActivity extends Activity {
         }
         if (watchKeyAutoSwitch != null)
           watchKeyAutoSwitch.setChecked(controller.settings.getBoolean("watchKeyAuto", true));
+        if (autoStartAuthSwitch != null)
+          autoStartAuthSwitch.setChecked(controller.settings.getBoolean("autoStartAuth", true));
       }
     }
     updating = false;

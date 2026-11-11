@@ -147,6 +147,9 @@ public final class ProximityService extends Service {
           // A held start-authorization key connection ends once the beacon has the phone away.
           if (com.dautolock.app.watchble.BleAirtime.holding(now) && beaconSaysAway(now))
             controller.releaseKeyHold("beacon_far");
+          // Getting into the open, switched-off car: authorize the start over the key (step 2).
+          if (beaconEngine != null && controller.settings.getBoolean("beaconCombine", true))
+            controller.boarding(now, inCar(now));
           long keySilent = controller.keySilentMs(now);
           if (keySilent >= Controller.KEY_SILENT_SKIP_MS && controller.firstKeySilentReport())
             controller.diagnostics.record(
@@ -580,6 +583,7 @@ public final class ProximityService extends Service {
 
   @Override
   public int onStartCommand(Intent intent, int flags, int id) {
+    if (intent == null) return restartedBySystem();
     if (intent != null && "STOP".equals(intent.getAction())) {
       controller.note("거리 관찰을 종료했습니다");
       stopSelf();
@@ -626,8 +630,17 @@ public final class ProximityService extends Service {
       if (intent != null && "RESCAN".equals(intent.getAction())) restartScan.run();
       if (intent != null && intent.hasExtra("automatic")) controller.autoEnabled = automatic;
       controller.changed();
-      return START_NOT_STICKY;
+      return START_STICKY;
     }
+    return beginScan(automatic) ? START_STICKY : START_NOT_STICKY;
+  }
+
+  /**
+   * Start watching. Sticky once running: if Android kills the process (real log 11-11 11:59: a
+   * low-memory kill mid-drive left the app off for 15 minutes, until it was opened — so nothing
+   * locked the car on arrival), the system re-creates this service ({@link #restartedBySystem}).
+   */
+  private boolean beginScan(boolean automatic) {
     try {
       if (Build.VERSION.SDK_INT >= 31
           && (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)
@@ -697,11 +710,61 @@ public final class ProximityService extends Service {
       controller.prepareMonitoring();
       handler.post(heartbeat);
       handler.post(decisionTick);
+      return true;
     } catch (Exception e) {
       controller.note(e.getMessage() == null ? "거리 관찰을 시작하지 못했습니다" : e.getMessage());
       stopSelf();
+      return false;
     }
-    return START_NOT_STICKY;
+  }
+
+  /** How long a system restart waits for the saved account to be restored before giving up. */
+  static final long RESTART_READY_WAIT_MS = 20000;
+
+  /**
+   * Re-created by the system after the process was killed (null intent). Watching resumes with the
+   * saved automation setting once the account is restored. Android may refuse a foreground start
+   * from the background; then this stops as before (allowing the app to ignore battery
+   * optimization lifts that limit).
+   */
+  private int restartedBySystem() {
+    try {
+      promoteForeground(controller.settings.getBoolean("autoStart", true));
+    } catch (Exception e) {
+      controller.diagnostics.record(
+          "STICKY_RESTART", "foreground=denied error=" + e.getClass().getSimpleName());
+      stopSelf();
+      return START_NOT_STICKY;
+    }
+    controller.diagnostics.record("STICKY_RESTART", "foreground=ok scanning=" + scanning);
+    if (!scanning) resumeWhenReady(SystemClock.elapsedRealtime() + RESTART_READY_WAIT_MS);
+    return START_STICKY;
+  }
+
+  private void resumeWhenReady(long deadline) {
+    if (scanning) return;
+    if (controller.initializing && SystemClock.elapsedRealtime() < deadline) {
+      handler.postDelayed(() -> resumeWhenReady(deadline), 250);
+      return;
+    }
+    if (!controller.setupReady()) {
+      controller.diagnostics.record("STICKY_RESTART", "resumed=false reason=setup");
+      stopSelf();
+      return;
+    }
+    boolean automatic = controller.autoStartWanted();
+    // The vehicle-state link runs on its own thread; this foreground service keeps the process.
+    controller.vehicleLink.start();
+    boolean resumed = beginScan(automatic);
+    controller.diagnostics.record(
+        "STICKY_RESTART", "resumed=" + resumed + " automatic=" + automatic);
+    if (resumed) controller.note("앱이 시스템에 의해 종료됐다가 다시 시작됨 · 거리 관찰 재개");
+  }
+
+  /** Sitting in the car: the car BLE and the trunk beacon both read well above their open levels. */
+  private boolean inCar(long now) {
+    return engine.strongerThan(engine.near() + Controller.IN_CAR_MARGIN_DB, now)
+        && beaconEngine.strongerThan(beaconEngine.near() + Controller.IN_CAR_MARGIN_DB, now);
   }
 
   /** The captured decision engine is still one of the live engines (not from a past scan session). */

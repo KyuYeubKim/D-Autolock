@@ -247,7 +247,6 @@ public class CommandFlowTest {
     byte lastCode = 0;
     /** The hold asked for by the last sendAndHold (-1: none), and the last releaseHold reason. */
     long holdMs = -1;
-    int releaseBelow;
     String released;
 
     @Override
@@ -257,9 +256,8 @@ public class CommandFlowTest {
 
     @Override
     public com.dautolock.app.watchkey.WatchKey.BleResult sendAndHold(
-        byte controlByte, long timeoutMs, long holdMs, int releaseBelowRssi) {
+        byte controlByte, long timeoutMs, long holdMs) {
       this.holdMs = holdMs;
-      this.releaseBelow = releaseBelowRssi;
       return send(controlByte, timeoutMs);
     }
 
@@ -679,7 +677,6 @@ public class CommandFlowTest {
     assertEquals(1, fake.calls);
     assertEquals(com.dautolock.app.watchble.WatchBleCodec.UNLOCK, fake.lastCode);
     assertEquals(Controller.START_AUTH_HOLD_MS, fake.holdMs); // The key stays connected meanwhile.
-    assertEquals(Controller.DEFAULT_FAR, fake.releaseBelow);
     assertTrue(p.commands.isEmpty()); // No cloud command: the car stays as it was, open.
     assertTrue(log(c).contains("purpose=start_auth"));
     assertTrue(c.lastControl, c.lastControl.contains("시동 인증"));

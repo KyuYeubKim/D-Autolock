@@ -15,7 +15,8 @@ public final class DoorActionReceiver extends BroadcastReceiver {
     }
     // Home-screen widget buttons (this receiver is not exported; see DoorWidget).
     if (DoorWidget.TAP_UNLOCK.equals(action) || DoorWidget.TAP_LOCK.equals(action)) {
-      DoorWidget.onTap(context, action, goAsync());
+      PendingResult pending = goAsync();
+      DoorWidget.onTap(context, action, pending::finish);
       return;
     }
     if (DoorNotifications.CANCEL_STOP.equals(action)) {

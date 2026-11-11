@@ -127,17 +127,16 @@ public final class WatchKey {
   public static final long CONNECT_TIMEOUT_MS = 3000;
 
   public BleResult sendBleBlocking(byte controlByte, long timeoutMs) {
-    return send(controlByte, timeoutMs, 0, 0);
+    return send(controlByte, timeoutMs, 0);
   }
 
   /**
    * Like {@link #sendBleBlocking}, but on success the authenticated link stays open up to {@code
-   * holdMs} (start authorization), closing early on {@link #releaseHold}, a disconnect, or three
-   * connected-RSSI readings at or below {@code releaseBelowRssi}. Returns once the car answered.
+   * holdMs} (start authorization), closing early on {@link #releaseHold} or a disconnect. Returns
+   * once the car answered.
    */
-  public BleResult sendBleAndHold(
-      byte controlByte, long timeoutMs, long holdMs, int releaseBelowRssi) {
-    return send(controlByte, timeoutMs, holdMs, releaseBelowRssi);
+  public BleResult sendBleAndHold(byte controlByte, long timeoutMs, long holdMs) {
+    return send(controlByte, timeoutMs, holdMs);
   }
 
   /** The link kept open by {@link #sendBleAndHold}, if any. */
@@ -152,7 +151,7 @@ public final class WatchKey {
     return true;
   }
 
-  private BleResult send(byte controlByte, long timeoutMs, long holdMs, int releaseBelowRssi) {
+  private BleResult send(byte controlByte, long timeoutMs, long holdMs) {
     if (!store.hasBleKey()) return new BleResult(false, "no_key", -1);
     // One link at a time: a held start-authorization link gives way to the next command.
     if (releaseHold("next_command"))
@@ -164,7 +163,7 @@ public final class WatchKey {
     final BleResult[] out = {null};
     final CountDownLatch latch = new CountDownLatch(1);
     final WatchBleClient client = new WatchBleClient(context, diagnostics::record);
-    if (holdMs > 0) client.holdAfterSuccess(holdMs, releaseBelowRssi);
+    if (holdMs > 0) client.holdAfterSuccess(holdMs);
     client.start(
         store.dkey(),
         store.macAddress(),

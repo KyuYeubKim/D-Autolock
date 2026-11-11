@@ -144,6 +144,7 @@ public final class CloudClient {
             future.completeExceptionally(
                 e instanceof CloudProtocol.SessionExpiredException
                         || e instanceof CloudProtocol.ServiceBusyException
+                        || e instanceof CloudProtocol.HttpStatusException
                     ? e
                     : new Exception(msg));
           }
@@ -175,10 +176,28 @@ public final class CloudClient {
     if (read) ensureAuthenticated();
     if (!protocol.isLoggedIn()) throw new CloudProtocol.SessionExpiredException();
     try {
-      return requestOnce(endpoint, freshRequest(data, vin), vin);
+      return readOnce(endpoint, data, vin, read);
     } catch (CloudProtocol.SessionExpiredException expired) {
       recoverSession();
       if (!read) throw new Exception("계정 재연결 완료 · 차량 제어는 재전송하지 않았습니다. 차량 상태를 확인하세요");
+      return readOnce(endpoint, data, vin, true);
+    }
+  }
+
+  /**
+   * One request; a read that hits BYD's gateway failing (HTTP 502/503/504) is asked once more
+   * after a short pause (real log 11-11 12:27: a status read got 502, the next one 30 s later was
+   * fine). Never a control: a control that failed this way is not sent again.
+   */
+  private JSONObject readOnce(String endpoint, Map<String, Object> data, String vin, boolean read)
+      throws Exception {
+    try {
+      return requestOnce(endpoint, freshRequest(data, vin), vin);
+    } catch (CloudProtocol.HttpStatusException e) {
+      if (!read || !e.gateway()) throw e;
+      diagnostics.accept(
+          "API_RETRY", "op=" + operation(endpoint) + " reason=http_" + e.status + " retries=1");
+      Thread.sleep(protocol.pollIntervalMs());
       return requestOnce(endpoint, freshRequest(data, vin), vin);
     }
   }

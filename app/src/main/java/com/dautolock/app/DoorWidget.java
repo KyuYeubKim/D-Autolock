@@ -4,7 +4,6 @@ import android.app.KeyguardManager;
 import android.app.PendingIntent;
 import android.appwidget.AppWidgetManager;
 import android.appwidget.AppWidgetProvider;
-import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -109,31 +108,48 @@ public final class DoorWidget extends AppWidgetProvider {
   }
 
   private static PendingIntent tap(Context context, String action, int requestCode) {
-    Intent intent = new Intent(context, DoorActionReceiver.class).setAction(action);
+    // A user's tap: the foreground broadcast queue delivers it without waiting behind other apps.
+    Intent intent =
+        new Intent(context, DoorActionReceiver.class)
+            .setAction(action)
+            .addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
     return PendingIntent.getBroadcast(
         context, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
   }
 
   /**
-   * A widget button tap (from {@link DoorActionReceiver}, which keeps the broadcast alive through
-   * {@code pending} until the label resets). Requires an unlocked phone, as the notification
-   * buttons do; waits briefly when the app process has just been started by the tap.
+   * A widget button tap (from {@link DoorActionReceiver}). Requires an unlocked phone, as the
+   * notification buttons do; waits briefly when the app process has just been started by the tap.
+   *
+   * <p>{@code done} ends the broadcast and must run as soon as the tap is handled, never after the
+   * label resets: a manifest receiver gets its broadcasts one at a time, so while the arming tap's
+   * broadcast was held for {@link #ARM_MS} the second tap waited behind it, arrived after the
+   * window and only armed again — the widget could never send (real log 11-11 12:15/12:27: no
+   * WIDGET_ACTION at all). The labels reset on the main thread without holding the broadcast.
    */
-  static void onTap(Context context, String action, BroadcastReceiver.PendingResult pending) {
+  static void onTap(Context context, String action, Runnable done) {
     Context app = context.getApplicationContext();
     long now = SystemClock.elapsedRealtime();
     if (!confirm(action, now)) {
       render(app);
-      main.postDelayed(() -> finish(app, pending), ARM_MS + 100);
+      main.postDelayed(() -> render(app), ARM_MS + 100);
+      finish(done);
       return;
     }
     KeyguardManager guard = app.getSystemService(KeyguardManager.class);
     if (guard != null && guard.isDeviceLocked()) {
       DoorNotifications.result(app, "차량 제어 보류", "휴대폰 잠금을 해제한 뒤 다시 누르세요");
-      finish(app, pending);
+      render(app);
+      finish(done);
       return;
     }
     Controller controller = ((DApplication) app).controller();
+    if (!controller.initializing) {
+      send(app, controller, action);
+      finish(done);
+      return;
+    }
+    // The tap started the process: keep the broadcast (and so the process) until the app is ready.
     new Thread(
             () -> {
               long until = SystemClock.elapsedRealtime() + INIT_WAIT_MS;
@@ -144,14 +160,17 @@ public final class DoorWidget extends AppWidgetProvider {
                   Thread.currentThread().interrupt();
                   break;
                 }
-              main.post(() -> send(app, controller, action, pending));
+              main.post(
+                  () -> {
+                    send(app, controller, action);
+                    finish(done);
+                  });
             },
             "door-widget")
         .start();
   }
 
-  private static void send(
-      Context app, Controller controller, String action, BroadcastReceiver.PendingResult pending) {
+  private static void send(Context app, Controller controller, String action) {
     boolean unlock = TAP_UNLOCK.equals(action);
     if (controller.initializing) {
       DoorNotifications.result(app, "차량 제어 보류", "앱을 준비하는 중입니다. 잠시 뒤 다시 누르세요");
@@ -164,11 +183,10 @@ public final class DoorWidget extends AppWidgetProvider {
           unlock ? CloudClient.Command.UNLOCK : CloudClient.Command.LOCK, false, () -> true);
     }
     render(app);
-    main.postDelayed(() -> finish(app, pending), SENT_SHOW_MS + 100);
+    main.postDelayed(() -> render(app), SENT_SHOW_MS + 100);
   }
 
-  private static void finish(Context app, BroadcastReceiver.PendingResult pending) {
-    render(app);
-    if (pending != null) pending.finish();
+  private static void finish(Runnable done) {
+    if (done != null) done.run();
   }
 }

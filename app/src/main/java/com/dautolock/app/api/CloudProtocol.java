@@ -164,6 +164,22 @@ public class CloudProtocol {
     }
   }
 
+  /** The BYD server answered with an HTTP error status (a 5xx is its own gateway failing). */
+  public static final class HttpStatusException extends Exception {
+    public final int status;
+
+    public HttpStatusException(int status) {
+      super(
+          (status >= 500 ? "BYD 서버 일시 오류" : "서버 연결 실패") + " (HTTP " + status + ")");
+      this.status = status;
+    }
+
+    /** 502/503/504: BYD's own gateway or upstream failed; a read may simply be asked again. */
+    public boolean gateway() {
+      return status == 502 || status == 503 || status == 504;
+    }
+  }
+
   public Map<String, Object> buildInnerBaseMap(String vin, String requestSerial) {
     Map<String, Object> map = new LinkedHashMap<>();
     map.put("deviceType", deviceProfile.get("deviceType"));
@@ -248,7 +264,8 @@ public class CloudProtocol {
                 public void onResponse(Call call, Response response) throws IOException {
                   try (Response closeable = response) {
                     if (!response.isSuccessful()) {
-                      callback.onError("서버 연결 실패 (HTTP " + response.code() + ")", null);
+                      HttpStatusException error = new HttpStatusException(response.code());
+                      callback.onError(error.getMessage(), error);
                       return;
                     }
                     String rawResp = response.body().string();

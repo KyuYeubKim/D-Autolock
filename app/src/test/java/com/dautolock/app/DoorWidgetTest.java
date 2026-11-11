@@ -86,6 +86,23 @@ public class DoorWidgetTest {
   }
 
   @Test
+  public void eachTapEndsItsBroadcastAtOnceSoTheSecondTapIsNotHeldBack() throws Exception {
+    // Real log 11-11 12:15/12:27: no WIDGET_ACTION at all. A manifest receiver gets one broadcast
+    // at a time; the arming tap held its broadcast for 3.1 s, so the second tap only arrived after
+    // the 3 s window and armed again — the widget could never send.
+    protocol.locked = false;
+    java.util.concurrent.atomic.AtomicInteger ended = new java.util.concurrent.atomic.AtomicInteger();
+    DoorWidget.onTap(app, DoorWidget.TAP_LOCK, ended::incrementAndGet);
+    assertEquals(1, ended.get()); // Ended at once, not after the window.
+    assertEquals("다시 누르면 잠금", label(R.id.widget_lock_label));
+    // The next broadcast is delivered only now, and still within the window.
+    DoorWidget.onTap(app, DoorWidget.TAP_LOCK, ended::incrementAndGet);
+    assertEquals(2, ended.get()); // Handed to the controller; the broadcast is not held meanwhile.
+    awaitCommand();
+    assertEquals(java.util.Collections.singletonList("LOCKDOOR"), protocol.commands);
+  }
+
+  @Test
   public void tappingTheOtherButtonOrWaitingTooLongOnlyArmsAgain() throws Exception {
     tap(DoorWidget.TAP_UNLOCK);
     tap(DoorWidget.TAP_LOCK); // A different button: arms that one instead.

@@ -101,15 +101,15 @@ public final class WatchBleClient {
    * Keep the authenticated connection open this long after a successful control (0: close at once,
    * the normal case). Used for start authorization: the car started only after a key unlock and
    * while that key stayed connected — the official app keeps its link through a drive (real logs
-   * 11-10 21:29, 11-11 07:25). Ends early on {@link #release}, a disconnect, or a weak link.
+   * 11-10 21:29, 11-11 07:25). Ends early on {@link #release} or a disconnect. Not on the link's
+   * RSSI: it read -88/-90 with the phone in the car (advertising -56, real log 11-11 11:10), so the
+   * advertising thresholds mean nothing for it; it is only logged.
    */
   private long holdMs;
-  /** Close a held link after three connected-RSSI readings at or below this (walking away). */
-  private int releaseBelowRssi = -127;
   private volatile boolean holding;
   private boolean reported;
-  private long holdStartedAt, lastHoldRssiLog;
-  private int weakRssi, lastRssi = 0;
+  private long holdStartedAt;
+  private int lastRssi = 0;
   private Runnable holdTimeout, rssiPoll;
 
   public WatchBleClient(Context context, BiConsumer<String, String> diag) {
@@ -212,9 +212,8 @@ public final class WatchBleClient {
   }
 
   /** Before {@link #start}: keep the link open after success (see {@link #holdMs}). */
-  public void holdAfterSuccess(long holdMs, int releaseBelowRssi) {
+  public void holdAfterSuccess(long holdMs) {
     this.holdMs = Math.max(0, holdMs);
-    this.releaseBelowRssi = releaseBelowRssi;
   }
 
   /** The link is being held open after a successful control. */
@@ -580,7 +579,7 @@ public final class WatchBleClient {
       connectTimeout = null;
     }
     diag("WATCHBLE_RESULT", "ok · " + message + " · 연결 유지 " + holdMs / 1000 + "초");
-    diag("WATCHBLE_HOLD", "start holdMs=" + holdMs + " releaseBelow=" + releaseBelowRssi);
+    diag("WATCHBLE_HOLD", "start holdMs=" + holdMs);
     BleAirtime.holdUntil(holdStartedAt + holdMs);
     holdTimeout = () -> endHold("timeout");
     main.postDelayed(holdTimeout, holdMs);
@@ -598,19 +597,15 @@ public final class WatchBleClient {
     } catch (Throwable ignore) {
       // Best effort: the hold still ends on its timer.
     }
-    main.postDelayed(rssiPoll, 1000);
+    main.postDelayed(rssiPoll, 5000); // Logged only (see holdMs): a light reading is enough.
   }
 
   private void onHoldRssi(int rssi, int status) {
     if (!holding || status != BluetoothGatt.GATT_SUCCESS) return;
     lastRssi = rssi;
-    weakRssi = rssi <= releaseBelowRssi ? weakRssi + 1 : 0;
-    long now = SystemClock.elapsedRealtime();
-    if (now - lastHoldRssiLog >= 10000) {
-      lastHoldRssiLog = now;
-      diag("WATCHBLE_HOLD", "rssi=" + rssi + " heldMs=" + (now - holdStartedAt));
-    }
-    if (weakRssi >= 3) endHold("weak_rssi rssi=" + rssi);
+    diag(
+        "WATCHBLE_HOLD",
+        "rssi=" + rssi + " heldMs=" + (SystemClock.elapsedRealtime() - holdStartedAt));
   }
 
   private void endHold(String reason) {

@@ -51,7 +51,7 @@ final class Controller {
 
     /** Send, and on success keep the key connected up to {@code holdMs} (start authorization). */
     default com.dautolock.app.watchkey.WatchKey.BleResult sendAndHold(
-        byte controlByte, long timeoutMs, long holdMs, int releaseBelowRssi) {
+        byte controlByte, long timeoutMs, long holdMs) {
       return send(controlByte, timeoutMs);
     }
 
@@ -95,8 +95,8 @@ final class Controller {
 
         @Override
         public com.dautolock.app.watchkey.WatchKey.BleResult sendAndHold(
-            byte controlByte, long timeoutMs, long holdMs, int releaseBelowRssi) {
-          return watchKey().sendBleAndHold(controlByte, timeoutMs, holdMs, releaseBelowRssi);
+            byte controlByte, long timeoutMs, long holdMs) {
+          return watchKey().sendBleAndHold(controlByte, timeoutMs, holdMs);
         }
 
         @Override
@@ -803,7 +803,12 @@ final class Controller {
           } catch (Exception e) {
             nextStatusRead = SystemClock.elapsedRealtime() + 30000;
             if (refreshTicket == statusRevision.get()) statusRefreshRequested = false;
-            throw e;
+            // Say it was only a read: on the main screen a bare "HTTP 502" right after a widget or
+            // notification tap looked like the door command had failed (real log 11-11 12:27).
+            throw new Exception(
+                "차량 상태 새로고침 실패 · "
+                    + (e.getMessage() == null ? "요청을 처리하지 못했습니다" : e.getMessage()),
+                e);
           }
         },
         () -> {
@@ -1777,7 +1782,8 @@ final class Controller {
    * unlock did — and its key stayed connected through the drive (CAR_KEY_SILENT linked=yes). So the
    * unlock goes out over our BLE key anyway (an open car stays open; nothing else changes) and the
    * key stays connected up to {@link #START_AUTH_HOLD_MS}, until the car comes on, the phone walks
-   * away (weak link, or the beacon settled far), or another key command needs it. Returns false only
+   * away (the link drops, or the beacon settled far), or another key command needs it. The car
+   * started 3 s after the first one (real log 11-11 11:10). Returns false only
    * when the key cannot be used (then the plain "already open" path runs).
    */
   private boolean startAuthorization() {
@@ -1789,17 +1795,14 @@ final class Controller {
           "START_AUTH_SKIP", "reason=no_advert silentMs=" + silent + " linked=" + keyLinked());
       return false;
     }
-    int releaseBelow = settings.getInt("far", DEFAULT_FAR);
-    diagnostics.record(
-        "START_AUTH", "holdMs=" + START_AUTH_HOLD_MS + " releaseBelow=" + releaseBelow);
+    diagnostics.record("START_AUTH", "holdMs=" + START_AUTH_HOLD_MS);
     lastControl = "이미 열림 · 블루투스 키로 시동 인증 중…";
     changed();
     com.dautolock.app.watchkey.WatchKey.BleResult r =
         ble.sendAndHold(
             com.dautolock.app.watchble.WatchBleCodec.UNLOCK,
             WATCH_BLE_AUTO_TIMEOUT_MS,
-            START_AUTH_HOLD_MS,
-            releaseBelow);
+            START_AUTH_HOLD_MS);
     if (r != null && r.success) {
       diagnostics.record(
           "CONTROL_SEND", "MANUAL UNLOCK source=ble doors=" + r.doors + " purpose=start_auth");

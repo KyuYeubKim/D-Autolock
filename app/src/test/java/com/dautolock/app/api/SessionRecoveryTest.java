@@ -32,6 +32,9 @@ public class SessionRecoveryTest {
       if (outcome.equals("expired")) {
         setSignToken(null);
         cb.onError("expired", new SessionExpiredException());
+      } else if (outcome.startsWith("http")) {
+        HttpStatusException error = new HttpStatusException(Integer.parseInt(outcome.substring(4)));
+        cb.onError(error.getMessage(), error);
       } else if (outcome.equals("busy"))
         cb.onError("BYD 요청 거부 (코드 1008)", new ServiceBusyException());
       else {
@@ -112,6 +115,39 @@ public class SessionRecoveryTest {
                 "vehicle", "pin-hash", CloudClient.Command.UNLOCK, () -> renewals.get() == 0));
     assertEquals(1, renewals.get());
     assertEquals(0, p.requests.size());
+  }
+
+  @Test
+  public void aGatewayErrorOnAReadIsAskedOnceMore() throws Exception {
+    // Real log 11-11 12:27: a status read got HTTP 502; the next read 30 s later was fine.
+    FakeProtocol p = new FakeProtocol("http502", "ok");
+    assertEquals(0, client(p, new AtomicInteger()).vehicles().length());
+    assertEquals(2, p.requests.size());
+    assertNotEquals(p.requests.get(0).get("random"), p.requests.get(1).get("random"));
+  }
+
+  @Test
+  public void aSecondGatewayErrorOrAClientErrorIsReported() {
+    FakeProtocol p = new FakeProtocol("http503", "http503", "ok");
+    CloudClient c = client(p, new AtomicInteger());
+    Exception error = assertThrows(Exception.class, c::vehicles);
+    assertTrue(error.getMessage(), error.getMessage().contains("HTTP 503"));
+    assertEquals(2, p.requests.size()); // Once more, not again and again.
+    FakeProtocol q = new FakeProtocol("http404", "ok");
+    assertThrows(Exception.class, () -> client(q, new AtomicInteger()).vehicles());
+    assertEquals(1, q.requests.size()); // Not a gateway failure: not asked again.
+  }
+
+  @Test
+  public void aControlIsNeverResentAfterAGatewayError() {
+    FakeProtocol p = new FakeProtocol("http502", "ok");
+    CloudClient c = client(p, new AtomicInteger());
+    Exception error =
+        assertThrows(
+            Exception.class,
+            () -> c.command("vehicle", "pin-hash", CloudClient.Command.LOCK, () -> true));
+    assertTrue(error.getMessage(), error.getMessage().contains("HTTP 502"));
+    assertEquals(1, p.requests.size());
   }
 
   @Test

@@ -60,6 +60,13 @@ public final class CloudClient {
     this.recovery = recovery;
   }
 
+  private volatile Runnable sessionChanged = () -> {};
+
+  /** Called when something worth saving in the session changed (the guest flag of a car). */
+  public void setSessionChanged(Runnable changed) {
+    this.sessionChanged = changed == null ? () -> {} : changed;
+  }
+
   public void ensureAuthenticated() throws Exception {
     if (!protocol.isLoggedIn()) recoverSession();
   }
@@ -145,6 +152,7 @@ public final class CloudClient {
                 e instanceof CloudProtocol.SessionExpiredException
                         || e instanceof CloudProtocol.ServiceBusyException
                         || e instanceof CloudProtocol.HttpStatusException
+                        || e instanceof CloudProtocol.RejectedException
                     ? e
                     : new Exception(msg));
           }
@@ -199,7 +207,37 @@ public final class CloudClient {
           "API_RETRY", "op=" + operation(endpoint) + " reason=http_" + e.status + " retries=1");
       Thread.sleep(protocol.pollIntervalMs());
       return requestOnce(endpoint, freshRequest(data, vin), vin);
+    } catch (CloudProtocol.RejectedException e) {
+      if (!userTypeCorrected(endpoint, vin, e)) throw e;
+      // A control is never sent twice: its refusal is reported, the next press carries the flag.
+      if (!read)
+        throw new Exception(
+            e.getMessage() + " · 공유 계정 표시를 고쳤습니다. 제어는 다시 보내지 않았으니 한 번 더 눌러 주세요", e);
+      return requestOnce(endpoint, freshRequest(data, vin), vin);
     }
+  }
+
+  /**
+   * A car endpoint refused because this account's guest flag was wrong: 1001 to a request sent as
+   * the owner (a guest must say so), 8003 to one sent as a guest (it is the owner). Flips the flag
+   * and returns true; anything else is a real refusal.
+   */
+  private boolean userTypeCorrected(String endpoint, String vin, CloudProtocol.RejectedException e) {
+    if (vin == null || !CloudProtocol.carEndpoint(endpoint)) return false;
+    boolean sentAsGuest = Boolean.TRUE.equals(protocol.guest(vin));
+    boolean guest;
+    if (CloudProtocol.GUEST_NOT_DECLARED_CODE.equals(e.code) && !sentAsGuest) guest = true;
+    else if (CloudProtocol.NOT_A_GUEST_CODE.equals(e.code) && sentAsGuest) guest = false;
+    else return false;
+    protocol.markGuest(vin, guest);
+    diagnostics.accept(
+        "API_USER_TYPE", "op=" + operation(endpoint) + " code=" + e.code + " guest=" + guest);
+    try {
+      sessionChanged.run();
+    } catch (RuntimeException ignored) {
+      // Saving is a convenience; the flag is already in use for this run.
+    }
+    return true;
   }
 
   private static boolean isReadRequest(String endpoint) {

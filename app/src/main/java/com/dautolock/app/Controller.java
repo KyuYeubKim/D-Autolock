@@ -421,6 +421,16 @@ final class Controller {
           save();
           note("저장된 계정 재연결 완료 · 차량과 블루투스 선택 유지");
         });
+    // Keep a learned guest/owner flag for the car (no extra refused request after a restart).
+    client.setSessionChanged(
+        () -> {
+          if (client != cloud) return;
+          try {
+            save();
+          } catch (Exception e) {
+            diagnostics.record("SESSION_SAVE_ERROR", e.getClass().getSimpleName());
+          }
+        });
     return client;
   }
 
@@ -645,6 +655,9 @@ final class Controller {
             cloud.climateTempOffset = 16; // Relearned from the next car's climate range.
           }
           vin = selectedVin;
+          // A car shared with this account (empowerType < 0 or an empowerId): its requests that
+          // reach the car must say so (userType); a later answer from the cloud corrects a guess.
+          cloud.protocol.seedGuest(selectedVin, sharedWithThisAccount(vehicle));
           vehicleName =
               vehicle.optString("autoAlias", vehicle.optString("modelName", "BYD Dolphin"));
           if (vehicleName.isEmpty()) vehicleName = "BYD Dolphin";
@@ -671,6 +684,14 @@ final class Controller {
                   + feature(CloudClient.Command.STOP)
                   + ". 실제 공유 권한은 서버가 명령마다 확인합니다");
         });
+  }
+
+  /** The vehicle-list entry of a car shared with this account (pyBYD: empowerId or empowerType < 0). */
+  static boolean sharedWithThisAccount(JSONObject vehicle) {
+    if (vehicle.optInt("empowerType", 0) < 0) return true;
+    if (vehicle.isNull("empowerId")) return false; // Missing or JSON null (optString would say "null").
+    String id = vehicle.optString("empowerId", "").trim();
+    return !id.isEmpty() && !id.equals("0");
   }
 
   String feature(CloudClient.Command c) {

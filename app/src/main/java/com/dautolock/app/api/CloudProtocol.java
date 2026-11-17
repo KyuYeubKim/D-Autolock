@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import okhttp3.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -164,6 +165,75 @@ public class CloudProtocol {
     }
   }
 
+  /** BYD refused the request with a business code (the envelope's {@code code}, not "0"). */
+  public static final class RejectedException extends Exception {
+    public final String code;
+
+    public RejectedException(String code, String serverMessage) {
+      super(
+          "BYD 요청 거부 (코드 "
+              + code
+              + (serverMessage == null || serverMessage.trim().isEmpty()
+                  ? ""
+                  : " · " + shorten(serverMessage.trim()))
+              + "). 차량 상태·명령 지원 여부를 확인하세요");
+      this.code = code;
+    }
+
+    private static String shorten(String text) {
+      return text.length() <= 60 ? text : text.substring(0, 60) + "…";
+    }
+  }
+
+  /**
+   * Outer {@code userType} of an account the car was shared with (a guest). Since 2026-11-12 the
+   * cloud refuses a guest's requests that reach the car unless they carry it, signed, with code
+   * 1001 (seen first in Brazil, here from 11-18: status reads refused while the official app still
+   * worked; pyBYD 0.0.80, jkaberg/pyBYD#81). The owner leaves it out; telling an owner's request
+   * it is a guest is refused with 8003.
+   */
+  public static final String USER_TYPE_GUEST = "1";
+
+  public static final String GUEST_NOT_DECLARED_CODE = "1001", NOT_A_GUEST_CODE = "8003";
+
+  /** Per car: true = this account is a guest of it, false = owner, absent = not known yet. */
+  private final Map<String, Boolean> guestVins = new ConcurrentHashMap<>();
+
+  /** The endpoints that reach the car and need {@link #USER_TYPE_GUEST} from a guest. */
+  public static boolean carEndpoint(String endpoint) {
+    switch (endpoint) {
+      case "/vehicleInfo/vehicle/vehicleRealTimeRequest":
+      case "/vehicleInfo/vehicle/vehicleRealTimeResult":
+      case "/control/getStatusNow":
+      case "/control/getGpsInfo":
+      case "/control/getGpsInfoResult":
+      case "/control/remoteControl":
+      case "/control/remoteControlResult":
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  public Boolean guest(String vin) {
+    return vin == null ? null : guestVins.get(vin);
+  }
+
+  /** What the cloud's answer showed (it overrides a guess). */
+  public void markGuest(String vin, boolean guest) {
+    if (vin != null && !vin.isEmpty()) guestVins.put(vin, guest);
+  }
+
+  /** A guess from the vehicle list, kept only while nothing better is known. */
+  public void seedGuest(String vin, boolean guest) {
+    if (vin != null && !vin.isEmpty()) guestVins.putIfAbsent(vin, guest);
+  }
+
+  /** The {@code userType} this request carries, or null (owner, unknown, or not a car endpoint). */
+  String userTypeFor(String endpoint, String vin) {
+    return carEndpoint(endpoint) && Boolean.TRUE.equals(guest(vin)) ? USER_TYPE_GUEST : null;
+  }
+
   /** The BYD server answered with an HTTP error status (a 5xx is its own gateway failing). */
   public static final class HttpStatusException extends Exception {
     public final int status;
@@ -197,44 +267,57 @@ public class CloudProtocol {
     return map;
   }
 
+  /**
+   * The signed outer envelope of a token request (before its checkcode). A guest's request that
+   * reaches the car carries {@code userType}, and it is signed: an unsigned one is refused (1007).
+   */
+  Map<String, Object> tokenEnvelope(
+      String endpoint, Map<String, Object> innerMap, String vin, String reqTimestamp)
+      throws Exception {
+    String innerJson = toSortedJson(innerMap);
+    String encryData = CryptoUtils.aesEncryptHex(innerJson, CryptoUtils.md5Hex(encryToken));
+
+    Map<String, String> signFields = new HashMap<>();
+    for (String key : innerMap.keySet()) signFields.put(key, innerMap.get(key).toString());
+    signFields.put("countryCode", config.getCountryCode());
+    signFields.put("identifier", userId);
+    signFields.put("imeiMD5", deviceProfile.get("imeiMD5"));
+    signFields.put("language", config.getLanguage());
+    signFields.put("reqTimestamp", reqTimestamp);
+    String userType = userTypeFor(endpoint, vin);
+    if (userType != null) signFields.put("userType", userType);
+
+    String sign =
+        CryptoUtils.sha1Mixed(
+            CryptoUtils.buildSignString(signFields, CryptoUtils.md5Hex(signToken)));
+
+    Map<String, Object> outerMap = new LinkedHashMap<>();
+    outerMap.put("countryCode", config.getCountryCode());
+    outerMap.put("encryData", encryData);
+    outerMap.put("identifier", userId);
+    outerMap.put("imeiMD5", deviceProfile.get("imeiMD5"));
+    outerMap.put("language", config.getLanguage());
+    outerMap.put("reqTimestamp", reqTimestamp);
+    outerMap.put("sign", sign);
+    outerMap.put("ostype", deviceProfile.get("ostype"));
+    outerMap.put("imei", deviceProfile.get("imei"));
+    outerMap.put("mac", deviceProfile.get("mac"));
+    outerMap.put("model", deviceProfile.get("model"));
+    outerMap.put("sdk", deviceProfile.get("sdk"));
+    outerMap.put("mod", deviceProfile.get("mod"));
+    outerMap.put("serviceTime", reqTimestamp);
+    if (userType != null) outerMap.put("userType", userType);
+    return outerMap;
+  }
+
   public void postTokenSecure(
       String endpoint,
       Map<String, Object> innerMap,
       String vin,
       BydApiCallback<JSONObject> callback) {
     try {
-      long nowMs = System.currentTimeMillis();
-      String reqTimestamp = String.valueOf(nowMs);
-      String innerJson = toSortedJson(innerMap);
-      String encryData = CryptoUtils.aesEncryptHex(innerJson, CryptoUtils.md5Hex(encryToken));
-
-      Map<String, String> signFields = new HashMap<>();
-      for (String key : innerMap.keySet()) signFields.put(key, innerMap.get(key).toString());
-      signFields.put("countryCode", config.getCountryCode());
-      signFields.put("identifier", userId);
-      signFields.put("imeiMD5", deviceProfile.get("imeiMD5"));
-      signFields.put("language", config.getLanguage());
-      signFields.put("reqTimestamp", reqTimestamp);
-
-      String sign =
-          CryptoUtils.sha1Mixed(
-              CryptoUtils.buildSignString(signFields, CryptoUtils.md5Hex(signToken)));
-
-      Map<String, Object> outerMap = new LinkedHashMap<>();
-      outerMap.put("countryCode", config.getCountryCode());
-      outerMap.put("encryData", encryData);
-      outerMap.put("identifier", userId);
-      outerMap.put("imeiMD5", deviceProfile.get("imeiMD5"));
-      outerMap.put("language", config.getLanguage());
-      outerMap.put("reqTimestamp", reqTimestamp);
-      outerMap.put("sign", sign);
-      outerMap.put("ostype", deviceProfile.get("ostype"));
-      outerMap.put("imei", deviceProfile.get("imei"));
-      outerMap.put("mac", deviceProfile.get("mac"));
-      outerMap.put("model", deviceProfile.get("model"));
-      outerMap.put("sdk", deviceProfile.get("sdk"));
-      outerMap.put("mod", deviceProfile.get("mod"));
-      outerMap.put("serviceTime", reqTimestamp);
+      String reqTimestamp = String.valueOf(System.currentTimeMillis());
+      Map<String, Object> outerMap = tokenEnvelope(endpoint, innerMap, vin, reqTimestamp);
 
       String outerJsonNoCheck = toSortedJson(outerMap);
       String checkcode = CryptoUtils.computeCheckcode(outerJsonNoCheck); // 기존 인증 유지
@@ -294,7 +377,9 @@ public class CloudProtocol {
                         callback.onError(error.getMessage(), error);
                         return;
                       }
-                      callback.onError("BYD 요청 거부 (코드 " + resCode + "). 차량 상태·명령 지원 여부를 확인하세요", null);
+                      RejectedException error =
+                          new RejectedException(resCode, outerResp.optString("message", ""));
+                      callback.onError(error.getMessage(), error);
                       return;
                     }
 
@@ -478,7 +563,8 @@ public class CloudProtocol {
         .put("userId", userId)
         .put("signToken", signToken)
         .put("encryToken", encryToken)
-        .put("imeiMD5", deviceProfile.get("imeiMD5"));
+        .put("imeiMD5", deviceProfile.get("imeiMD5"))
+        .put("guestVins", new JSONObject(new HashMap<String, Object>(guestVins)));
   }
 
   public void restoreSession(JSONObject session) throws Exception {
@@ -486,5 +572,11 @@ public class CloudProtocol {
     signToken = session.getString("signToken");
     encryToken = session.getString("encryToken");
     deviceProfile.put("imeiMD5", session.getString("imeiMD5"));
+    JSONObject guests = session.optJSONObject("guestVins");
+    if (guests != null)
+      for (java.util.Iterator<String> it = guests.keys(); it.hasNext(); ) {
+        String car = it.next();
+        guestVins.put(car, guests.optBoolean(car));
+      }
   }
 }

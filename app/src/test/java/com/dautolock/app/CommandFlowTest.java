@@ -835,6 +835,19 @@ public class CommandFlowTest {
   }
 
   @Test
+  public void aSharedCarIsToldFromTheVehicleListEntry() throws Exception {
+    assertTrue(Controller.sharedWithThisAccount(new JSONObject().put("empowerType", -1)));
+    assertTrue(
+        Controller.sharedWithThisAccount(
+            new JSONObject().put("empowerType", 3).put("empowerId", "778")));
+    assertFalse(Controller.sharedWithThisAccount(new JSONObject().put("empowerType", 3)));
+    assertFalse( // JSON null would read as the text "null".
+        Controller.sharedWithThisAccount(
+            new JSONObject().put("empowerType", 3).put("empowerId", JSONObject.NULL)));
+    assertFalse(Controller.sharedWithThisAccount(new JSONObject().put("empowerId", "0")));
+  }
+
+  @Test
   public void keySilenceIsMeasuredOnlyWhileTheScannerWatchesForIt() throws Exception {
     com.dautolock.app.watchble.BleAirtime.reset();
     Controller c = create(new Protocol());
